@@ -40,6 +40,10 @@ export interface RunFileState {
 /** Pre-command capture: repo root + dirty set D0 with disk contents. */
 export interface RunPreState {
   root: string
+  /** Host path separator ('\\' on Windows) — derived from workDir, used to
+   *  normalize git's forward-slash paths into the same spelling the rest of
+   *  the app uses (FileChangesPanel compares paths literally). */
+  sep: string
   dirty: Map<string, RunFileState>
 }
 
@@ -47,18 +51,24 @@ export interface RunPreState {
  * Parse `git status --porcelain -z` output.
  * Each item is `XY PATH` (or `XY NEW` followed by `OLD` for rename/copy); the
  * -z form is NUL-terminated, so paths with spaces survive intact. Rename/copy
- * entries consume their trailing old-path item.
+ * entries carry the trailing old-path item in `renameFrom` — callers use it to
+ * also record the deleted old path, otherwise a `git mv` run by a command
+ * would be invisible (the new path is not in HEAD, the old path is gone).
  */
-export function parsePorcelainZ(output: string): Array<{ code: string; path: string }> {
+export function parsePorcelainZ(output: string): Array<{ code: string; path: string; renameFrom?: string }> {
   const raw = output.split('\0').filter((s) => s.length > 0)
-  const entries: Array<{ code: string; path: string }> = []
+  const entries: Array<{ code: string; path: string; renameFrom?: string }> = []
   for (let i = 0; i < raw.length; i++) {
     const item = raw[i]
     if (item.length < 4) continue
     const code = item.slice(0, 2)
     const path = item.slice(3)
-    entries.push({ code, path })
-    if (code.startsWith('R') || code.startsWith('C')) i++ // skip the old-path item
+    if (code.startsWith('R') || code.startsWith('C')) {
+      const oldPath = raw[++i]
+      entries.push({ code, path, renameFrom: oldPath || undefined })
+    } else {
+      entries.push({ code, path })
+    }
   }
   return entries
 }
@@ -91,9 +101,17 @@ export function classifyCandidates(
   return out
 }
 
-/** Join a repo-root-relative git path onto the root (git uses '/' separators). */
-function joinRepoPath(root: string, rel: string): string {
-  return `${root.replace(/[\\/]+$/, '')}/${rel}`
+/** Join a repo-root-relative git path onto the root. Git reports '/' separators
+ *  (and returns the root itself forward-slashed on Windows) — normalize to the
+ *  host's spelling so checkpoint paths compare equal with the paths the rest
+ *  of the app stores. */
+function joinRepoPath(root: string, rel: string, sep: string): string {
+  return `${root.replace(/[\\/]+$/, '')}${sep}${rel.replace(/\//g, sep)}`
+}
+
+/** Host separator style, inferred from the (host-spelled) working directory. */
+function hostSep(workDir: string): string {
+  return workDir.includes('\\') ? '\\' : '/'
 }
 
 /**
@@ -105,14 +123,21 @@ export async function captureRunPreState(workDir: string): Promise<RunPreState |
   try {
     const rootRes = await window.electronAPI.gitExec(workDir, ['rev-parse', '--show-toplevel'])
     if (!rootRes?.success) return null
-    const root = rootRes.output.trim()
+    const sep = hostSep(workDir)
+    const root = sep === '\\' ? rootRes.output.trim().replace(/\//g, '\\') : rootRes.output.trim()
     if (!root) return null
     const statusRes = await window.electronAPI.gitExec(root, ['status', '--porcelain', '-z'])
     if (!statusRes?.success) return null
     const dirty = new Map<string, RunFileState>()
     for (const e of parsePorcelainZ(statusRes.output)) {
       const tracked = !e.code.startsWith('??')
-      const abs = joinRepoPath(root, e.path)
+      // A RENAME's old path is worktree-deleted by definition — record it so
+      // the post-phase can restore it from HEAD when the command did the move.
+      // (A COPY keeps the original on disk, so no synthetic deletion there.)
+      if (e.renameFrom && e.code.startsWith('R')) {
+        dirty.set(e.renameFrom, { existed: false, content: '', tracked: true })
+      }
+      const abs = joinRepoPath(root, e.path, sep)
       try {
         const st = await window.electronAPI.stat(abs)
         if (st && st.size > MAX_SNAPSHOT_FILE_BYTES) {
@@ -126,7 +151,7 @@ export async function captureRunPreState(workDir: string): Promise<RunPreState |
         dirty.set(e.path, { existed: false, content: '', tracked })
       }
     }
-    return { root, dirty }
+    return { root, sep, dirty }
   } catch {
     return null
   }
@@ -148,7 +173,23 @@ export async function buildRunCommandCheckpoint(
     const statusRes = await window.electronAPI.gitExec(pre.root, ['status', '--porcelain', '-z'])
     if (!statusRes?.success) return null
     postDirty = new Map<string, string>()
-    for (const e of parsePorcelainZ(statusRes.output)) postDirty.set(e.path, e.code)
+    for (const e of parsePorcelainZ(statusRes.output)) {
+      if (e.renameFrom && e.code.startsWith('R')) {
+        // A rename means: old path deleted in the worktree, new path exists
+        // but is not in HEAD. Synthesize 'D ' / '??' so the classifier pulls
+        // the old content from HEAD and treats the new path as command-created.
+        postDirty.set(e.renameFrom, 'D ')
+        postDirty.set(e.path, '??')
+      } else if (e.code.startsWith('C') || e.code.startsWith('A')) {
+        // Staged copy / staged new file: the path is NOT in HEAD (an added
+        // file shows as 'A ' by default — copy detection is usually off), so
+        // its pre-state is "absent". Undoing the command deletes the copy /
+        // new file and never touches the original.
+        postDirty.set(e.path, '??')
+      } else {
+        postDirty.set(e.path, e.code)
+      }
+    }
   } catch {
     return null
   }
@@ -156,7 +197,7 @@ export async function buildRunCommandCheckpoint(
   const files: Array<{ path: string; content: string; existed: boolean }> = []
   for (const { rel, source } of classifyCandidates(pre.dirty, postDirty)) {
     if (source === 'skip') continue
-    const abs = joinRepoPath(pre.root, rel)
+    const abs = joinRepoPath(pre.root, rel, pre.sep)
 
     // Pre-command content.
     let preContent = ''

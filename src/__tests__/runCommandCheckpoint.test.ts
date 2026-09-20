@@ -20,12 +20,17 @@ describe('parsePorcelainZ', () => {
     expect(entries).toEqual([{ code: ' M', path: 'my dir/file one.ts' }])
   })
 
-  it('rename entries consume their trailing old-path item', () => {
+  it('rename entries carry their trailing old-path item in renameFrom', () => {
     const entries = parsePorcelainZ('R  new.ts\0old.ts\0 M after.ts\0')
     expect(entries).toEqual([
-      { code: 'R ', path: 'new.ts' },
+      { code: 'R ', path: 'new.ts', renameFrom: 'old.ts' },
       { code: ' M', path: 'after.ts' },
     ])
+  })
+
+  it('rename entries without an old-path item do not crash', () => {
+    const entries = parsePorcelainZ('R  new.ts\0')
+    expect(entries).toEqual([{ code: 'R ', path: 'new.ts', renameFrom: undefined }])
   })
 
   it('survives empty and garbage output', () => {
