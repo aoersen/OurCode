@@ -33,6 +33,7 @@ import {
 } from '@/services/tools/context'
 import { v4 as uuidv4 } from 'uuid'
 import { captureCheckpoint as captureCheckpointService } from '@/services/checkpointService'
+import { captureRunPreState, buildRunCommandCheckpoint, type RunPreState } from '@/services/runCommandCheckpoint'
 
 // Wire the LLM cache toggles to user preferences (lazily evaluated per
 // request). Every sendLLMRequest caller — chat, agent loop, arena, subagents,
@@ -2804,6 +2805,7 @@ async function runAgentLoop(
   // finally below can unregister this run's approval/checkpoint hooks.
   let disposeApprovalHook: () => void = () => {}
   let disposeCheckpointHook: () => void = () => {}
+  let disposeRunCmdCheckpointHook: () => void = () => {}
   let disposeSupervisorGuard: () => void = () => {}
 
   // 目标模式监管 guard（见 TARGET_MODE_SUPERVISOR_DENIED 注释）：工具清单里
@@ -3180,14 +3182,42 @@ async function runAgentLoop(
     },
   }))
 
+  // run_command side-effect capture: pre-state (git dirty set + contents) is
+  // taken right before the command runs and keyed by tool call; the post-hook
+  // below diffs the tree afterwards and snapshots whatever the command changed
+  // (formatters / codegen / installers) — the write-tool checkpoint alone
+  // misses those. Best-effort: capture failures just mean no snapshot.
+  const runPreStates = new Map<string, RunPreState>()
+
   disposeCheckpointHook = toolExecutor.registerPreHook(async (tc, ctx) => {
     if (ctx.sessionId !== sessionId) return { allow: true }
     // Snapshot the files a write tool is about to touch (revertable edits).
     // Runs AFTER approval — a rejected call changes nothing, so no snapshot.
     if (CHECKPOINT_TOOLS.has(tc.name)) {
       await captureCheckpoint(sessionId, tc, assistantMsgIdRef.current)
+    } else if (tc.name === 'run_command' && !tc.arguments?.background) {
+      const workDir = String(tc.arguments?.cwd || ctx.projectPath || getWorkspaceRoot() || '')
+      if (workDir) {
+        try {
+          const pre = await captureRunPreState(workDir)
+          if (pre) runPreStates.set(ctx.toolCallId ?? tc.id, pre)
+        } catch { /* run-command checkpoint is best-effort */ }
+      }
     }
     return { allow: true }
+  })
+
+  // Diff the tree after the command and checkpoint the changed files (runs
+  // regardless of command success — a failed command can still half-write).
+  disposeRunCmdCheckpointHook = toolExecutor.registerPostHook(async (tc, result, ctx) => {
+    if (ctx.sessionId !== sessionId || tc.name !== 'run_command') return result
+    const pre = runPreStates.get(ctx.toolCallId ?? tc.id)
+    if (!pre) return result
+    runPreStates.delete(ctx.toolCallId ?? tc.id)
+    try {
+      await buildRunCommandCheckpoint(pre, String(tc.arguments?.command || ''), sessionId, assistantMsgIdRef.current)
+    } catch { /* best-effort */ }
+    return result
   })
 
   // Agent 工具调用轮数上限（设置里可配，默认 0 = 无限）。主流工具
@@ -4077,6 +4107,7 @@ async function runAgentLoop(
     // sessions, so a stale hook would prompt for another run's tool calls.
     disposeApprovalHook()
     disposeCheckpointHook()
+    disposeRunCmdCheckpointHook()
     disposeSupervisorGuard()
     // Drop the wire-log attribution so stray requests (title generation,
     // connection tests) don't log under a stale session.
