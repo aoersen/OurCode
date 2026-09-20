@@ -25,7 +25,7 @@ const ROOTISH_RM_TARGET =
 // phrase a useful reason, which a uniform regex list can't express.
 const CHECKS: Array<(command: string) => DangerFinding | null> = [
   (c) => {
-    const m = /\brm\s+((?:-[a-z]+\s+)+)([^\s|;&]+)\s*$/i.exec(c)
+    const m = /\brm\s+((?:-[a-z]+\s+)+)(?:--no-preserve-root\s+)?([^\s|;&]+)\s*$/i.exec(c)
     if (!m) return null
     const flags = m[1].toLowerCase()
     const hasRecursive = flags.includes('r')
@@ -71,7 +71,7 @@ const CHECKS: Array<(command: string) => DangerFinding | null> = [
   (c) => /\bchmod\s+(-R|-r)\s+777\s+(\/|~|\$HOME)/i.test(c)
     ? { reason: '对根/家目录递归开放全部权限' }
     : null,
-  (c) => /\bdel\s+\/[sq]+\s+C:\\/i.test(c)
+  (c) => /\bdel\s+(\/[sq]+\s+)+\s*C:\\/i.test(c)
     ? { reason: '递归删除盘根（del /s /q）' }
     : null,
 ]

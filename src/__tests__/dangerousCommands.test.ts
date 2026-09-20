@@ -7,7 +7,9 @@ describe('analyzeDangerousCommand', () => {
     expect(analyzeDangerousCommand('rm -r -f ~')).toBeTruthy()
     expect(analyzeDangerousCommand('rm -rf $HOME')).toBeTruthy()
     expect(analyzeDangerousCommand('rm -rf .')).toBeTruthy()
+    expect(analyzeDangerousCommand('rm -rf --no-preserve-root /')).toBeTruthy()
     expect(analyzeDangerousCommand('Remove-Item -Recurse -Force C:\\')).toBeTruthy()
+    expect(analyzeDangerousCommand('del /s /q C:\\')).toBeTruthy()
   })
 
   it('ignores routine workspace removals', () => {
