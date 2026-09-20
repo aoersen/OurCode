@@ -100,4 +100,38 @@ describe('createApprovalPreHook', () => {
     expect(r2).toEqual({ deny: true, reason: '已停止' })
     expect(dialogs).toEqual(['c1']) // c2 never got a dialog
   })
+
+  it('a dangerous command forces the dialog even when every exemption is active', async () => {
+    const onDialog = vi.fn(async () => true)
+    // needsApproval says NO for everything — the full-auto-approve scenario.
+    const hook = makeHook({ needsApproval: () => false, onDialog })
+    const dangerous = { id: 'd1', name: 'run_command', arguments: { command: 'rm -rf /' } } as ToolCall
+    const r = await hook(dangerous, { sessionId: 's1' })
+    expect(r).toEqual({ allow: true })
+    expect(onDialog).toHaveBeenCalledTimes(1)
+    const preview = onDialog.mock.calls[0][1] as string
+    expect(preview).toContain('⚠️ 危险命令')
+  })
+
+  it('a routine command still passes without a dialog under exemptions', async () => {
+    const onDialog = vi.fn(async () => true)
+    const hook = makeHook({ needsApproval: () => false, onDialog })
+    const routine = { id: 'd2', name: 'run_command', arguments: { command: 'npm test' } } as ToolCall
+    const r = await hook(routine, { sessionId: 's1' })
+    expect(r).toEqual({ allow: true })
+    expect(onDialog).not.toHaveBeenCalled()
+  })
+
+  it('reports auto-approved calls only for approval-gated tools', async () => {
+    const onAutoApprove = vi.fn()
+    const hook = makeHook({
+      needsApproval: () => false,
+      requiresApproval: (name) => name.startsWith('write_'),
+      onAutoApprove,
+    })
+    await hook(tc('w1'), { sessionId: 's1' }) // write tool, exempted → counted
+    await hook(tc('r1', 'read_file'), { sessionId: 's1' }) // read-only → not counted
+    expect(onAutoApprove).toHaveBeenCalledTimes(1)
+    expect(onAutoApprove).toHaveBeenCalledWith(expect.objectContaining({ name: 'write_file' }))
+  })
 })

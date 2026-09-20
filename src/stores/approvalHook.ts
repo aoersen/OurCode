@@ -13,6 +13,7 @@
 import type { ToolExecuteContext } from '@/services/tools/ToolExecutor'
 import type { ToolCall } from '@/services/tools/types'
 import { createSerialGate } from '@/utils/serialGate'
+import { analyzeDangerousCommand } from '@/services/tools/dangerousCommands'
 
 export type ApprovalHookOutcome = { allow: true } | { deny: true; reason: string }
 
@@ -22,6 +23,12 @@ export interface ApprovalPreHookOptions {
   batchRejectedRef: { current: Set<string> }
   /** Live approval decision (project edit mode / batch / allowlist). */
   needsApproval: (name: string) => boolean
+  /** Whether the tool is approval-gated by default — drives the auto-approve
+   *  counter (only exempted approval tools count, read-only tools don't). */
+  requiresApproval?: (name: string) => boolean
+  /** Called when an approval-gated tool passes WITHOUT a dialog (edit-mode /
+   *  batch / allowlist exemption) — feeds the auto-approve visibility counter. */
+  onAutoApprove?: (toolCall: ToolCall) => void
   /** Preview text shown in the dialog. */
   getPreview: (toolCall: ToolCall) => string
   /** True once the enclosing run has been aborted — deny without a dialog. */
@@ -44,7 +51,16 @@ export function createApprovalPreHook(opts: ApprovalPreHookOptions): (
     if (ctx.sessionId !== opts.sessionId) return { allow: true }
     // Tools the user batch-rejected this round — deny without a dialog.
     if (opts.batchRejectedRef.current.has(toolCall.id)) return { deny: true, reason: '用户拒绝了此操作' }
-    if (!opts.needsApproval(toolCall.name)) return { allow: true }
+    // Destructive / irreversible / remote-execution shapes force the dialog
+    // even when every exemption (full_access / batch / allowlist) is active —
+    // when all other gates are off, this is the last line of defense.
+    const danger = toolCall.name === 'run_command'
+      ? analyzeDangerousCommand(String(toolCall.arguments?.command || ''))
+      : null
+    if (!opts.needsApproval(toolCall.name) && !danger) {
+      if (opts.requiresApproval?.(toolCall.name)) opts.onAutoApprove?.(toolCall)
+      return { allow: true }
+    }
 
     // Wait for the previous approval dialog before showing ours.
     const release = await gate.enter()
@@ -54,9 +70,12 @@ export function createApprovalPreHook(opts: ApprovalPreHookOptions): (
       // and the batch-reject set may have been updated.
       if (opts.isAborted()) return { deny: true, reason: '已停止' }
       if (opts.batchRejectedRef.current.has(toolCall.id)) return { deny: true, reason: '用户拒绝了此操作' }
-      if (!opts.needsApproval(toolCall.name)) return { allow: true }
+      if (!opts.needsApproval(toolCall.name) && !danger) return { allow: true }
 
-      const approved = await opts.onDialog(toolCall, opts.getPreview(toolCall))
+      const preview = danger
+        ? `${opts.getPreview(toolCall)}\n\n⚠️ 危险命令：${danger.reason}（自动批准豁免对其无效，需人工确认）`
+        : opts.getPreview(toolCall)
+      const approved = await opts.onDialog(toolCall, preview)
       return approved ? { allow: true } : { deny: true, reason: '用户拒绝了此操作' }
     } finally {
       release()

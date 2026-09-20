@@ -85,6 +85,26 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
   )
 }
 
+/**
+ * Auto-approve visibility banner — approval-gated tools that passed WITHOUT a
+ * dialog (edit-mode / batch / allowlist exemption) are counted per session so
+ * silent approvals never stay invisible. Dangerous commands still force the
+ * dialog, and the banner says so.
+ */
+export function AutoApproveBanner({ sessionId }: { sessionId: string }) {
+  const count = useChatStore((s) => s.autoApprovedBySession[sessionId] || 0)
+  const batchApproved = useChatStore((s) => !!s.batchApprovedBySession[sessionId])
+  if (count === 0) return null
+  return (
+    <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+      <span className="material-symbols-outlined text-[14px] leading-none" aria-hidden>auto_awesome</span>
+      <span>
+        本会话已自动批准 {count} 次操作{batchApproved ? '（批量批准进行中）' : ''}——危险命令仍会强制人工确认
+      </span>
+    </div>
+  )
+}
+
 export function PlanCard({ sessionId }: { sessionId: string }) {
   const session = useChatStore((s) => s.sessions.find((x) => x.id === sessionId))
   const approvePlan = useChatStore((s) => s.approvePlan)
