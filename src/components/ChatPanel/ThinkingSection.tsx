@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n/useI18n'
 
 interface ThinkingSectionProps {
   /** 该轮次的思考文本（流式或已提交） */
   thinking?: string
-  /** 运行/流式期间自动展开（defaultExpanded 变 true 时也会展开）；默认收起 */
+  /** 运行/流式期间自动展开，输出结束后自动收起；用户手动点过折叠头/收起按钮
+   *  后一切以用户为准（不再自动展开）。默认收起 */
   defaultExpanded?: boolean
   /** 流式进行中：收起状态下显示「思考中…」脉冲提示而不是首行预览，
    *  避免把内心独白刷屏给用户看；点击仍可展开查看。 */
@@ -19,13 +20,33 @@ interface ThinkingSectionProps {
 export default function ThinkingSection({ thinking, defaultExpanded = false, streaming = false }: ThinkingSectionProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded)
   const t = useI18n()
+  // 用户是否手动点过折叠头/收起按钮 —— 点过之后一切以用户为准，不再自动开合。
+  const userToggledRef = useRef(false)
+  // 是否已经历过一次「运行结束」：结束后自动收起，且之后的运行不再自动展开。
+  const settledRef = useRef(false)
 
-  // 运行中自动展开（defaultExpanded 变 true 时也能生效）；只扩不缩。
+  // 输出期间自动展开，输出结束后自动收起；用户手动点过后以用户为准。
   useEffect(() => {
-    if (defaultExpanded) setIsExpanded(true)
+    if (userToggledRef.current || settledRef.current) return
+    if (defaultExpanded) {
+      setIsExpanded(true)
+    } else {
+      settledRef.current = true
+      setIsExpanded(false)
+    }
   }, [defaultExpanded])
 
   if (!thinking) return null
+
+  const toggle = () => {
+    userToggledRef.current = true
+    setIsExpanded((v) => !v)
+  }
+
+  const collapse = () => {
+    userToggledRef.current = true
+    setIsExpanded(false)
+  }
 
   return (
     /* 思考区 —— 无大框：一行「图标 + 标题 + 箭头」折叠头；收起时思考全部
@@ -33,7 +54,7 @@ export default function ThinkingSection({ thinking, defaultExpanded = false, str
        是什么。样式对齐 code.html 的 thinking 区。 */
     <div className="text-sm">
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={toggle}
         className="w-full flex items-center justify-between gap-2 px-1.5 py-1 text-left cursor-pointer select-none group rounded-md hover:bg-nova-hover/60 transition-colors"
       >
         <span className="flex items-center gap-1.5 min-w-0 text-nova-text-muted">
@@ -66,7 +87,7 @@ export default function ThinkingSection({ thinking, defaultExpanded = false, str
           <div className="mt-2 border-t border-nova-border" />
           <div className="flex justify-center">
             <button
-              onClick={() => setIsExpanded(false)}
+              onClick={collapse}
               className="mt-1.5 flex items-center gap-1 px-2.5 py-1 text-[11px] text-nova-text-muted hover:text-nova-text-secondary hover:bg-nova-hover rounded-md transition-colors select-none"
             >
               <span className="material-symbols-outlined text-[13px] leading-none" aria-hidden>expand_less</span>
