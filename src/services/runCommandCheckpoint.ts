@@ -143,10 +143,11 @@ export async function buildRunCommandCheckpoint(
   sessionId: string,
   messageId?: string,
 ): Promise<Checkpoint | null> {
-  let postDirty = new Map<string, string>()
+  let postDirty: Map<string, string>
   try {
     const statusRes = await window.electronAPI.gitExec(pre.root, ['status', '--porcelain', '-z'])
     if (!statusRes?.success) return null
+    postDirty = new Map<string, string>()
     for (const e of parsePorcelainZ(statusRes.output)) postDirty.set(e.path, e.code)
   } catch {
     return null
