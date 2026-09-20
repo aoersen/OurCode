@@ -9,7 +9,8 @@ import { DeepSeekAdapter } from './adapters/DeepSeekAdapter'
 import { GroqAdapter } from './adapters/GroqAdapter'
 import { buildCacheKey, fetchCachedResponse, shouldCache, storeCachedResponse, CachedResponse } from './responseCache'
 import { classifyLLMError } from './classify'
-import { redactError } from './redact'
+import { redactError, redactSecrets, type RedactSecretsOptions } from './redact'
+import { v4 as uuidv4 } from 'uuid'
 
 const REQUEST_TIMEOUT_MS = 600_000 // 10 min idle (no-data) timeout for LLM streams
 
@@ -84,6 +85,54 @@ export function configureLLMCache(config: LLMCacheConfig): void {
   if (config.anthropicPromptCache1hEnabled) anthropicPromptCache1hEnabled = config.anthropicPromptCache1hEnabled
 }
 
+// ── Wire-log configuration (wired from chatStore, defaults ON) ───────────
+// The wire log records one JSON line per request event — the redacted request
+// body, each attempt's outcome and cache hits — appended to
+// <userData>/wire-logs/<sessionId>.jsonl by the main process. It is the
+// replayable record the usage dashboard cannot provide (usage_events keeps
+// only aggregate metadata). Emission is best-effort and never affects the
+// request path.
+
+/** Session/turn attribution for the wire log (set by the agent loop). */
+export interface WireLogContext {
+  sessionId?: string
+  turnId?: number
+}
+
+interface WireLogConfig {
+  /** Master switch — lazily evaluated per request (default: enabled). */
+  enabled?: () => boolean
+  /** Attribution — chatStore sets its run context before each request. */
+  getContext?: () => WireLogContext
+}
+
+let wireLogEnabled: () => boolean = () => true
+let wireLogContext: () => WireLogContext = () => ({})
+
+/** Wire the master switch + session/turn attribution. */
+export function configureWireLog(config: WireLogConfig): void {
+  if (config.enabled) wireLogEnabled = config.enabled
+  if (config.getContext) wireLogContext = config.getContext
+}
+
+/** Emit one redacted wire-log line. Never throws, never blocks the request. */
+async function emitWireLine(sessionId: string, line: Record<string, unknown>): Promise<void> {
+  try {
+    const api = (window as any).electronAPI
+    if (!api?.wireLogAppend) return
+    await api.wireLogAppend(sessionId, JSON.stringify(line))
+  } catch { /* wire logging is best-effort */ }
+}
+
+/** Serialize + redact a value so logged bodies never leak request secrets. */
+function scrubToJson(value: unknown, secrets: RedactSecretsOptions): unknown | undefined {
+  try {
+    return JSON.parse(redactSecrets(JSON.stringify(value), secrets))
+  } catch {
+    return undefined
+  }
+}
+
 /** Replay a cached response as stream chunks, zeroing usage (no tokens billed). */
 function* replayCached(cached: CachedResponse): Generator<LLMStreamChunk> {
   const marker = { savedTokensIn: cached.tokensIn, savedTokensOut: cached.tokensOut }
@@ -107,6 +156,18 @@ export async function* sendLLMRequest(
   // Trim stray whitespace/newlines so a pasted key can't silently break auth.
   const safeConfig = { ...config, apiKey: (config.apiKey || '').trim() }
 
+  // Wire-log setup — one trace per request; all emission is best-effort.
+  const wireOn = wireLogEnabled()
+  const wctx = wireOn ? wireLogContext() : undefined
+  const wireSession = wctx?.sessionId || ''
+  const traceId = wireOn && wireSession ? uuidv4() : ''
+  const wireSecrets: RedactSecretsOptions = {
+    apiKey: safeConfig.apiKey,
+    baseUrl: safeConfig.baseUrl,
+    customHeaders: safeConfig.customHeaders,
+  }
+  const startedAt = Date.now()
+
   // Client-side response cache: exact-duplicate deterministic requests are
   // replayed locally instead of hitting the API (saves the user's tokens).
   let cacheKey: string | null = null
@@ -114,6 +175,21 @@ export async function* sendLLMRequest(
     cacheKey = await buildCacheKey(req, config.provider)
     const hit = await fetchCachedResponse(cacheKey)
     if (hit) {
+      if (traceId) {
+        void emitWireLine(wireSession, {
+          type: 'cache_hit',
+          traceId,
+          turnId: wctx?.turnId,
+          startedAt,
+          durationMs: Date.now() - startedAt,
+          provider: config.provider,
+          model: req.model,
+          request: scrubToJson(req, wireSecrets),
+          chunks: scrubToJson(hit.chunks, wireSecrets),
+          savedTokensIn: hit.tokensIn,
+          savedTokensOut: hit.tokensOut,
+        })
+      }
       yield* replayCached(hit)
       return
     }
@@ -138,9 +214,22 @@ export async function* sendLLMRequest(
   let tokensIn = 0
   let tokensOut = 0
 
+  if (traceId) {
+    void emitWireLine(wireSession, {
+      type: 'request',
+      traceId,
+      turnId: wctx?.turnId,
+      startedAt,
+      provider: config.provider,
+      model: req.model,
+      request: scrubToJson(reqWithCache, wireSecrets),
+    })
+  }
+
   const maxRetries = retryEnabled() ? Math.max(0, retryMaxRetries()) : 0
 
   for (let attempt = 0; ; attempt++) {
+    const attemptStart = Date.now()
     // A FRESH controller per attempt — the finally below aborts unconditionally,
     // and an aborted signal can't be reused for the retry.
     const controller = new AbortController()
@@ -170,6 +259,20 @@ export async function* sendLLMRequest(
           break
         }
       }
+      if (traceId) {
+        void emitWireLine(wireSession, {
+          type: 'attempt',
+          traceId,
+          attempt,
+          startedAt: attemptStart,
+          durationMs: Date.now() - attemptStart,
+          ok: true,
+          truncated: !completed,
+          tokensIn,
+          tokensOut,
+          chunks: scrubToJson(chunks, wireSecrets),
+        })
+      }
       break // request finished (naturally or via the done chunk)
     } catch (error: any) {
       // API key and custom header values must never surface in an error the
@@ -188,6 +291,18 @@ export async function* sendLLMRequest(
       // partial content — surface the error instead. Context-overflow is never
       // retried: the fix is compaction, not a duplicate request.
       const info = classifyLLMError(err)
+      if (traceId) {
+        void emitWireLine(wireSession, {
+          type: 'attempt',
+          traceId,
+          attempt,
+          startedAt: attemptStart,
+          durationMs: Date.now() - attemptStart,
+          ok: false,
+          error: err.message,
+          retried: chunks.length === 0 && attempt < maxRetries && info.retryable,
+        })
+      }
       if (chunks.length === 0 && attempt < maxRetries && info.retryable) {
         clearTimer()
         await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)))

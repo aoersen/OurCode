@@ -435,6 +435,9 @@ export interface UserPreferences {
    *  agent runs keep their prefix cached across slow tool rounds. Only models
    *  with 1h ephemeral cache support accept the ttl field. */
   anthropicPromptCache1h?: boolean
+  /** Model wire log: replayable redacted request/response lines under
+   *  <userData>/wire-logs/<session>.jsonl (defaults ON). */
+  wireLogEnabled?: boolean
   /** LSP servers by Monaco language id, e.g. { python: "pylsp", go: "gopls -mode stdio" } */
   lspServers?: Record<string, string>
   /** How this app treats inbound cross-session messages (send_message tool):

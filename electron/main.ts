@@ -18,6 +18,7 @@ import { MCPManager, extractMcpText, toMcpToolDefinition } from './services/mcp-
 import { scrubbedSpawnEnv } from './services/env-scrub'
 import { decideNavigation, hasArbitraryNavigation, revokeArbitraryNavigation, type NavigationPolicy } from './services/navigation-guard'
 import { checkVcsArgs, parseGhAuthStatus } from './services/vcs-exec'
+import { WireLogService } from './services/wire-log'
 import {
   browserAct,
   browserClose,
@@ -323,6 +324,7 @@ let store: SQLiteStore
 let backup: BackupService
 let mcp: MCPManager
 let spillStore: SpillStore
+let wireLog: WireLogService
 
 // Language servers by document URI (one per open file)
 const lspServers = new Map<string, LspServer>()
@@ -2240,6 +2242,26 @@ function registerIpcHandlers(): void {
     await spillStore.deleteSession(sessionId)
   })
 
+  // Model wire log — the renderer emits one JSON line per request event; the
+  // main process appends it to <userData>/wire-logs/<session>.jsonl. Best-
+  // effort by design: a logging failure never affects the request path.
+  ipcMain.handle('log:wireAppend', async (_event, sessionId: string, line: string) => {
+    if (typeof sessionId !== 'string' || typeof line !== 'string') return false
+    return wireLog.append(sessionId, line)
+  })
+  ipcMain.handle('log:deleteSession', async (_event, sessionId: string) => {
+    if (typeof sessionId !== 'string') return
+    await wireLog.deleteSession(sessionId)
+  })
+  ipcMain.handle('log:openDir', async () => {
+    const dir = wireLog.root
+    try {
+      await mkdirSync(dir, { recursive: true })
+    } catch { /* the open below still targets the same path */ }
+    const err = await shell.openPath(dir)
+    return err === ''
+  })
+
   // App handlers
   ipcMain.handle('app:getPath', (_event, name: string) => {
     return app.getPath(name as any)
@@ -2402,6 +2424,10 @@ app.whenReady().then(() => {
   // every startup — spills are cache, not user data.
   spillStore = new SpillStore(join(userDataPath, 'spill'))
   void spillStore.sweep()
+  // Model wire log: replayable request/response lines under userData/wire-logs
+  // (swept on startup like spills — logs are diagnostics, not user data).
+  wireLog = new WireLogService(join(userDataPath, 'wire-logs'))
+  void wireLog.sweep()
   // Bundled MCP servers (e.g. the git-server) ship inside the package via
   // extraResources → <resources>/mcp-servers (outside app.asar, so a plain
   // Node child can read them); in dev they live in the repo root.

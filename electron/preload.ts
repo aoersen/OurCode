@@ -208,6 +208,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   spillSave: (sessionId: string, text: string) => ipcRenderer.invoke('spill:save', sessionId, text),
   spillDeleteSession: (sessionId: string) => ipcRenderer.invoke('spill:deleteSession', sessionId),
 
+  // Model wire log (renderer emits, main process appends)
+  wireLogAppend: (sessionId: string, line: string) => ipcRenderer.invoke('log:wireAppend', sessionId, line),
+  wireLogDeleteSession: (sessionId: string) => ipcRenderer.invoke('log:deleteSession', sessionId),
+  wireLogOpenDir: () => ipcRenderer.invoke('log:openDir'),
+
   // Web fetch (web_search / read_url tools)
   webFetch: (url: string, options?: { timeoutMs?: number; maxBytes?: number }) =>
     ipcRenderer.invoke('web:fetch', url, options),

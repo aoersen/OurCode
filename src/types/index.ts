@@ -140,6 +140,11 @@ export interface ElectronAPI {
   spillSave: (sessionId: string, text: string) => Promise<string | null>
   spillDeleteSession: (sessionId: string) => Promise<void>
 
+  // Model wire log (renderer emits, main process appends)
+  wireLogAppend: (sessionId: string, line: string) => Promise<boolean>
+  wireLogDeleteSession: (sessionId: string) => Promise<void>
+  wireLogOpenDir: () => Promise<boolean>
+
   // Web fetch (web_search / read_url tools)
   webFetch: (url: string, options?: { timeoutMs?: number; maxBytes?: number }) => Promise<{
     ok: boolean; status?: number; contentType?: string; finalUrl?: string; text?: string; error?: string

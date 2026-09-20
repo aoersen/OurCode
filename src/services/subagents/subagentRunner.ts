@@ -22,7 +22,7 @@ import { captureCheckpoint } from '@/services/checkpointService'
 import { buildSkillIndex, listSkills } from '@/services/skills/skillManager'
 import { loadAgentDefinition, SubagentGuard, resolveAllowedRoot } from '@/services/subagents/subagentDefinitions'
 import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel, sanitizeModelName } from '@/services/subagents/subagentReport'
-import { useChatStore } from '@/stores/chatStore'
+import { useChatStore, setWireContextForRun } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { getFileContent } from '@/editor/modelRegistry'
@@ -267,6 +267,9 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
       let lastThinkingPush = 0
 
       try {
+        // Attribute the subagent's model requests to the parent session so
+        // they land in the same wire-log file as the main loop's.
+        setWireContextForRun({ sessionId: opts.sessionId })
         for await (const chunk of sendLLMRequest(req, configGroup)) {
           if (opts.abortSignal?.aborted) break
           if (chunk.thinking) {

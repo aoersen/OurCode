@@ -822,6 +822,17 @@ export default function SettingsModal() {
                     <option value={3}>3 次</option>
                   </select>
                 } />
+                <SettingRow label="模型线日志" desc="把每次模型请求（请求体、每次尝试的结果、缓存命中）以脱敏 JSONL 逐行记录到本地 userData/wire-logs —— 调试 agent 轮次时可完整回放" right={
+                  <div className="flex items-center gap-2">
+                    <ToggleButton on={preferences.wireLogEnabled !== false} onClick={() => savePreferences({ wireLogEnabled: preferences.wireLogEnabled === false })} />
+                    <button
+                      onClick={() => { void window.electronAPI.wireLogOpenDir().catch(() => {}) }}
+                      className="px-2.5 py-1 text-xs text-nova-accent bg-nova-accent/10 hover:bg-nova-accent/20 rounded-md transition-colors"
+                    >
+                      打开日志目录
+                    </button>
+                  </div>
+                } />
                 <SettingRow label="工具输出截断上限" desc="MCP / 命令输出等无上限的工具结果超过该字符数时保留首尾并提示分页读取；内置工具自身上限更低，默认不影响现有行为" right={
                   <select value={preferences.toolOutputMaxChars ?? 150000} onChange={(e) => savePreferences({ toolOutputMaxChars: Number(e.target.value) })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">

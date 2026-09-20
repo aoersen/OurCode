@@ -162,6 +162,10 @@ export const DEFAULT_PREFERENCES = {
   aiAutoMemory: true,
   llmResponseCache: true,
   anthropicPromptCache: true,
+  /** Model wire log: append one redacted JSONL line per request event under
+   *  <userData>/wire-logs/<session>.jsonl — the replayable record used to
+   *  debug agent turns (request bytes → retries → response bytes). */
+  wireLogEnabled: true,
   crossSessionInbound: 'accept' as const,
   /** Agent 工具调用轮数上限；0 = 无限（默认）。主流工具不设常态上限，
    *  只在用户主动配置时才加一个防死循环的安全阀。 */

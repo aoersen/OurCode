@@ -12,7 +12,7 @@ import { budgetExceeded, getBudgetUsage, refreshBudgetLimit } from '@/services/t
 import { ensureInitialized, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
 import { t } from '@/i18n'
 import { getFileContent } from '@/editor/modelRegistry'
-import { sendLLMRequest, configureLLMCache, configureLLMRetry } from '@/services/llm/LLMClient'
+import { sendLLMRequest, configureLLMCache, configureLLMRetry, configureWireLog, type WireLogContext } from '@/services/llm/LLMClient'
 import { parseLLMError } from '@/services/llm/errors'
 import { classifyLLMError, isSilentContextOverflow } from '@/services/llm/classify'
 import { redactSecrets } from '@/services/llm/redact'
@@ -63,6 +63,30 @@ configureSecretRedaction(() => {
     ? { apiKey: group.apiKey, baseUrl: group.baseUrl, customHeaders: group.customHeaders }
     : undefined
 })
+
+// ── Model wire-log wiring ────────────────────────────────────────────────
+// Every model request (agent loop, subagents, compaction…) writes one JSONL
+// line per event to <userData>/wire-logs/<session>.jsonl — the replayable
+// request/response record the usage dashboard doesn't keep. The context ref
+// below attributes each request to the session/turn currently running.
+const _wireCtxRef: { current: WireLogContext } = { current: {} }
+let _wireTurnSeq = 0
+configureWireLog({
+  enabled: () => useEditorStore.getState().preferences.wireLogEnabled !== false,
+  getContext: () => _wireCtxRef.current,
+})
+
+/** Attribute the NEXT model request(s) to a session/turn. Cleared by the run
+ *  loop when it settles, so stray callers (title gen, connection tests) never
+ *  inherit a stale session. Subagents call this with their parent session. */
+export function setWireContextForRun(ctx: WireLogContext): void {
+  _wireCtxRef.current = ctx
+}
+
+/** Clear the wire-log attribution (run settled / aborted). */
+export function clearWireContextForRun(): void {
+  _wireCtxRef.current = {}
+}
 
 // Cached git info (refreshed via refreshGitBranch)
 let _cachedGitBranch = ''
@@ -1788,6 +1812,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })
     window.electronAPI.deleteSession(sessionId)
     window.electronAPI.checkpointDelete(sessionId)
+    void window.electronAPI.wireLogDeleteSession(sessionId).catch(() => {})
     _persistedSessionIds.delete(sessionId)
     // Remove the session's spilled tool-output files (best-effort cache cleanup)
     void window.electronAPI.spillDeleteSession(sessionId).catch(() => {})
@@ -3258,6 +3283,9 @@ async function runAgentLoop(
       // The LLM request is about to go out — from here until the first token
       // the wait is entirely the provider's time-to-first-token.
       setRunPhase('waiting')
+      // Attribute the upcoming model request(s) to this session/turn in the
+      // wire log (cleared when the run settles in the finally below).
+      setWireContextForRun({ sessionId, turnId: ++_wireTurnSeq })
       const reqStartedAt = Date.now()
       let reqTokensIn = 0
       let reqTokensOut = 0
@@ -4050,6 +4078,9 @@ async function runAgentLoop(
     disposeApprovalHook()
     disposeCheckpointHook()
     disposeSupervisorGuard()
+    // Drop the wire-log attribution so stray requests (title generation,
+    // connection tests) don't log under a stale session.
+    clearWireContextForRun()
     // Finalize the agent run record (status / counts) for the tasks panel
     if (runId) {
       // Don't let the finally block downgrade an errored run back to 'done' —
