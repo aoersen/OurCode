@@ -1,4 +1,4 @@
-import { useUIStore } from '@/stores/uiStore'
+import { useUIStore, type SidebarTab } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { IS_OFFICE } from '@/utils/windowMode'
 import type { TranslationKey } from '@/i18n'
@@ -14,12 +14,10 @@ const OFFICE_ICON = (
 
 export default function ActivityBar() {
   const activeSidebarTab = useUIStore((s) => s.activeSidebarTab)
-  const setActiveSidebarTab = useUIStore((s) => s.setActiveSidebarTab)
-  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const isSidebarVisible = useUIStore((s) => s.isSidebarVisible)
   const t = useI18n()
 
-  const topIcons: Array<{ key: 'files' | 'git' | 'changes' | 'agent' | 'usage' | 'skills' | 'mcp' | 'office'; titleKey: TranslationKey; icon: JSX.Element }> = [
+  const topIcons: Array<{ key: SidebarTab; titleKey: TranslationKey; icon: JSX.Element }> = [
     // 办公室窗口（一人公司）：顶部最上方放「办公室」图标（从项目工作区回到 3D
     // 视图），位于「代码管理」之上。
     ...(IS_OFFICE
@@ -106,6 +104,17 @@ export default function ActivityBar() {
         </svg>
       ),
     },
+    {
+      key: 'browser',
+      titleKey: 'activityBar.browser' as TranslationKey,
+      icon: (
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18" />
+          <path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z" />
+        </svg>
+      ),
+    },
   ]
 
   // 底部图标。主窗口：设置正上方放「一人公司」入口（点击打开独立办公室窗口）；
@@ -145,17 +154,10 @@ export default function ActivityBar() {
 
   const handleClick = (key: string) => {
     // Sidebar panels (file change history / agent tasks / usage / skills / MCP /
-    // 办公室视图切换): switch tab
-    if (key === 'changes' || key === 'agent' || key === 'usage' || key === 'skills' || key === 'mcp' || key === 'office') {
-      const ui = useUIStore.getState()
-      if (!ui.isSidebarVisible) ui.toggleSidebar()
-      ui.setActiveSidebarTab(key as 'changes' | 'agent' | 'usage' | 'skills' | 'mcp' | 'office')
-      return
-    }
-    if (!isSidebarVisible) {
-      toggleSidebar()
-    }
-    setActiveSidebarTab(key as 'files' | 'git')
+    // 办公室视图切换 / 浏览器): switch tab, revealing the sidebar if hidden.
+    const ui = useUIStore.getState()
+    if (!ui.isSidebarVisible) ui.toggleSidebar()
+    ui.setActiveSidebarTab(key as SidebarTab)
   }
 
   return (

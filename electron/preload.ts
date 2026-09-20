@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { AgentTerminalRun, TerminalRunSnapshot } from '../shared/types'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -145,6 +146,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   termWrite: (id: string, data: string) => ipcRenderer.invoke(IPC_CHANNELS.TERM_WRITE, id, data),
   termResize: (id: string, cols: number, rows: number) => ipcRenderer.invoke(IPC_CHANNELS.TERM_RESIZE, id, cols, rows),
   termDispose: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TERM_DISPOSE, id),
+  // Agent-owned runs: started/inspected/stopped through the same pty layer the
+  // integrated terminal uses, so a dev server survives past one tool call.
+  termRunAgent: (id: string, command: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERM_RUN_AGENT, id, command, cwd),
+  termOutput: (id: string, tailChars?: number): Promise<TerminalRunSnapshot | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERM_OUTPUT, id, tailChars),
+  termKill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TERM_KILL, id),
+  termAttach: (id: string): Promise<{ command: string; running: boolean; output: string } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERM_ATTACH, id),
+  termList: (): Promise<AgentTerminalRun[]> => ipcRenderer.invoke(IPC_CHANNELS.TERM_LIST),
   onTermData: (id: string, callback: (data: string) => void) => {
     const channel = `${IPC_CHANNELS.TERM_DATA}:${id}`
     const listener = (_event: any, data: string) => callback(data)
@@ -167,6 +178,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
   gitExec: (cwd: string, args: string[], input?: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_EXEC, cwd, args, input),
   // Git with untrimmed stdout (byte-exact blob reads for the central diff)
   gitExecRaw: (cwd: string, args: string[], input?: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_EXEC_RAW, cwd, args, input),
+
+  // GitHub CLI — PR workflow through the locally installed `gh` (its own
+  // credentials, no account built into the app)
+  ghExec: (cwd: string, args: string[]) => ipcRenderer.invoke(IPC_CHANNELS.GH_EXEC, cwd, args),
+  ghStatus: (cwd: string) => ipcRenderer.invoke(IPC_CHANNELS.GH_STATUS, cwd),
+
+  // Agent browser session — one shared http(s) page the assistant can drive
+  browserNavigate: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_NAVIGATE, url),
+  browserState: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_STATE),
+  browserConsole: (clear?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CONSOLE, clear),
+  browserPageText: (maxChars?: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PAGE_TEXT, maxChars),
+  browserScreenshot: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SCREENSHOT),
+  browserAct: (action: string, opts?: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_ACT, action, opts),
+  browserHistory: (step: 'back' | 'forward' | 'reload') => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY, step),
+  browserSetVisible: (visible: boolean) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_VISIBLE, visible),
+  browserClose: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CLOSE),
+  onBrowserEvent: (callback: (payload: unknown) => void) => {
+    const listener = (_event: any, payload: any) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.BROWSER_EVENT, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_EVENT, listener) }
+  },
 
   // Shell
   shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number }) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_EXEC, command, cwd, options),

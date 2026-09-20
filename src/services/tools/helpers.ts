@@ -4,6 +4,27 @@
  */
 import { loadIgnorePatterns, isIgnoredPath } from './context'
 import { useUIStore } from '@/stores/uiStore'
+import type { ToolImageResult } from './types'
+import { parseImageDataUrl } from '@/utils/imageAttach'
+import {
+  branchPushState,
+  buildPrBody,
+  commentPullRequest,
+  createPullRequest,
+  fetchGhAvailability,
+  formatPullRequestForModel,
+  listPullRequests,
+  viewPullRequest,
+} from '@/services/github'
+import {
+  DEFAULT_TAIL_CHARS,
+  formatRunOutput,
+  latestAgentRun,
+  listAgentRuns,
+  readAgentRun,
+  startAgentRun,
+  stopAgentRun,
+} from '@/services/terminalRuns'
 
 const EXCLUDED_DIRS = ['node_modules', '.git', 'dist', 'build', 'out', '.next', '__pycache__', 'vendor', '.vscode', '.idea']
 
@@ -560,7 +581,6 @@ export async function deleteFileOrDir(path: string): Promise<string> {
   return `Deleted: ${path}`
 }
 
-/** Run a shell command */
 /** Run a shell command. timeoutMs 可选（默认主进程 30s）——构建/测试等长命令
  *  传更大值（如 120000），避免被默认超时中断后误判成命令失败。 */
 export async function runCommand(command: string, cwd?: string, timeoutMs?: number): Promise<string> {
@@ -571,6 +591,50 @@ export async function runCommand(command: string, cwd?: string, timeoutMs?: numb
     return result.output
   }
   return `Error: ${result.error}${result.output ? '\n' + result.output : ''}`
+}
+
+/**
+ * 后台命令：在集成终端的 pty 层里启动，工具立即返回 terminalId。
+ *
+ * 前台 run_command 会等进程退出、并在超时后把它杀掉——dev server、watch、需要
+ * 交互输入的 Installer 必须走这里。进程由主进程持有，终端标签关掉也不影响它。
+ */
+export async function runCommandBackground(command: string, cwd?: string): Promise<string> {
+  const workDir = cwd || workspaceRoot()
+  try {
+    const run = await startAgentRun(command, workDir || undefined)
+    return (
+      `已在集成终端后台启动：${command}\n` +
+      `terminalId = ${run.id}\n` +
+      '进程仍在运行——用 read_terminal_output 读取输出，用 stop_terminal 结束它。'
+    )
+  } catch (error) {
+    return `Error: 后台命令启动失败：${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+/** 读取某个后台终端会话最近的输出（不传 id 时取最近启动的那个）。 */
+export async function readTerminalOutput(terminalId?: string, maxLines = 200): Promise<string> {
+  const wanted = String(terminalId ?? '').trim()
+  const id = wanted || (await latestAgentRun())?.id
+  if (!id) return 'Error: 没有后台终端会话。先用 run_command 的 background=true 启动一个。'
+  const snapshot = await readAgentRun(id, DEFAULT_TAIL_CHARS)
+  if (!snapshot) {
+    const known = (await listAgentRuns()).map((run) => run.id)
+    return `Error: 找不到终端会话 ${id}（进程可能已被回收，或 id 写错）。当前后台会话：${known.join('、') || '(无)'}`
+  }
+  return formatRunOutput({ id, command: snapshot.command }, snapshot, { maxLines })
+}
+
+/** 结束一个后台终端会话——只限助手自己启动的，用户手动开的终端不受影响。 */
+export async function stopTerminal(terminalId?: string): Promise<string> {
+  const id = String(terminalId ?? '').trim() || (await latestAgentRun())?.id
+  if (!id) return 'Error: 没有可结束的后台终端会话。'
+  const killed = await stopAgentRun(id)
+  if (!killed) {
+    return `Error: ${id} 不是由助手启动的终端会话，无法停止（用户自己打开的终端不受本工具影响）。`
+  }
+  return `已结束后台终端会话 ${id}`
 }
 
 /**
@@ -725,4 +789,121 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+}
+
+// ── 浏览器会话（对标 Cursor 的 integrated browser）────────────────────────────
+// 主进程持有一个隐藏 http(s) 页面，助手通过这四个工具完成「改完代码 → 打开页面
+// → 看控制台/截图 → 再改」的闭环。终端只能证明进程活着，证明不了页面渲染对了。
+
+/** 打开（或跳转）页面并回读关键信息——省掉一次「navigate 后再读控制台」的往返。 */
+export async function browserNavigateTool(url: string): Promise<string> {
+  const res = await window.electronAPI.browserNavigate(String(url ?? ''))
+  const s = res.state
+  const head = `URL: ${s.url || '(未知)'}\n标题: ${s.title || '(无)'}${s.loading ? '\n（加载超时，可能仍在加载）' : ''}`
+  if (!res.ok) return `Error: ${res.error || '导航失败'}\n${head}`
+  return `${head}\n下一步用 browser_read_console 看有没有报错，必要时 browser_screenshot 看图。`
+}
+
+/** 控制台/页面错误。默认只读不清空——反复轮询不该把错误记录抹掉。 */
+export async function browserReadConsoleTool(opts: { clear?: boolean; includePageText?: boolean } = {}): Promise<string> {
+  const dump = await window.electronAPI.browserConsole(opts.clear === true)
+  const parts = [dump.entries.length ? dump.text : '(控制台无输出)']
+  if (opts.includePageText) {
+    const page = await window.electronAPI.browserPageText()
+    parts.push(page.ok ? `页面可见文本:\n${page.text}` : `读取页面文本失败：${page.error}`)
+  }
+  return parts.join('\n')
+}
+
+/** 截图——图片走 ToolImageResult，由 chatStore 作为紧随其后的 user 图片消息交给模型。 */
+export async function browserScreenshotTool(): Promise<string | ToolImageResult> {
+  const res = await window.electronAPI.browserScreenshot()
+  if (!res.ok || !res.dataUrl) return `Error: ${res.error || '截图失败'}`
+  const image = parseImageDataUrl(res.dataUrl, res.mimeType || 'image/png')
+  return {
+    text: `已截取当前页面（${res.url || '未知地址'}），图片随本结果附上。`,
+    images: [image],
+  }
+}
+
+/** 页面交互：点击 / 输入 / 按键 / 滚动 / 等待。 */
+export async function browserActTool(
+  action: string,
+  opts: { selector?: string; text?: string; key?: string; ms?: number } = {},
+): Promise<string> {
+  const allowed = ['click', 'type', 'press', 'scroll', 'wait']
+  if (!allowed.includes(action)) return `Error: 不支持的 action：${action}（可用：${allowed.join('、')}）`
+  if ((action === 'click' || action === 'type') && !String(opts.selector ?? '').trim()) {
+    return `Error: ${action} 需要 selector`
+  }
+  const res = await window.electronAPI.browserAct(action as never, opts)
+  if (!res.ok) return `Error: ${res.error || '操作失败'}`
+  const loaded = res.state.loading ? '（页面仍在加载，稍后用 browser_read_console 确认结果）' : ''
+  return `${res.detail || '已执行'}\nURL: ${res.state.url}${loaded}`
+}
+
+// ── GitHub PR（gh CLI）───────────────────────────────────────────────────────
+
+/** One tool for the whole PR lifecycle, action-switched — the model needs the
+ *  verbs, not five tool slots. */
+export async function githubPrTool(
+  action: string,
+  args: { number?: number; title?: string; body?: string; base?: string; draft?: boolean; comment?: string },
+): Promise<string> {
+  const availability = await fetchGhAvailability()
+  if (!availability.installed) {
+    return 'Error: 未安装 GitHub CLI（gh）。PR 功能依赖本机的 gh，安装后重试；不要用 run_command 猜其它命令。'
+  }
+  if (!availability.authed) {
+    return 'Error: gh 未登录。请让用户在终端执行 gh auth login（交互式，助手无法代做）。'
+  }
+  switch (action) {
+    case 'list': {
+      const list = await listPullRequests(15)
+      if (!list.ok) return `Error: ${list.error}`
+      if (!list.data.length) return '该仓库没有打开中的 PR'
+      return list.data
+        .map((pr) => `#${pr.number} [${pr.isDraft ? 'draft' : pr.state}] ${pr.title} (${pr.headRefName} → ${pr.baseRefName}) ${pr.url}`)
+        .join('\n')
+    }
+    case 'view': {
+      const viewed = await viewPullRequest(args.number)
+      if (!viewed.ok) return viewed.notFound ? `当前分支没有 PR。可用 create 建一个（先用 git_push 推送分支）。` : `Error: ${viewed.error}`
+      return formatPullRequestForModel(viewed.data)
+    }
+    case 'create': {
+      if (!String(args.title ?? '').trim()) return 'Error: create 需要 title'
+      // Upstream state is only a hint: `git push origin x` (no -u) leaves no
+      // upstream while the branch IS on the remote, and gh would then be
+      // refused a create it could have done. gh's own error is the authority.
+      const push = await branchPushState()
+      const pushHint = push.hasUpstream
+        ? (push.ahead > 0 ? `（提醒：${push.branch} 还有 ${push.ahead} 个提交未推送）` : '')
+        : `（提醒：${push.branch} 没有跟踪上游，若远端没有该分支需先 git_push）`
+      let body = String(args.body ?? '').trim()
+      if (!body) {
+        // Same default the panel uses: the branch's own commit subjects, so a
+        // model that skips writing a description still opens a reviewable PR.
+        const subjects = await runGit(['log', '-8', '--format=%s'])
+        const stat = await runGit(['diff', 'HEAD', '--stat'])
+        body = buildPrBody(subjects.split('\n').filter(Boolean), stat.startsWith('Error') ? '' : stat)
+      }
+      const created = await createPullRequest({
+        title: args.title!.trim(),
+        body,
+        base: args.base,
+        draft: args.draft === true,
+      })
+      return created.ok ? `PR 已创建：${created.data.url}${pushHint}` : `Error: ${created.error}${pushHint}`
+    }
+    case 'comment': {
+      if (!args.number) return 'Error: comment 需要 number'
+      const comment = String(args.comment ?? '').trim()
+      if (!comment) return 'Error: comment 需要 comment 文本'
+      const res = await commentPullRequest(args.number, comment)
+      return res.ok ? `已在 PR #${args.number} 发表评论` : `Error: ${res.error}`
+    }
+    default:
+      return `Error: 不支持的 action：${action}（可用：list、view、create、comment）`
+  }
 }

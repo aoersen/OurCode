@@ -16,6 +16,7 @@ import { useShortcutStore } from './stores/shortcutStore'
 import { ensureProblemsSubscription, useProblemsStore } from './stores/problemsStore'
 import { ensureLspDiagnosticsSubscription } from './services/lsp/lspClient'
 import { ensureDebugEventSubscription } from './stores/debugStore'
+import { ensureBrowserSubscription } from './stores/browserStore'
 import { registerCoreCommands } from './services/commands/coreCommands'
 import { setLocale, resolveLocale, getSystemLocale, type LanguagePreference } from './i18n'
 import { IS_OFFICE } from './utils/windowMode'
@@ -102,6 +103,8 @@ export default function App() {
       ensureLspDiagnosticsSubscription()
       // Debug Adapter Protocol events (single session)
       ensureDebugEventSubscription()
+      // Agent browser session mirror (console + page state) for the Browser panel
+      ensureBrowserSubscription()
       setReady(true)
       if (!hasCompleted) {
         setShowOnboarding(true)

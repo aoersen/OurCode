@@ -24,11 +24,24 @@ function applyThemeColor(color: string) {
   root.style.setProperty('--accent-purple', color)
 }
 
+/** Sidebar pages, keyed by the activity-bar icon. Owned as one type so the
+ *  store, the bar and the panel switch cannot drift apart. */
+export type SidebarTab =
+  | 'files'
+  | 'git'
+  | 'changes'
+  | 'agent'
+  | 'usage'
+  | 'skills'
+  | 'mcp'
+  | 'office'
+  | 'browser'
+
 interface UIState {
   // Sidebar
   isSidebarVisible: boolean
   sidebarWidth: number
-  activeSidebarTab: 'files' | 'git' | 'changes' | 'agent' | 'usage' | 'skills' | 'mcp' | 'office'
+  activeSidebarTab: SidebarTab
   rootPath: string | null
   recentProjects: string[]
   /** Last time each recent project was opened (ms epoch) — lets the project
@@ -120,7 +133,7 @@ interface UIState {
   // Actions
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
-  setActiveSidebarTab: (tab: 'files' | 'git' | 'changes' | 'agent' | 'usage' | 'skills' | 'mcp' | 'office') => void
+  setActiveSidebarTab: (tab: SidebarTab) => void
   setRootPath: (path: string | null) => void
   /** Remove a project from the list ("从列表中移除") — its sessions stay bound
    *  and reappear when the project is re-opened. Callers must ALSO roll the

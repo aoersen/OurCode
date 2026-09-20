@@ -6,6 +6,7 @@ import UsagePanel from './UsagePanel'
 import SkillPanel from '../Skills/SkillPanel'
 import McpPanel from '../Mcp/McpPanel'
 import GitPanel from '../Git/GitPanel'
+import BrowserPanel from '../Browser/BrowserPanel'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 
@@ -167,6 +168,8 @@ export default function Sidebar() {
           <SkillPanel />
         ) : activeSidebarTab === 'mcp' ? (
           <McpPanel />
+        ) : activeSidebarTab === 'browser' ? (
+          <BrowserPanel />
         ) : null}
       </div>
     </div>

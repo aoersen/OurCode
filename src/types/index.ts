@@ -97,6 +97,11 @@ export interface ElectronAPI {
   termWrite: (id: string, data: string) => Promise<void>
   termResize: (id: string, cols: number, rows: number) => Promise<void>
   termDispose: (id: string) => Promise<void>
+  termRunAgent: (id: string, command: string, cwd?: string) => Promise<void>
+  termOutput: (id: string, tailChars?: number) => Promise<import('@shared/types').TerminalRunSnapshot | null>
+  termKill: (id: string) => Promise<boolean>
+  termAttach: (id: string) => Promise<{ command: string; running: boolean; output: string } | null>
+  termList: () => Promise<import('@shared/types').AgentTerminalRun[]>
   onTermData: (id: string, callback: (data: string) => void) => () => void
   onTermExit: (id: string, callback: (code: number) => void) => () => void
 
@@ -108,6 +113,25 @@ export interface ElectronAPI {
   gitExec: (cwd: string, args: string[], input?: string) => Promise<{ success: boolean; output: string; error?: string }>
   /** gitExec variant whose stdout is returned untrimmed (byte-exact blob reads). */
   gitExecRaw: (cwd: string, args: string[], input?: string) => Promise<{ success: boolean; output: string; error?: string }>
+
+  // GitHub CLI (PR workflow) — runs the user's own `gh`, allowlisted subcommands only
+  ghExec: (cwd: string, args: string[]) => Promise<{ success: boolean; output: string; error?: string }>
+  ghStatus: (cwd: string) => Promise<{
+    installed: boolean; authed: boolean; host?: string; user?: string; error?: string; raw?: string
+  }>
+
+  // Agent browser session
+  browserNavigate: (url: string) => Promise<{ ok: boolean; state: import('@shared/types').BrowserSessionState; error?: string }>
+  browserState: () => Promise<import('@shared/types').BrowserSessionState>
+  browserConsole: (clear?: boolean) => Promise<{ entries: import('@shared/types').BrowserConsoleEntry[]; text: string }>
+  browserPageText: (maxChars?: number) => Promise<{ ok: boolean; error?: string; title?: string; url?: string; text?: string }>
+  browserScreenshot: () => Promise<{ ok: boolean; error?: string; url?: string; dataUrl?: string; mimeType?: string }>
+  browserAct: (action: import('@shared/types').BrowserAction, opts?: import('@shared/types').BrowserActOptions) =>
+    Promise<import('@shared/types').BrowserActResult & { state: import('@shared/types').BrowserSessionState }>
+  browserHistory: (step: 'back' | 'forward' | 'reload') => Promise<import('@shared/types').BrowserSessionState>
+  browserSetVisible: (visible: boolean) => Promise<import('@shared/types').BrowserSessionState>
+  browserClose: () => Promise<void>
+  onBrowserEvent: (callback: (payload: import('@shared/types').BrowserEvent) => void) => () => void
 
   // Shell
   shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number }) => Promise<{ success: boolean; output: string; error?: string }>

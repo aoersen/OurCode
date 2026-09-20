@@ -9,6 +9,7 @@ import type { UsageEvent, UsageEventCategory } from '@/types'
 import { truncateToolOutput, ToolOutputLimits, shouldSpill, buildSpillPreview } from './truncate'
 import { runWithTimeout } from './withTimeout'
 import { redactSecrets, type RedactSecretsOptions } from '@/services/llm/redact'
+import { writeToolPaths } from './writePaths'
 
 /** Execution context for one tool call (falls back to the shared session context) */
 export interface ToolExecuteContext {
@@ -157,11 +158,7 @@ export class ToolExecutor {
     // enforced when a session context exists.
     this.registerGuard(async (toolCall, ctx) => {
       if (!READ_GUARD_TOOLS.has(toolCall.name) || !ctx.sessionId) return undefined
-      const targets = toolCall.name === 'multi_edit_file'
-        ? (Array.isArray(toolCall.arguments?.edits) ? toolCall.arguments.edits : [])
-            .map((e: any) => String(e?.path || '').trim())
-            .filter(Boolean)
-        : [String(toolCall.arguments?.path || '')]
+      const targets = writeToolPaths(toolCall.name, toolCall.arguments)
       for (const targetPath of targets) {
         if (targetPath && !this.hasReadFile(ctx.sessionId, targetPath) && await this.fileExists(targetPath)) {
           return `Error: File has not been read yet. Read it first before writing to it.（文件尚未读取，请先调用 read_file 读取后再写入）: ${targetPath}`
@@ -490,13 +487,17 @@ export class ToolExecutor {
     try {
       // The around-hook stage already composed the deadline + Stop signal into
       // ctx.abortSignal for tools with a timeoutMs; forward it unchanged.
-      const result = await tool.execute(toolCall.arguments, {
+      const raw = await tool.execute(toolCall.arguments, {
         sessionId: ctx.sessionId,
         projectPath: ctx.projectPath,
         toolCallId: ctx.toolCallId ?? toolCall.id,
         abortSignal: ctx.abortSignal,
       })
-      return { toolCallId: toolCall.id, name: toolCall.name, result }
+      // A tool may return { text, images } instead of a string (browser_screenshot).
+      if (typeof raw === 'string') {
+        return { toolCallId: toolCall.id, name: toolCall.name, result: raw }
+      }
+      return { toolCallId: toolCall.id, name: toolCall.name, result: raw.text, images: raw.images }
     } catch (error: any) {
       return {
         toolCallId: toolCall.id,
@@ -540,7 +541,7 @@ export class ToolExecutor {
       case 'delete_file':
         return `Delete: ${args.path}`
       case 'run_command':
-        return `Run: ${args.command}\nIn: ${args.cwd || '(project root)'}`
+        return `Run: ${args.command}\nIn: ${args.cwd || '(project root)'}${args.background ? '\n（在集成终端后台运行，不会等待它退出）' : ''}`
       case 'git_add':
         return `git add ${args.path ? `-- ${args.path}` : '-A (全部变更)'}`
       case 'git_commit':

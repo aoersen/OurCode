@@ -283,6 +283,16 @@ export interface ChatError {
 }
 
 // Chat Message
+/** An image the user attached to a message. `dataBase64` is the raw payload
+ *  without the `data:` URL prefix; it travels to vision-capable models and is
+ *  persisted with the message so a rebuilt history keeps its attachments. */
+export interface MessageAttachment {
+  id: string
+  name: string
+  mimeType: string
+  dataBase64: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -290,6 +300,7 @@ export interface ChatMessage {
   sortOrder: number
   contextFiles: string[]
   tokenCount: number
+  attachments?: MessageAttachment[]
   thinking?: string
   editedAt?: number
   createdAt: number
@@ -458,6 +469,9 @@ export interface LLMMessage {
   thinking?: string
   toolCalls?: LLMToolCall[]
   toolCallId?: string
+  /** Images sent alongside `content` on this turn (user role only). Each
+   *  adapter maps these to its own multimodal part type. */
+  images?: Array<{ mimeType: string; dataBase64: string }>
 }
 
 // Tool definition for LLM function calling
@@ -680,3 +694,74 @@ export interface OfficeAgentState {
   progress: number // 0-100
   logs: OfficeLog[]
 }
+
+/** One agent-owned pty run, as the main process reports it through `term:list`. */
+export interface AgentTerminalRun {
+  id: string
+  command: string
+  running: boolean
+  exitCode: number | null
+}
+
+/** What the main process knows about one pty run — an integrated-terminal tab
+ *  or a command the assistant started. `output` is the raw pty stream (ANSI
+ *  sequences included); stripping is the reader's job. */
+export interface TerminalRunSnapshot {
+  output: string
+  /** True when the stream was cut to the requested tail */
+  truncated: boolean
+  running: boolean
+  exitCode: number | null
+  command: string
+}
+
+// ── Agent browser session ───────────────────────────────────────────────────
+// One shared, hidden webContents that both the UI and the assistant drive, so
+// "the agent looked at the page" and "what the user sees in the Browser panel"
+// are the same thing. See electron/services/browser-session.ts.
+
+/** One captured console/error line from the browsed page. */
+export interface BrowserConsoleEntry {
+  level: 'verbose' | 'info' | 'warning' | 'error'
+  text: string
+  /** Source URL + line, when the page reported one. */
+  source?: string
+  at: number
+}
+
+/** Observable state of the browser session, pushed to the renderer on change. */
+export interface BrowserSessionState {
+  url: string
+  title: string
+  loading: boolean
+  /** Whether the session is surfaced as a visible window (user chose "显示"). */
+  visible: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  /** Last main-frame load failure (`did-fail-load`), cleared on next navigation. */
+  lastError?: string
+}
+
+export type BrowserAction = 'click' | 'type' | 'press' | 'scroll' | 'wait'
+
+/** Arguments for one in-page interaction. `selector` is a CSS selector; an
+ *  empty one means "the focused element" (press) or is rejected (click/type). */
+export interface BrowserActOptions {
+  selector?: string
+  text?: string
+  key?: string
+  ms?: number
+}
+
+export interface BrowserActResult {
+  ok: boolean
+  error?: string
+  /** What the page looked like after the action (title + url), when known. */
+  detail?: string
+}
+
+/** Pushed from the main process whenever the session changes (navigation, title,
+ *  or one new console line). */
+export type BrowserEvent =
+  | { type: 'state'; state: BrowserSessionState }
+  | { type: 'console'; entry: BrowserConsoleEntry }

@@ -86,6 +86,13 @@ export const IPC_CHANNELS = {
   TERM_DATA: 'term:data',
   TERM_EXIT: 'term:exit',
   TERM_DISPOSE: 'term:dispose',
+  // Agent-owned pty runs: same layer as the integrated terminal, but the
+  // assistant starts them, reads their output and can stop them.
+  TERM_RUN_AGENT: 'term:runAgent',
+  TERM_OUTPUT: 'term:output',
+  TERM_KILL: 'term:kill',
+  TERM_ATTACH: 'term:attach',
+  TERM_LIST: 'term:list',
 
   // Search
   SEARCH_IN_FILES: 'search:inFiles',
@@ -96,12 +103,29 @@ export const IPC_CHANNELS = {
   // content (`git show :file` / `git show HEAD:file`) is byte-exact for diffs.
   GIT_EXEC_RAW: 'git:execRaw',
 
+  // GitHub CLI — the PR layer (list / create / read review comments). Drives the
+  // local `gh` binary, so it inherits whatever account `gh auth login` set up.
+  GH_EXEC: 'gh:exec',
+  GH_STATUS: 'gh:status',
+
   // Shell
   SHELL_EXEC: 'shell:exec',
 
   // File preview (ourcode-file:// live preview buffers)
   PREVIEW_SET: 'preview:set',
   PREVIEW_CLEAR: 'preview:clear',
+
+  // Agent browser session — navigate / read console / screenshot / act
+  BROWSER_NAVIGATE: 'browser:navigate',
+  BROWSER_STATE: 'browser:state',
+  BROWSER_CONSOLE: 'browser:console',
+  BROWSER_PAGE_TEXT: 'browser:pageText',
+  BROWSER_SCREENSHOT: 'browser:screenshot',
+  BROWSER_ACT: 'browser:act',
+  BROWSER_HISTORY: 'browser:history',
+  BROWSER_VISIBLE: 'browser:visible',
+  BROWSER_CLOSE: 'browser:close',
+  BROWSER_EVENT: 'browser:event',
 
   // Auto Update
   UPDATE_CHECK: 'update:check',

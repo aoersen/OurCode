@@ -5,13 +5,9 @@ import { useConfigStore } from '@/stores/configStore'
 import { sendLLMRequest } from '@/services/llm/LLMClient'
 import { runLifeguardCheck, LifeguardFinding } from '@/services/lifeguard'
 import { fetchGitDiffSides, onGitChanged, runGitCommand as gitRun } from '@/services/git'
+import { parseGitStatusPorcelain, committableFiles, conflictedFiles, type GitStatusEntry } from '@/utils/gitStatus'
+import PullRequestSection from './PullRequestSection'
 import { useI18n } from '@/i18n/useI18n'
-
-interface GitStatus {
-  file: string
-  status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked'
-  staged: boolean
-}
 
 interface GitCommit {
   hash: string
@@ -21,7 +17,7 @@ interface GitCommit {
 }
 
 export default function GitPanel() {
-  const [gitStatus, setGitStatus] = useState<GitStatus[]>([])
+  const [gitStatus, setGitStatus] = useState<GitStatusEntry[]>([])
   const [gitBranch, setGitBranch] = useState('')
   const [commitMessage, setCommitMessage] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -29,7 +25,24 @@ export default function GitPanel() {
   const [lastCommit, setLastCommit] = useState<GitCommit | null>(null)
   const [showLog, setShowLog] = useState(false)
   const [generatingCommit, setGeneratingCommit] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
   const t = useI18n()
+  const showNotification = useUIStore((s) => s.showNotification)
+
+  /** Report a failed git operation where the user will see it. Before this,
+   *  push/pull failures went to console.error only, so the button looked like
+   *  it had done nothing at all. */
+  const report = useCallback(
+    (label: string, result: { success: boolean; error?: string; output?: string }) => {
+      if (result.success) {
+        const detail = (result.output || '').split('\n').filter(Boolean).slice(-1)[0]
+        showNotification(detail ? `${label}：${detail}` : `${label}完成`, 'success')
+        return
+      }
+      showNotification(`${label}失败：${(result.error || '未知错误').split('\n')[0]}`, 'error', { duration: 10_000 })
+    },
+    [showNotification],
+  )
 
   // Select the ACTION only — a whole-store subscription would re-render the
   // git panel on every editorStore change (each cursor move / dirty toggle
@@ -65,34 +78,7 @@ export default function GitPanel() {
 
       // Get status with porcelain format
       const statusResult = await runGitCommand(['status', '--porcelain=v1'])
-      if (statusResult.success && statusResult.output) {
-        const lines = statusResult.output.split('\n').filter(Boolean)
-        const statuses: GitStatus[] = lines.map((line) => {
-          const indexStatus = line[0]
-          const workTreeStatus = line[1]
-          const filePath = line.slice(3).replace(/^"|"$/g, '') // Remove quotes if present
-
-          let status: GitStatus['status'] = 'modified'
-          const staged = indexStatus !== ' ' && indexStatus !== '?'
-
-          if (indexStatus === '?' && workTreeStatus === '?') {
-            status = 'untracked'
-          } else if (indexStatus === 'A' || workTreeStatus === 'A') {
-            status = 'added'
-          } else if (indexStatus === 'D' || workTreeStatus === 'D') {
-            status = 'deleted'
-          } else if (indexStatus === 'R' || workTreeStatus === 'R') {
-            status = 'renamed'
-          } else {
-            status = 'modified'
-          }
-
-          return { file: filePath, status, staged }
-        })
-        setGitStatus(statuses)
-      } else {
-        setGitStatus([])
-      }
+      setGitStatus(statusResult.success ? parseGitStatusPorcelain(statusResult.output) : [])
     } catch (error) {
       console.error('获取 Git 状态失败:', error)
       setGitStatus([])
@@ -146,18 +132,30 @@ export default function GitPanel() {
   }
 
   const handleCommit = async () => {
-    if (!commitMessage.trim()) return
-
-    // Stage all changes first
-    await runGitCommand(['add', '-A'])
-    const result = await runGitCommand(['commit', '-m', commitMessage.trim()])
-
-    if (result.success) {
-      setCommitMessage('')
-      refreshStatus()
-      setLifeguardFindings([])
-    } else {
-      console.error('提交失败:', result.error)
+    const message = commitMessage.trim()
+    if (!message) return
+    // Commit exactly what is staged. This used to run `add -A` first, which
+    // silently swept untracked files (and whatever else sat in the worktree)
+    // into the commit — including right after the user deliberately unstaged
+    // something in this panel.
+    const staged = committableFiles(gitStatus)
+    if (!staged.length) {
+      showNotification(t('git.nothingStaged'), 'warning')
+      return
+    }
+    setBusy('commit')
+    try {
+      const result = await runGitCommand(['commit', '-m', message])
+      if (result.success) {
+        setCommitMessage('')
+        setLifeguardFindings([])
+        refreshStatus()
+        report(t('git.committed'), result)
+      } else {
+        report(t('git.commitFailed'), result)
+      }
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -193,18 +191,96 @@ export default function GitPanel() {
   }
 
   const handlePush = async () => {
-    const result = await runGitCommand(['push'])
-    if (!result.success) {
-      console.error('推送失败:', result.error)
+    setBusy('push')
+    try {
+      // -u so a first push of a new branch actually creates the remote ref;
+      // without it `git push` fails on branch-name mismatches and the user had
+      // no idea (the error went to console.error).
+      const result = await runGitCommand(['push', '-u', 'origin', 'HEAD'])
+      report(t('git.push'), result)
+      if (result.success) refreshStatus()
+    } finally {
+      setBusy(null)
     }
   }
 
   const handlePull = async () => {
-    const result = await runGitCommand(['pull'])
-    if (!result.success) {
-      console.error('拉取失败:', result.error)
+    setBusy('pull')
+    try {
+      const result = await runGitCommand(['pull'])
+      report(t('git.pull'), result)
+      refreshStatus()
+    } finally {
+      setBusy(null)
     }
-    refreshStatus()
+  }
+
+  const handleFetch = async () => {
+    setBusy('fetch')
+    try {
+      const result = await runGitCommand(['fetch', '--all', '--prune'])
+      report(t('git.fetch'), result)
+      refreshStatus()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleStash = async () => {
+    setBusy('stash')
+    try {
+      const result = await runGitCommand(['stash', 'push', '--include-untracked'])
+      report(t('git.stash'), result)
+      refreshStatus()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleStashPop = async () => {
+    setBusy('stash-pop')
+    try {
+      const result = await runGitCommand(['stash', 'pop'])
+      report(t('git.stashPop'), result)
+      refreshStatus()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleCreateBranch = async () => {
+    const name = window.prompt(t('git.newBranchPrompt'))?.trim()
+    if (!name) return
+    if (!/^[a-zA-Z0-9._/-]+$/.test(name)) {
+      showNotification(t('git.badBranchName'), 'error')
+      return
+    }
+    setBusy('branch')
+    try {
+      const result = await runGitCommand(['checkout', '-b', name])
+      report(t('git.createBranch'), result)
+      refreshStatus()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /** Porcelain alone can't tell a merge conflict from a rebase or a stash-pop
+   *  one, and `merge --abort` errors on the latter two — so try them in order
+   *  and report only if every form refused. */
+  const handleAbortMerge = async () => {
+    setBusy('abort')
+    try {
+      const merge = await runGitCommand(['merge', '--abort'])
+      if (merge.success) report(t('git.abortMerge'), merge)
+      else {
+        const rebase = await runGitCommand(['rebase', '--abort'])
+        report(t('git.abortMerge'), rebase.success ? rebase : merge)
+      }
+      refreshStatus()
+    } finally {
+      setBusy(null)
+    }
   }
 
   const handleViewDiff = useCallback(async (file: string, staged: boolean, untracked = false) => {
@@ -289,8 +365,9 @@ export default function GitPanel() {
     }
   }
 
-  const unstagedChanges = gitStatus.filter((s) => !s.staged && s.status !== 'untracked')
-  const stagedChanges = gitStatus.filter((s) => s.staged)
+  const conflicts = conflictedFiles(gitStatus)
+  const stagedChanges = gitStatus.filter((s) => s.staged && !s.conflict)
+  const unstagedChanges = gitStatus.filter((s) => !s.staged && !s.conflict && s.status !== 'untracked')
   const untrackedFiles = gitStatus.filter((s) => s.status === 'untracked')
 
   return (
@@ -334,7 +411,7 @@ export default function GitPanel() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={handleCommit}
-            disabled={!commitMessage.trim()}
+            disabled={!commitMessage.trim() || !!busy}
             className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-white rounded-full hover:scale-[1.02] hover:brightness-110 active:scale-[0.98] disabled:opacity-30 shadow-sm border border-transparent transition-all"
             style={{ background: 'linear-gradient(135deg, #0ea5e9, #6366f1, #a855f7)' }}
           >
@@ -345,7 +422,8 @@ export default function GitPanel() {
           </button>
           <button
             onClick={handlePush}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all"
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40"
             title={t('git.pushTitle')}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -355,7 +433,8 @@ export default function GitPanel() {
           </button>
           <button
             onClick={handlePull}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all"
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40"
             title={t('git.pullTitle')}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -371,6 +450,38 @@ export default function GitPanel() {
               <path d="M12 8v4l2.5 2.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
             </svg>
             日志
+          </button>
+          <button
+            onClick={handleFetch}
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
+            title={t('git.fetchHint')}
+          >
+            {t('git.fetch')}
+          </button>
+          <button
+            onClick={handleCreateBranch}
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
+            title={t('git.createBranchHint')}
+          >
+            {t('git.createBranch')}
+          </button>
+          <button
+            onClick={handleStash}
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
+            title={t('git.stashHint')}
+          >
+            {t('git.stash')}
+          </button>
+          <button
+            onClick={handleStashPop}
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
+            title={t('git.stashPopHint')}
+          >
+            {t('git.stashPop')}
           </button>
         </div>
         <div className="flex flex-col gap-2">
@@ -437,8 +548,41 @@ export default function GitPanel() {
         )}
       </div>
 
+      {/* Pull requests (gh CLI) — only when the repo has a remote worth asking */}
+      <PullRequestSection branch={gitBranch} onRefresh={refreshStatus} />
+
       {/* Changed files */}
       <div className="flex-1 overflow-y-auto">
+        {/* Merge conflicts — listed separately because they are not "staged
+            changes": git shows them with both columns set, and a commit with
+            them in the index fails. */}
+        {conflicts.length > 0 && (
+          <div className="mx-1 my-2 rounded-lg bg-warning-10 border border-warning-30 backdrop-blur-md overflow-hidden">
+            <div className="px-3 py-2 flex items-center gap-1.5 text-warning font-semibold text-xs">
+              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 2 1 21h22L12 2zm1 14h-2v2h2v-2zm0-7h-2v5h2V9z" />
+              </svg>
+              {t('git.conflictCount', { count: conflicts.length })}
+              <button
+                onClick={handleAbortMerge}
+                disabled={!!busy}
+                className="ml-auto text-[10px] font-bold underline disabled:opacity-40"
+                title={t('git.abortMergeHint')}
+              >
+                {t('git.abortMerge')}
+              </button>
+            </div>
+            {conflicts.map((file) => (
+              <button
+                key={file}
+                onClick={() => handleViewDiff(file, true)}
+                className="block w-full text-left px-3 py-1 text-[11px] font-code text-warning-90 hover:bg-warning-5 truncate"
+              >
+                {file}
+              </button>
+            ))}
+          </div>
+        )}
         {isLoading && (
           <div className="p-4 text-center text-nova-text-muted text-xs">
             {t('git.loading')}

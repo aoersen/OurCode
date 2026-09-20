@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { ChatSession, ChatMessage, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
-import { TOOL_ALLOWLIST_PREFIX } from '@shared/constants'
+import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
+import { TOOL_ALLOWLIST_PREFIX, lookupModelMetadata } from '@shared/constants'
 import { IS_OFFICE, WINDOW_MODE, modeKey } from '@/utils/windowMode'
 import { useConfigStore } from './configStore'
 import { useEditorStore } from './editorStore'
@@ -20,12 +20,14 @@ import { maybeCompact, runSummarizer, buildSummaryBlock, getContextWindow, DEFAU
 import { djb2Hash, toolSignature, rememberRequestSignature, getPreviousSignature, analyzeCacheBreak, recordCacheRead, hasSeenCacheRead } from '@/services/llm/cacheDiagnostics'
 import { ToolExecutor, configureToolOutput, configureSecretRedaction } from '@/services/tools'
 import { ToolCall, ToolResult } from '@/services/tools/types'
+import { writeToolPaths } from '@/services/tools/writePaths'
 import { createApprovalPreHook } from './approvalHook'
 import { runWithConcurrency } from '@/services/subagents/parallel'
 import {
   extractKeywords,
   scoreAgainstKeywords,
   loadWorkspaceKnowledge,
+  buildActiveFileRulesBlock,
   retrieveRelevantContext,
   getEditorSelectionContext,
 } from '@/services/tools/context'
@@ -363,7 +365,8 @@ async function buildSystemPrompt(
   stable += BEHAVIOR_GUIDELINES
   stable += OUTPUT_STYLE_GUIDELINES
 
-  // Workspace rules + skills (.ourcoderules, .claude/skills, .ourcode/skills)
+  // Workspace rules + skills (.ourcoderules / AGENTS.md / .cursorrules,
+  // .claude/skills, .ourcode/skills)
   // mtime-cached, so in practice stable per workspace.
   stable += await loadWorkspaceKnowledge(projectPath || getWorkspaceRoot())
 
@@ -374,12 +377,15 @@ async function buildSystemPrompt(
   dynamic += buildCurrentFileBlock()
   // Current editor selection (Vibe-and-Replace style selected-text context)
   dynamic += getEditorSelectionContext()
+  const activeFile = useEditorStore.getState().openFiles.find((f) => f.path === useEditorStore.getState().activeFilePath)
+  // 目录级 AGENTS.md：跟着当前标签页变，放进 stable 会让每次切文件的
+  // provider 端提示词缓存全部失效，所以留在 dynamic。
+  dynamic += await buildActiveFileRulesBlock(projectPath || getWorkspaceRoot(), activeFile?.path)
   // Persistent memories (keyword-matched)
   dynamic += await buildMemoriesBlock(userContent)
   // Auto-retrieved relevant files (pure chat mode skips the project-wide
   // search — no tool loop means the retrieval pays most and benefits least;
   // explicitly @-attached files are still read via retrieveRelevantContext)
-  const activeFile = useEditorStore.getState().openFiles.find((f) => f.path === useEditorStore.getState().activeFilePath)
   dynamic += await retrieveRelevantContext(userContent, contextFiles, projectPath || getWorkspaceRoot(), activeFile?.path, { skipSearch: skipAutoRetrieval })
 
   return { stable, dynamic }
@@ -434,6 +440,7 @@ const AGENT_MODE_INSTRUCTION = `
 - 完成修改后用项目现有的测试 / lint / typecheck 脚本验证（存在的话）。
 - 有专用工具时禁止用 run_command 绕过：git 操作一律用 git_status / git_diff / git_add / git_commit / git_push / git_split_commit，文件操作一律用 read_file / write_file / edit_file / search_in_files。禁止为一次性的 git 操作编写或调试脚本。
 - 用 run_command 时记住：Windows 上是 PowerShell，赋值用 $env:NAME=... 而不是 set NAME=...，没有 &&（连续执行分多次调用）。构建/测试/类型检查等长命令默认 30 秒超时会被中断——调用时要设 timeoutMs（如 120000）。若命令仍返回 [超时]，说明它需要更长时间，直接用更大的 timeoutMs 重试一次或换一种验证方式（如只构建相关模块），不要通过加内存参数、换 shell、重装依赖等方式反复折腾同一命令。
+- 不会自己退出的进程（dev server、watch、需要应答的安装）必须用 run_command 的 background=true 在集成终端里启动：它立即返回 terminalId，之后用 read_terminal_output 读输出（没就绪就隔几秒再读，不要密集轮询），用 stop_terminal 收尾；任务收尾时把你启动的进程停掉，或明确告诉用户它还在运行。
 - 提交前先 git_status + git_diff 确认改动范围；按功能拆分提交时用 git_add 逐组暂存 + git_commit，或 git_split_commit 一次完成分组提交；commit message 遵循仓库风格（feat:/fix:/refactor: 前缀）。
 - 工具结果可能被系统压缩清理：重要的信息（文件内容、命令输出、关键结论）及时写入你的可见回复，不要假设之后还能读到原始工具结果。
 - 修改文件时用 edit_file 尽量精确，不要破坏无关代码。
@@ -444,7 +451,8 @@ function getToolKind(name: string): AgentToolKind {
   if (['read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files'].includes(name)) return 'search'
   if (['web_search', 'read_url'].includes(name)) return 'fetch'
   if (['write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file'].includes(name)) return 'edit'
-  if (['run_command', 'git_split_commit'].includes(name)) return 'execute'
+  if (['run_command', 'git_split_commit', 'stop_terminal'].includes(name)) return 'execute'
+  if (name === 'read_terminal_output') return 'search'
   if (name === 'submit_plan') return 'switch_mode'
   if (name === 'ask_user_question') return 'ask'
   return 'other'
@@ -465,6 +473,7 @@ function summarizeToolCall(tc: ToolCall): string {
     return `${edits.length} edits`
   }
   if (tc.name === 'run_command') return String(a.command || a.cmd || '')
+  if (tc.name === 'read_terminal_output' || tc.name === 'stop_terminal') return String(a.terminalId || '(最近一次后台会话)')
   if (['search_files', 'web_search'].includes(tc.name)) return String(a.query || '')
   if (tc.name === 'search_in_files') return String(a.pattern || a.query || '')
   if (tc.name === 'read_url') return String(a.url || '')
@@ -499,6 +508,33 @@ export function normalizeTodos(raw: unknown): TodoItem[] {
         order: i,
       }
     })
+}
+
+/** Parse a streamed tool call's arguments. `ok` is false when the JSON is
+ *  incomplete — which happens when the response hits max_tokens mid-call. */
+export function parseToolArguments(raw: string | undefined): { args: Record<string, any>; ok: boolean } {
+  if (!raw) return { args: {}, ok: true }
+  try {
+    const parsed = JSON.parse(raw)
+    return { args: parsed && typeof parsed === 'object' ? parsed : {}, ok: true }
+  } catch {
+    return { args: {}, ok: false }
+  }
+}
+
+/** Object keys are sorted so two calls that differ only in key order — which
+ *  streamed providers do freely — compare equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']'
+  return '{' + Object.keys(value)
+    .sort()
+    .map((k) => JSON.stringify(k) + ':' + stableStringify((value as Record<string, unknown>)[k]))
+    .join(',') + '}'
+}
+
+export function toolCallSignature(tc: ToolCall): string {
+  return tc.name + '|' + stableStringify(tc.arguments ?? {})
 }
 
 // Tools allowed in plan mode (read-only + agent-control)
@@ -558,6 +594,19 @@ const MAX_PARALLEL_TOOLS = 6
 // 防的是 agent 把超时误判成环境问题后无限换姿势自救（曾见 build 超时被当成
 // 构建环境坏了，反复加内存/重装依赖/换 shell 调试 6 分钟）。每个 run 只问一次。
 const COMMAND_FAIL_BREAK_ROUNDS = 2
+
+// 打转守卫 — 模型反复用完全相同的参数调用同一工具时，结果必然相同，继续跑只
+// 是烧轮次和 token（曾见反复重读同一文件而不动手）。达到 NUDGE 先在最后一次
+// 调用的工具结果尾部追加提醒，达到 HALT 直接停止本 run 并说明原因。
+// 提醒写在 tool 结果里而不是插入 user 消息：Anthropic 等 provider 要求
+// user/assistant 交替，连续两条 user 会被拒；tool 结果永远合法。
+const REPEAT_CALL_NUDGE = 3
+const REPEAT_CALL_HALT = 6
+
+/** 守卫的前提是「参数相同 ⇒ 结果相同」，轮询类工具是它的例外：后台进程的
+ *  输出会随时间变长，等 dev server 起来本来就要连着读几次。重复调用照样提醒，
+ *  但不因为次数到了就把这种等待当成打转停掉。 */
+const POLLING_TOOLS = new Set(['read_terminal_output'])
 
 /** Agent 会话默认编辑模式——与 Claude Code 默认一致：直接动手，但改文件前
  *  先征求用户确认。计划模式（plan）改为用户主动选择，不再作为默认。 */
@@ -687,8 +736,8 @@ interface ChatState {
   deleteAgentRun: (sessionId: string, runId: string) => void
 
   // Queued messages (type while the agent is working) — per session
-  queuedMessagesBySession: Record<string, string[]>
-  queueMessage: (sessionId: string, content: string) => void
+  queuedMessagesBySession: Record<string, QueuedMessage[]>
+  queueMessage: (sessionId: string, content: string, attachments?: MessageAttachment[]) => void
   removeQueuedMessage: (sessionId: string, index: number) => void
   /** "立即发送" — stop the current run so its finally drains the message next,
    *  or send it right away if nothing is running. */
@@ -749,7 +798,7 @@ interface ChatState {
   clearMessages: (sessionId: string) => void
 
   // Core functionality
-  sendMessage: (sessionId: string, content: string, contextFiles?: string[]) => Promise<void>
+  sendMessage: (sessionId: string, content: string, contextFiles?: string[], attachments?: MessageAttachment[]) => Promise<void>
   regenerateFromMessage: (sessionId: string, msgId: string) => Promise<void>
   stopGeneration: (sessionId: string) => void
 
@@ -785,11 +834,33 @@ function estimateTokens(text: string): number {
   return Math.ceil(chineseChars * 1.2 + otherChars * 0.3)
 }
 
+/** A message typed while its session's agent is running. Images ride along so
+ *  type-ahead with a screenshot doesn't silently drop the attachment when the
+ *  queue drains. */
+export interface QueuedMessage {
+  content: string
+  attachments?: MessageAttachment[]
+}
+
 type RequestMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   toolCalls?: LLMToolCall[]
   toolCallId?: string
+  images?: Array<{ mimeType: string; dataBase64: string }>
+}
+
+/** Attachments that can go into a chat request — images only. Other file types
+ *  stay as context-file paths; a non-image mime type here means the caller
+ *  attached something the providers cannot accept as a content part, so it is
+ *  dropped from the request (it still shows in the transcript). */
+export function toRequestImages(
+  attachments: ChatMessage['attachments']
+): RequestMessage['images'] | undefined {
+  const images = (attachments || [])
+    .filter((a) => a.dataBase64 && a.mimeType.startsWith('image/'))
+    .map((a) => ({ mimeType: a.mimeType, dataBase64: a.dataBase64 }))
+  return images.length ? images : undefined
 }
 
 /**
@@ -1038,6 +1109,30 @@ const toolExecutor = new ToolExecutor()
  * 也继续落盘——「删除全部消息」必须跨重启生效，不能因为会话变空而跳过。
  */
 const _persistedSessionIds = new Set<string>()
+
+/** 已确认写入磁盘的图片附件（messageId → 该消息附件 id 集合的签名）。agent 每
+ *  一轮都会整会话保存一次，而一张截图 base64 就有几百 KB，重复序列化 + 跨 IPC
+ *  传输会白白拖慢长任务；首存之后从保存载荷里剥掉，主进程的 UPSERT 用 COALESCE
+ *  保留既有副本（附件一旦发出就不会变）。 */
+const _durableAttachmentIds = new Map<string, string>()
+
+export function attachmentSignature(msg: Pick<ChatMessage, 'attachments'>): string {
+  return (msg.attachments || []).map((a) => a.id).sort().join(',')
+}
+
+/** Drop the base64 of attachments already on disk. Returns the same object
+ *  (no copy) when the session carries no attachments at all. Exported for tests. */
+export function stripDurableAttachments<T extends Pick<ChatSession, 'messages'>>(session: T): T {
+  if (!session.messages.some((m) => m.attachments?.length)) return session
+  return {
+    ...session,
+    messages: session.messages.map((m) =>
+      m.attachments?.length && _durableAttachmentIds.get(m.id) === attachmentSignature(m)
+        ? { ...m, attachments: undefined }
+        : m
+    ),
+  }
+}
 
 // Pending approval resolves — keyed by session so parallel conversations can
 // each wait on their own dialog without clobbering each other.
@@ -1372,13 +1467,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
   },
 
-  queueMessage: (sessionId, content) => {
+  queueMessage: (sessionId, content, attachments) => {
     const trimmed = content.trim()
-    if (!trimmed || !sessionId) return
+    if ((!trimmed && !attachments?.length) || !sessionId) return
+    const item: QueuedMessage = { content: trimmed, ...(attachments?.length ? { attachments } : {}) }
     set((s) => ({
       queuedMessagesBySession: {
         ...s.queuedMessagesBySession,
-        [sessionId]: [...(s.queuedMessagesBySession[sessionId] || []), trimmed],
+        [sessionId]: [...(s.queuedMessagesBySession[sessionId] || []), item],
       },
     }))
   },
@@ -1413,7 +1509,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       get().stopGeneration(sessionId)
     } else {
       // Nothing is generating for this session; send it right away.
-      void get().sendMessage(sessionId, msg)
+      void get().sendMessage(sessionId, msg.content, undefined, msg.attachments)
     }
   },
 
@@ -1890,6 +1986,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       content: msg.content || '',
       sortOrder: msg.sortOrder ?? session.messages.length,
       contextFiles: msg.contextFiles || [],
+      attachments: msg.attachments,
       tokenCount: estimateTokens(msg.content || ''),
       thinking: msg.thinking,
       toolCalls: msg.toolCalls,
@@ -2061,14 +2158,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
   },
 
-  sendMessage: async (sessionId, content, contextFiles = []) => {
+  sendMessage: async (sessionId, content, contextFiles = [], attachments = []) => {
     if (!sessionId) return
 
     // One agent loop per session: while it is generating, type-ahead messages
     // queue instead of starting a second loop (ChatInput already queues via
     // the button state; this guard covers API/plugin callers).
     if (get().runningSessionIds.includes(sessionId)) {
-      get().queueMessage(sessionId, content)
+      get().queueMessage(sessionId, content, attachments)
       return
     }
 
@@ -2077,6 +2174,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: 'user',
       content,
       contextFiles,
+      attachments: attachments.length ? attachments : undefined,
     })
 
     // Auto-title on the first message — and only then: a title the user renamed
@@ -2138,7 +2236,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     if (userMsg) {
-      await get().sendMessage(sessionId, userMsg.content, userMsg.contextFiles)
+      await get().sendMessage(sessionId, userMsg.content, userMsg.contextFiles, userMsg.attachments)
     }
   },
 
@@ -2345,7 +2443,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 的隐患（已落盘的会话不受影响）。
     if (isGhostSession(session) && !_persistedSessionIds.has(sessionId)) return
     _persistedSessionIds.add(sessionId)
-    await window.electronAPI.saveSession(session)
+    await window.electronAPI.saveSession(stripDurableAttachments(session))
+    // Recorded only after the write resolved — a failed save keeps shipping the
+    // attachment payload on the next attempt.
+    for (const m of session.messages) {
+      if (m.attachments?.length) _durableAttachmentIds.set(m.id, attachmentSignature(m))
+    }
   },
 
   updateSessionModel: (sessionId, model, configGroupId) => {
@@ -2735,6 +2838,13 @@ async function runAgentLoop(
   const summarized = session.summary && session.summaryMessageCount
     ? Math.min(session.summaryMessageCount, session.messages.length)
     : 0
+  // 元数据明确标为非视觉的模型：把图片从请求里剥掉（文字照常）。硬发出去
+  // provider 必然 400，而且每一轮都会重复这个错误。未收录的模型（元数据缺失）
+  // 仍带上图片，由 provider 的错误兜底。
+  const visionCapable = lookupModelMetadata(model)?.vision !== false
+  if (!visionCapable && session.messages.some((m) => toRequestImages(m.attachments))) {
+    useUIStore.getState().showNotification(t('chat.modelNoVision'), 'warning')
+  }
   let messages: RequestMessage[] = [
     { role: 'system', content: stableSystemPrompt },
     ...(summarized > 0 ? [{ role: 'system' as const, content: buildSummaryBlock(session.summary!) }] : []),
@@ -2743,6 +2853,7 @@ async function runAgentLoop(
       content: m.content,
       toolCalls: toRawToolCalls(m.toolCalls),
       toolCallId: m.toolCallId,
+      images: visionCapable ? toRequestImages(m.attachments) : undefined,
     })),
   ]
 
@@ -3026,6 +3137,10 @@ async function runAgentLoop(
   let consecutiveCommandFailures = 0
   let lastFailedCommand = ''
   let commandFailBreakAsked = false
+  // 打转守卫状态：本 run 内每个 name+arguments 被调用的次数，以及是否已由
+  // 守卫停止（停止时不能再报「已达最大轮数」，两者的原因不同）。
+  const repeatCallCounts = new Map<string, number>()
+  let loopGuardStopped = false
 
   while (iterationsLeft-- > 0) {
       if (abortController.signal.aborted) break
@@ -3070,6 +3185,7 @@ async function runAgentLoop(
           content: m.content,
           toolCalls: m.toolCalls,
           toolCallId: m.toolCallId,
+          images: m.images,
         })),
         stream: true,
         temperature: session.modelParams.temperature,
@@ -3306,11 +3422,33 @@ async function runAgentLoop(
       }
 
       // Has tool calls - show them and execute
-      const parsedToolCalls: ToolCall[] = toolCalls.map((tc) => ({
-        id: tc.id,
-        name: tc.function.name,
-        arguments: JSON.parse(tc.function.arguments || '{}'),
-      }))
+      //
+      // A response cut off by max_tokens leaves the trailing tool call(s) with
+      // half-written arguments. Executing those would run a truncated
+      // write_file/edit_file, and replaying the raw string in the next request
+      // fails every later turn — so parse defensively, drop the bad JSON from
+      // the outbound history, and refuse those calls below.
+      const parsedToolCalls: ToolCall[] = []
+      const outboundToolCalls: any[] = []
+      const truncatedCallIds = new Set<string>()
+      for (const tc of toolCalls) {
+        const { args, ok } = parseToolArguments(tc.function.arguments)
+        parsedToolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
+        outboundToolCalls.push(ok ? tc : { ...tc, function: { ...tc.function, arguments: '{}' } })
+        if (!ok) truncatedCallIds.add(tc.id)
+      }
+
+      // ── 打转守卫：统计本 run 内重复的 name+arguments ──
+      const repeatCountByCallId = new Map<string, number>()
+      let roundRepeatsHalt = false
+      for (const tc of parsedToolCalls) {
+        if (truncatedCallIds.has(tc.id)) continue
+        const sig = toolCallSignature(tc)
+        const n = (repeatCallCounts.get(sig) || 0) + 1
+        repeatCallCounts.set(sig, n)
+        if (n >= REPEAT_CALL_NUDGE) repeatCountByCallId.set(tc.id, n)
+        if (n >= REPEAT_CALL_HALT && !POLLING_TOOLS.has(tc.name)) roundRepeatsHalt = true
+      }
 
       // ── 计划模式防空转 ──────────────────────────────────────────────────
       // 计划模式只暴露只读工具。若用户请求明显需要写操作/命令（提交/推送/
@@ -3395,7 +3533,7 @@ async function runAgentLoop(
       messages.push({
         role: 'assistant',
         content: fullContent,
-        toolCalls: toolCalls,
+        toolCalls: outboundToolCalls,
         toolCallId: undefined,
       })
 
@@ -3486,7 +3624,23 @@ async function runAgentLoop(
         }
       }
 
-      const finalizeToolResult = (tc: ToolCall, result: ToolResult): void => {
+      // Images a tool result carries (browser_screenshot) cannot be pushed where
+      // the result lands: providers require EVERY tool message of this round's
+      // tool_calls before any other role, and finalize runs one result at a time
+      // in input order. So they accumulate here and flush after the whole batch.
+      const roundImages: Array<{ mimeType: string; dataBase64: string }> = []
+      const roundImageNotes: string[] = []
+
+      const finalizeToolResult = (tc: ToolCall, incoming: ToolResult): void => {
+        // 打转提醒挂在被重复的那条结果尾部，而不是另插一条消息：provider 对
+        // 角色交替和 tool_call_id 配对都有要求，只有 tool 结果是永远合法的。
+        const repeats = repeatCountByCallId.get(tc.id)
+        const result: ToolResult = repeats
+          ? {
+              ...incoming,
+              result: `${incoming.result}\n\n[系统提醒] 你已第 ${repeats} 次用完全相同的参数调用 ${tc.name}，结果不会改变。请改变做法（换参数/换工具）或直接给出结论，不要重复此调用。`,
+            }
+          : incoming
         // A user-denied call shows 'rejected' (not 'error') in the trace —
         // the pipeline marks denials via result.rejected.
         useChatStore.getState().setTraceStatus(sessionId, tc.id, result.rejected ? 'rejected' : result.isError ? 'error' : 'success')
@@ -3498,12 +3652,24 @@ async function runAgentLoop(
           consecutiveCommandFailures = failed ? consecutiveCommandFailures + 1 : 0
           if (failed) lastFailedCommand = String(tc.arguments?.command || '')
         }
-        // Append the result inline to the assistant message for display
-        chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, result))
+        // Persist/display the result WITHOUT its base64: toolResults are
+        // JSON.stringify'd into SQLite and re-read on every session load, so a
+        // few screenshots would park megabytes in the message and the UI has no
+        // use for them (the image goes to the model, not the transcript).
+        const { images, ...persistable } = result
+        chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, persistable))
         recordToolMessage(tc.id, result.result)
-        // Write tools changed files on disk — notify open editors to reload
-        if (CHECKPOINT_TOOLS.has(tc.name) && tc.arguments?.path) {
-          notifyFileChanged(tc.arguments.path)
+        if (images?.length) {
+          if (lookupModelMetadata(model)?.vision !== false) roundImages.push(...images)
+          // Non-vision model: an image part would be a 400. Say so rather than
+          // silently dropping what the tool claimed it attached.
+          else roundImageNotes.push(`[${tc.name}] 图片已获取但当前模型不支持图片输入，未送达。请改用文本方式判断（页面文本 / 控制台输出）。`)
+        }
+        // Write tools changed files on disk — notify open editors to reload.
+        // multi_edit_file touches one path per entry in its edits array, so it
+        // must notify each of them (its `arguments.path` is undefined).
+        if (CHECKPOINT_TOOLS.has(tc.name)) {
+          for (const changedPath of writeToolPaths(tc.name, tc.arguments)) notifyFileChanged(changedPath)
         }
       }
 
@@ -3525,6 +3691,15 @@ async function runAgentLoop(
           summary: summarizeToolCall(tc),
           startedAt: toolStartedAt,
         })
+
+        // ── 参数被 max_tokens 截断：拒绝执行，但保留 tool 配对 ──
+        if (truncatedCallIds.has(tc.id)) {
+          const result = 'Error: 工具参数不完整（响应在 max_tokens 处被截断），本次未执行。请把改动拆小后重试，或先说明还剩下哪些步骤。'
+          chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result, isError: true }))
+          recordToolMessage(tc.id, result)
+          useChatStore.getState().setTraceStatus(sessionId, tc.id, 'error')
+          continue
+        }
 
         // ── manage_todo: update the visible todo list ──
         if (tc.name === 'manage_todo') {
@@ -3672,8 +3847,35 @@ async function runAgentLoop(
         }
       }
 
+      // 工具批全部落库后，才把图片作为一条 user 消息交给模型（role:'tool' 在
+      // 这里的 adapter 只承载文本）。放在批尾：任何一条 tool 消息之前插入其他
+      // 角色都会让 OpenAI 系以「insufficient tool messages」拒掉整轮。
+      if (roundImages.length || roundImageNotes.length) {
+        messages.push({
+          role: 'user',
+          content: roundImageNotes.length
+            ? roundImageNotes.join('\n')
+            : '以上是本轮工具返回的截图，请据此判断页面状态。',
+          images: roundImages.length ? roundImages : undefined,
+        })
+      }
+
       // Plan submitted — pause the loop until the user approves
       if (planSubmitted) break
+
+      // ── 打转守卫：提醒后仍原样重复，停下来 ──
+      // 与「命令连续失败熔断」不同，这里不打断问用户：同样的调用重复到第
+      // REPEAT_CALL_HALT 次已经没有任何信息量，继续跑只会把预算烧光。
+      if (roundRepeatsHalt) {
+        loopGuardStopped = true
+        chatStore.addMessage(sessionId, {
+          role: 'assistant',
+          content: `[已停止：同一个工具调用以完全相同的参数重复了 ${REPEAT_CALL_HALT} 次，结果不会改变。请补充缺失的信息或调整任务描述后重试。]`,
+          runId,
+        })
+        clearStream()
+        break
+      }
 
       // ── 命令连续失败熔断 ──────────────────────────────────────────────
       // 同一 run_command 连续失败/超时达到阈值：停下弹提问让用户决定，而不是
@@ -3740,7 +3942,7 @@ async function runAgentLoop(
     // allowed iteration: iterationsLeft is 0 there too, but a "[已达最大轮数]"
     // message would be misleading. 无限（默认）时 iterationsLeft 恒为 Infinity，
     // 此分支不会触发。
-    if (iterationsLeft <= 0 && maxIterations > 0 && !finishedNaturally && !abortController.signal.aborted && !planWasSubmitted(sessionId)) {
+    if (iterationsLeft <= 0 && maxIterations > 0 && !finishedNaturally && !loopGuardStopped && !abortController.signal.aborted && !planWasSubmitted(sessionId)) {
       chatStore.addMessage(sessionId, {
         role: 'assistant',
         content: `[已达到最大工具调用轮数 (${maxIterations})。点击下方"继续"按钮可继续执行。]`,
@@ -3868,7 +4070,7 @@ async function runAgentLoop(
       useChatStore.setState((s) => ({
         queuedMessagesBySession: { ...s.queuedMessagesBySession, [sessionId]: queued.slice(1) },
       }))
-      setTimeout(() => { useChatStore.getState().sendMessage(sessionId, next) }, 50)
+      setTimeout(() => { useChatStore.getState().sendMessage(sessionId, next.content, undefined, next.attachments) }, 50)
     }
 
     // Deliver inbound cross-session messages (send_message from other sessions)

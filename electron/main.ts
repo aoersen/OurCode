@@ -16,10 +16,24 @@ import { LspServer } from './services/lsp'
 import { DebugAdapterClient } from './services/debug'
 import { MCPManager, extractMcpText, toMcpToolDefinition } from './services/mcp-manager'
 import { scrubbedSpawnEnv } from './services/env-scrub'
+import { decideNavigation, hasArbitraryNavigation, revokeArbitraryNavigation, type NavigationPolicy } from './services/navigation-guard'
+import { checkVcsArgs, parseGhAuthStatus } from './services/vcs-exec'
+import {
+  browserAct,
+  browserClose,
+  browserConsole,
+  browserHistory,
+  browserNavigate,
+  browserPageText,
+  browserScreenshot,
+  browserSetVisible,
+  browserState,
+  initBrowserSession,
+} from './services/browser-session'
 import { SpillStore } from './services/spill-store'
 import { v4 as uuidv4 } from 'uuid'
 import { IPC_CHANNELS } from '../shared/constants'
-import type { UsageEvent } from '../shared/types'
+import type { UsageEvent, BrowserAction, BrowserActOptions } from '../shared/types'
 
 const DEFAULT_EXCLUDE_FOLDERS = ['node_modules', '.git', 'dist', 'build', 'out']
 
@@ -269,6 +283,38 @@ function runGit(cwd: string, args: string[], input: string | undefined, trim: bo
   })
 }
 
+/** `gh` talks to GitHub over the network, so it gets a longer budget than git.
+ *  Same argv discipline as runGit: execFile, no shell, scrubbed environment —
+ *  except the two token variables, which are how a user may have chosen to
+ *  authenticate the CLI. Handing them to `gh` is safe (its argv is allowlisted
+ *  and it only ever talks to a GitHub host); handing them to `git` or a shell
+ *  command would not be, and those stay fully scrubbed. */
+function runGh(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'gh',
+      args,
+      {
+        cwd,
+        timeout: 90_000,
+        maxBuffer: 5 * 1024 * 1024,
+        env: scrubbedSpawnEnv({ keep: ['GH_TOKEN', 'GITHUB_TOKEN'] }),
+      } as ExecFileOptions,
+      (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
+        if (error) {
+          // gh writes its diagnostics to BOTH streams (`gh pr view` on a repo
+          // with no PRs, `gh auth status` when logged out). Returning only
+          // stderr would turn "no pull request found" into an empty error.
+          const text = `${String(stdout || '').trim()}\n${String(stderr || '').trim()}`.trim()
+          reject(new Error(text || error.message))
+        } else {
+          resolve(String(stdout).trim())
+        }
+      },
+    )
+  })
+}
+
 let mainWindow: BrowserWindow | null = null
 const allWindows: Set<BrowserWindow> = new Set()
 let fileSystem: FileSystemService
@@ -355,8 +401,74 @@ async function stopAllLspServers(): Promise<void> {
 interface TerminalSession {
   pty: pty.IPty
   webContents: WebContents
+  /** 'view' = an integrated-terminal tab, killed when its tab closes.
+   *  'agent' = started by the assistant, so it outlives any view. */
+  owner: 'view' | 'agent'
+  /** Raw pty output, oldest first, capped so a chatty watcher can't grow forever */
+  chunks: string[]
+  chars: number
+  /** null while the process is still running */
+  exitCode: number | null
+  /** Command line an agent run was started with (shown as the tab title) */
+  command: string
 }
 const terminals = new Map<string, TerminalSession>()
+
+const CAPTURE_LIMIT_CHARS = 512 * 1024
+/** Finished agent runs stay readable until this many are queued up; older ones
+ *  are dropped so a long conversation cannot accumulate dead pty processes. */
+const MAX_FINISHED_AGENT_RUNS = 8
+/** Hard ceiling on live agent processes — `stop_terminal` is cooperative, and a
+ *  model that ignores it must not be able to pile up shells indefinitely. */
+const MAX_LIVE_AGENT_RUNS = 12
+
+function captureOutput(session: TerminalSession, data: string): void {
+  session.chunks.push(data)
+  session.chars += data.length
+  if (session.chars <= CAPTURE_LIMIT_CHARS) return
+  // Drop from the front down to half the cap rather than trimming to exactly
+  // the limit, so a stream that sits on the ceiling doesn't re-splice per chunk.
+  let drop = 0
+  while (session.chars > CAPTURE_LIMIT_CHARS / 2 && drop < session.chunks.length - 1) {
+    session.chars -= session.chunks[drop].length
+    drop++
+  }
+  session.chunks.splice(0, drop)
+}
+
+/** Free capacity for a new agent run by retiring its oldest finished siblings */
+function pruneAgentRuns(): void {
+  const finished: [string, TerminalSession][] = []
+  for (const [id, session] of terminals) {
+    if (session.owner === 'agent' && session.exitCode !== null) finished.push([id, session])
+  }
+  while (finished.length >= MAX_FINISHED_AGENT_RUNS) {
+    const [id, session] = finished.shift()!
+    terminals.delete(id)
+    try {
+      killProcessTree(session)
+    } catch {
+      /* already exited */
+    }
+  }
+}
+
+/**
+ * Take a run down including whatever it launched.
+ *
+ * node-pty's own kill() only terminates the shell it spawned, so a dev server
+ * the assistant started with it would keep the port bound and the CPU spinning
+ * after `stop_terminal` claimed success. On POSIX the shell forwards SIGHUP to
+ * its jobs; on Windows there is no such convention, so ask the OS for the tree.
+ */
+function killProcessTree(session: TerminalSession): void {
+  const pid = session.pty.pid
+  if (process.platform === 'win32' && pid) {
+    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+    return
+  }
+  session.pty.kill()
+}
 
 /** Broadcast a message to every open window */
 function broadcast(channel: string, ...args: unknown[]): void {
@@ -386,10 +498,51 @@ function attachWindowLifecycle(win: BrowserWindow): void {
     // Kill terminals owned by this window
     for (const [id, t] of terminals) {
       if (t.webContents.id === wcId) {
-        t.pty.kill()
+        if (t.owner === 'agent') killProcessTree(t)
+        else t.pty.kill()
         terminals.delete(id)
       }
     }
+    // The agent browser window is hidden and is not an app window: left open, it
+    // keeps `window-all-closed` from ever firing, so on Windows/Linux the process
+    // would linger with no UI. Deferred one tick so the listener that removes
+    // THIS window from allWindows (registered after this one) has run. On macOS
+    // the app intentionally survives with no windows, and the browser session
+    // keeps its cookies for when it comes back — it goes with the app instead.
+    if (process.platform !== 'darwin') {
+      setImmediate(() => {
+        if (allWindows.size === 0) browserClose()
+      })
+    }
+  })
+}
+
+/** Pin every app window to the app's own origins (see navigation-guard.ts). */
+function installNavigationGuards(): void {
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  const policy: NavigationPolicy = {
+    devOrigin: devUrl ? new URL(devUrl).origin : undefined,
+    rendererDir: join(__dirname, 'renderer'),
+  }
+  app.on('web-contents-created', (_event, contents) => {
+    const arbitrary = (): boolean => hasArbitraryNavigation(contents.id)
+    contents.on('will-navigate', (event, url) => {
+      const decision = decideNavigation(url, policy, arbitrary())
+      if (decision !== 'allow') {
+        event.preventDefault()
+        if (decision === 'open-external') void shell.openExternal(url).catch(() => {})
+      }
+    })
+    // window.open() — including the popups the HTML preview iframe is allowed
+    // to create. Without a handler Electron builds a window with default
+    // preferences, so this is the only thing standing between previewed code
+    // and an unguarded top-level page.
+    contents.setWindowOpenHandler(({ url }) => {
+      const decision = decideNavigation(url, policy, arbitrary())
+      if (decision === 'open-external') void shell.openExternal(url).catch(() => {})
+      return { action: 'deny' }
+    })
+    contents.on('destroyed', () => revokeArbitraryNavigation(contents.id))
   })
 }
 
@@ -1235,16 +1388,28 @@ function registerIpcHandlers(): void {
       env: { ...process.env } as Record<string, string>,
     })
 
+    const session: TerminalSession = {
+      pty: term,
+      webContents: wc,
+      owner: 'view',
+      chunks: [],
+      chars: 0,
+      exitCode: null,
+      command: '',
+    }
+
     term.onData((data) => {
+      captureOutput(session, data)
       if (!wc.isDestroyed()) wc.send(`term:data:${id}`, data)
     })
 
     term.onExit(({ exitCode }) => {
+      session.exitCode = exitCode
       if (!wc.isDestroyed()) wc.send(`term:exit:${id}`, exitCode)
       terminals.delete(id)
     })
 
-    terminals.set(id, { pty: term, webContents: wc })
+    terminals.set(id, session)
   })
 
   ipcMain.handle('term:write', (_event, id: string, data: string) => {
@@ -1257,10 +1422,116 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('term:dispose', (_event, id: string) => {
     const t = terminals.get(id)
-    if (t) {
-      t.pty.kill()
-      terminals.delete(id)
+    // An agent run is not the view's to kill: the terminal tab that shows it is
+    // just a window onto a process the assistant started (and may still read).
+    if (!t || t.owner === 'agent') return
+    t.pty.kill()
+    terminals.delete(id)
+  })
+
+  // ── Agent-run terminal sessions ──────────────────────────────────────────
+  // Long-running commands (dev servers, watchers, `npm install` with a prompt)
+  // can't go through shell:exec — that waits for exit and kills at its timeout.
+  // These run in the same pty layer as the integrated terminal, and their output
+  // is captured in the main process so the assistant can poll it whether or not
+  // a terminal tab is showing the session.
+  ipcMain.handle('term:runAgent', (event, id: string, command: string, cwd?: string) => {
+    if (!id || typeof command !== 'string' || !command.trim()) throw new Error('终端运行参数不完整')
+    if (terminals.has(id)) throw new Error(`终端会话 ${id} 已存在`)
+    if (cwd) assertPathAllowed(cwd)
+    pruneAgentRuns()
+    let live = 0
+    for (const session of terminals.values()) {
+      if (session.owner === 'agent' && session.exitCode === null) live++
     }
+    if (live >= MAX_LIVE_AGENT_RUNS) {
+      throw new Error(`已有 ${live} 个后台命令在运行，先用 stop_terminal 停掉不再需要的`)
+    }
+    const wc = event.sender
+    const isWindows = process.platform === 'win32'
+    // Hand the command to the shell as an argument instead of typing it into an
+    // interactive session: the pty's own exit is then the command's exit, so
+    // `running` / `exitCode` mean what the assistant needs them to (an
+    // interactive shell would sit at a prompt forever after finishing).
+    // A login shell (-lc) so the user's rc files put the same tools on PATH as
+    // in their own terminal.
+    const shellArgs = isWindows ? ['-NoLogo', '-Command', command] : ['-lc', command]
+    const term = pty.spawn(isWindows ? 'powershell.exe' : 'bash', shellArgs, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: cwd || process.cwd(),
+      // This is the assistant's command, not the user's shell — keep the
+      // credential scrub shell:exec applies, or anything the model runs could
+      // read the API keys sitting in the app's environment.
+      env: scrubbedSpawnEnv() as Record<string, string>,
+    })
+    const session: TerminalSession = {
+      pty: term,
+      webContents: wc,
+      owner: 'agent',
+      chunks: [],
+      chars: 0,
+      exitCode: null,
+      command,
+    }
+    term.onData((data) => {
+      captureOutput(session, data)
+      if (!wc.isDestroyed()) wc.send(`term:data:${id}`, data)
+    })
+    term.onExit(({ exitCode }) => {
+      session.exitCode = exitCode
+      if (!wc.isDestroyed()) wc.send(`term:exit:${id}`, exitCode)
+    })
+    terminals.set(id, session)
+  })
+
+  /** null when the session is unknown (retired, or never existed) or it is a
+   *  tab the user typed into — that scrollback is theirs, not the model's. */
+  ipcMain.handle('term:output', (_event, id: string, tailChars?: number) => {
+    const session = terminals.get(id)
+    if (!session || session.owner !== 'agent') return null
+    const full = session.chunks.join('')
+    const output = tailChars && tailChars > 0 ? full.slice(-tailChars) : full
+    return {
+      output,
+      truncated: output !== full,
+      running: session.exitCode === null,
+      exitCode: session.exitCode,
+      command: session.command,
+    }
+  })
+
+  ipcMain.handle('term:kill', (_event, id: string) => {
+    const session = terminals.get(id)
+    if (!session || session.owner !== 'agent') return false
+    killProcessTree(session)
+    return true
+  })
+
+  /** Agent runs in start order — the renderer treats this as the truth, so the
+   *  list survives a window reload (the processes live here, not there). */
+  ipcMain.handle('term:list', () => {
+    const listed: { id: string; command: string; running: boolean; exitCode: number | null }[] = []
+    for (const [id, session] of terminals) {
+      if (session.owner !== 'agent') continue
+      listed.push({
+        id,
+        command: session.command,
+        running: session.exitCode === null,
+        exitCode: session.exitCode,
+      })
+    }
+    return listed
+  })
+
+  /** Point an agent run's stream at the requesting window's view. Only agent
+   *  sessions are attachable — a tab the user typed into is theirs, not shareable. */
+  ipcMain.handle('term:attach', (event, id: string) => {
+    const session = terminals.get(id)
+    if (!session || session.owner !== 'agent') return null
+    session.webContents = event.sender
+    return { command: session.command, running: session.exitCode === null, output: session.chunks.join('') }
   })
 
   // Search in files handler — 三级链路：内存索引（毫秒级）→ ripgrep（10-100x 快）
@@ -1743,27 +2014,93 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
-  // Git handler
-  ipcMain.handle('git:exec', async (_event, cwd: string, args: string[], input?: string) => {
+  // Git handler — argv goes through checkVcsArgs: the renderer (and the model
+  // through it) must not be able to reach `git -c core.pager=…`, `--exec-path`,
+  // `ext::` transports or `--output`, all of which are command execution or file
+  // writes dressed up as git arguments. `input` stays supported: the central diff
+  // editor applies per-hunk patches through stdin.
+  const gatedGit = async (
+    cwd: string,
+    args: unknown,
+    input?: string,
+    raw = false,
+  ): Promise<{ success: boolean; output: string; error?: string }> => {
+    const checked = checkVcsArgs('git', args)
+    if (!checked.ok) return { success: false, output: '', error: checked.error }
     try {
       if (cwd) assertPathAllowed(cwd)
-      const result = await gitExec(cwd, args, input)
+      const result = raw
+        ? await gitExecRaw(cwd, checked.args, input)
+        : await gitExec(cwd, checked.args, input)
       return { success: true, output: result }
+    } catch (error: any) {
+      return { success: false, output: '', error: error.message }
+    }
+  }
+
+  ipcMain.handle('git:exec', (_event, cwd: string, args: unknown, input?: string) => gatedGit(cwd, args, input))
+
+  // Git handler returning untrimmed stdout (byte-exact blob reads)
+  ipcMain.handle('git:execRaw', (_event, cwd: string, args: unknown, input?: string) =>
+    gatedGit(cwd, args, input, true))
+
+  // GitHub CLI — the hosting layer (PR list / create / review comments).
+  // Same shape and same argv gate as git:exec.
+  ipcMain.handle('gh:exec', async (_event, cwd: string, args: unknown) => {
+    const checked = checkVcsArgs('gh', args)
+    if (!checked.ok) return { success: false, output: '', error: checked.error }
+    try {
+      if (cwd) assertPathAllowed(cwd)
+      return { success: true, output: await runGh(cwd, checked.args) }
     } catch (error: any) {
       return { success: false, output: '', error: error.message }
     }
   })
 
-  // Git handler returning untrimmed stdout (byte-exact blob reads)
-  ipcMain.handle('git:execRaw', async (_event, cwd: string, args: string[], input?: string) => {
+  // Is `gh` installed and authenticated for this repo's host? Probed here (not in
+  // the renderer) because both answers come from process exit codes + stderr.
+  ipcMain.handle('gh:status', async (_event, cwd: string) => {
     try {
       if (cwd) assertPathAllowed(cwd)
-      const result = await gitExecRaw(cwd, args, input)
-      return { success: true, output: result }
     } catch (error: any) {
-      return { success: false, output: '', error: error.message }
+      return { installed: false, authed: false, error: error.message }
     }
+    let installed = false
+    try {
+      await runGh(cwd || process.cwd(), ['--version'])
+      installed = true
+    } catch (error: any) {
+      // `--version` is not in the subcommand allowlist — execFile still ran, so
+      // anything other than ENOENT means the binary exists.
+      installed = !/ENOENT/.test(String(error?.message || ''))
+    }
+    if (!installed) return { installed: false, authed: false }
+    let text = ''
+    try {
+      text = await runGh(cwd || process.cwd(), ['auth', 'status'])
+    } catch (error: any) {
+      text = String(error?.message || '')
+    }
+    return { installed: true, ...parseGhAuthStatus(text), raw: text.slice(0, 2000) }
   })
+
+  // ── Agent browser session ────────────────────────────────────────────────
+  // One hidden http(s)-only page that the assistant drives and the Browser
+  // panel mirrors. The tools (browser_navigate / browser_read_console /
+  // browser_screenshot / browser_act) call the same IPC from the renderer.
+  initBrowserSession({
+    broadcast: (payload) => broadcast(IPC_CHANNELS.BROWSER_EVENT, payload),
+  })
+  ipcMain.handle(IPC_CHANNELS.BROWSER_NAVIGATE, (_event, url: string) => browserNavigate(String(url ?? '')))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_STATE, () => browserState())
+  ipcMain.handle(IPC_CHANNELS.BROWSER_CONSOLE, (_event, clear?: boolean) => browserConsole(clear === true))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_PAGE_TEXT, (_event, maxChars?: number) => browserPageText(maxChars))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SCREENSHOT, () => browserScreenshot())
+  ipcMain.handle(IPC_CHANNELS.BROWSER_ACT, (_event, action: BrowserAction, opts?: BrowserActOptions) =>
+    browserAct(action, opts))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY, (_event, step: 'back' | 'forward' | 'reload') => browserHistory(step))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_VISIBLE, (_event, visible: boolean) => browserSetVisible(visible === true))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_CLOSE, () => browserClose())
 
   // Shell exec handler (for run_command tool)
   ipcMain.handle('shell:exec', async (_event, command: string, cwd?: string, options?: { timeoutMs?: number }) => {
@@ -2014,10 +2351,13 @@ app.whenReady().then(() => {
   })
 
   registerIpcHandlers()
+  installNavigationGuards()
   createWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // allWindows, not BrowserWindow.getAllWindows(): the hidden browser session
+    // is a real window and would otherwise make the dock icon do nothing.
+    if (allWindows.size === 0) {
       createWindow()
     }
   })
@@ -2037,5 +2377,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  browserClose()
   store.close()
 })

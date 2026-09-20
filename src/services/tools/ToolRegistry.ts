@@ -240,21 +240,209 @@ export function createToolRegistry(): Tool[] {
         'Execute a shell command in the given directory. Returns stdout/stderr. ' +
         '注意：① 有专用工具时不要用它——文件/搜索用 read_file/search_in_files，git 用 git_status/git_diff/git_log/git_add/git_commit/git_split_commit（本工具需要审批，会打断流程）；' +
         '② Windows 环境是 PowerShell（没有 grep/&& 等 Unix 命令），赋值用 $env:NAME=... 而不是 set NAME=...，需要搜索用 search_in_files，需要连续执行分多次调用；' +
-        '③ 命令默认 30 秒超时会被中断——构建/测试/安装等长命令必须设置 timeoutMs（如 120000），若仍超时说明它确实需要更长时间，不要重复执行同一命令。',
+        '③ 命令默认 30 秒超时会被中断——构建/测试/安装等长命令必须设置 timeoutMs（如 120000），若仍超时说明它确实需要更长时间，不要重复执行同一命令；' +
+        '④ dev server / watch / 需要交互输入这类不会自己退出的命令，必须用 background=true（它在集成终端里跑，随后用 read_terminal_output 读、stop_terminal 停），' +
+        '用前台调用只会被超时杀掉。',
       parameters: {
         type: 'object',
         properties: {
           command: { type: 'string', description: 'The shell command to execute' },
           cwd: { type: 'string', description: 'Working directory (optional, defaults to project root)' },
           timeoutMs: { type: 'number', description: 'Timeout in milliseconds (optional, default 30000; build/test commands should set e.g. 120000)' },
+          background: {
+            type: 'boolean',
+            description:
+              'Run it in the integrated terminal and return immediately with a terminalId instead of waiting for it to exit. ' +
+              'Required for long-running/interactive processes: dev servers, watchers, `npm install` that may prompt.',
+          },
         },
         required: ['command'],
       },
       execute: async (args) => {
-        const { runCommand } = await import('@/services/tools/helpers')
+        const { runCommand, runCommandBackground } = await import('@/services/tools/helpers')
+        if (args.background) return runCommandBackground(args.command, args.cwd)
         return runCommand(args.command, args.cwd, args.timeoutMs)
       },
       requiresApproval: true,
+    },
+    {
+      name: 'read_terminal_output',
+      description:
+        'Read the latest output of a process the assistant started with run_command(background=true). ' +
+        'Use it for dev servers / watchers / long builds: start once, read, and if it is not ready yet wait before reading again — do not poll in a tight loop. ' +
+        'The result says whether the process is still running and, once finished, its exit code.',
+      parameters: {
+        type: 'object',
+        properties: {
+          terminalId: { type: 'string', description: 'Session to read; defaults to the most recently started one' },
+          maxLines: { type: 'number', description: 'Maximum trailing lines to return (default 200)' },
+        },
+        required: [],
+      },
+      execute: async (args) => {
+        const { readTerminalOutput } = await import('@/services/tools/helpers')
+        return readTerminalOutput(args.terminalId, args.maxLines)
+      },
+      requiresApproval: false,
+    },
+    {
+      name: 'stop_terminal',
+      description:
+        'Stop a background terminal process started by the assistant (it cannot touch terminals the user opened). ' +
+        'Call it when a dev server/watcher is no longer needed instead of leaving it running.',
+      parameters: {
+        type: 'object',
+        properties: {
+          terminalId: { type: 'string', description: 'Session to stop; defaults to the most recently started one' },
+        },
+        required: [],
+      },
+      execute: async (args) => {
+        const { stopTerminal } = await import('@/services/tools/helpers')
+        return stopTerminal(args.terminalId)
+      },
+      requiresApproval: false,
+    },
+
+    // ──────────────── Browser session (integrated-browser parity) ────────────────
+    // What the terminal can't prove: that the page actually renders. These drive
+    // the same hidden window the Browser panel shows the user.
+    {
+      name: 'browser_navigate',
+      description:
+        'Open a URL in the app\'s browser session (http/https only — localhost dev servers are the main use). ' +
+        'Waits for the load and reports the final URL and title. Use it after changing frontend code, then ' +
+        'browser_read_console to see whether it broke.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to open, e.g. http://localhost:5173' },
+        },
+        required: ['url'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserNavigateTool } = await import('@/services/tools/helpers')
+        return browserNavigateTool(args.url)
+      },
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'browser_read_console',
+      description:
+        'Read console output and page errors captured from the browser session (newest last), optionally the ' +
+        'visible page text too. This is how you see a runtime JS error or failed request after a frontend change.',
+      parameters: {
+        type: 'object',
+        properties: {
+          includePageText: { type: 'boolean', description: 'Also append the page\'s visible text' },
+          clear: { type: 'boolean', description: 'Clear the buffer after reading (default false)' },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserReadConsoleTool } = await import('@/services/tools/helpers')
+        return browserReadConsoleTool({ includePageText: args.includePageText, clear: args.clear })
+      },
+      timeoutMs: 30_000,
+    },
+    {
+      name: 'browser_screenshot',
+      description:
+        'Screenshot the current page and attach the image to this result, so you can see layout/visual state. ' +
+        'Needs a vision-capable model; the result says if the image could not be delivered.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async () => {
+        const { browserScreenshotTool } = await import('@/services/tools/helpers')
+        return browserScreenshotTool()
+      },
+      timeoutMs: 30_000,
+    },
+    {
+      name: 'browser_act',
+      description:
+        'Interact with the page: click / type / press / scroll / wait. `type` sets the value through the native ' +
+        'setter so React/Vue controlled inputs update. Approval is required because clicking can change remote state.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['click', 'type', 'press', 'scroll', 'wait'], description: 'What to do' },
+          selector: { type: 'string', description: 'CSS selector (required for click/type; empty for press means the focused element)' },
+          text: { type: 'string', description: 'Text to type (action=type)' },
+          key: { type: 'string', description: 'Key name (action=press), e.g. Enter' },
+          ms: { type: 'number', description: 'Delay in ms (action=wait, max 10000)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserActTool } = await import('@/services/tools/helpers')
+        return browserActTool(args.action, {
+          selector: args.selector,
+          text: args.text,
+          key: args.key,
+          ms: args.ms,
+        })
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+
+    // ──────────────── Pull requests (local `gh` CLI) ────────────────
+    {
+      name: 'read_pull_request',
+      description:
+        'Read the repository\'s pull requests through the user\'s own gh CLI: action="list" for open PRs, ' +
+        'action="view" for one PR (or the current branch\'s) including CI checks and review comments. ' +
+        'Use "view" before claiming a PR is ready, and to get reviewer feedback back into the conversation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'view'], description: 'list | view' },
+          number: { type: 'number', description: 'PR number (view; omit for the current branch)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { githubPrTool } = await import('@/services/tools/helpers')
+        return githubPrTool(args.action, { number: args.number })
+      },
+      requiresApproval: false,
+      timeoutMs: 90_000,
+    },
+    {
+      name: 'create_pull_request',
+      description:
+        'Open a pull request (action="create", needs title; the branch must already be pushed with git_push) or ' +
+        'reply on one (action="comment", needs number + comment). Requires the user\'s gh CLI to be installed and ' +
+        'signed in; the result names that as the reason if it is not.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['create', 'comment'], description: 'create | comment' },
+          title: { type: 'string', description: 'PR title (create)' },
+          body: { type: 'string', description: 'PR description (create; defaults to the branch\'s commit subjects)' },
+          base: { type: 'string', description: 'Target branch (create, default main)' },
+          draft: { type: 'boolean', description: 'Open as draft (create)' },
+          number: { type: 'number', description: 'PR number (comment)' },
+          comment: { type: 'string', description: 'Comment body (comment)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { githubPrTool } = await import('@/services/tools/helpers')
+        return githubPrTool(args.action, args)
+      },
+      requiresApproval: true,
+      timeoutMs: 90_000,
     },
 
     // ──────────────── Agent-control tools (handled by the chat store) ────────────────
