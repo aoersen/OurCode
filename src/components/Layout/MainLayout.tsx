@@ -58,7 +58,11 @@ export default function MainLayout() {
   const hasOpenTabs = useEditorStore((s) =>
     s.panelOrder.some((pid) => (s.panels[pid]?.tabOrder?.length ?? 0) > 0),
   )
-  const editorShown = isEditorVisible && hasOpenTabs
+  // A diff ("Open Changes" / source-control diff) is shown INSTEAD of a tab's
+  // content, so the editor area has to mount for it even when nothing is open —
+  // otherwise 查看变更 from the 文件变更历史 panel silently does nothing.
+  const hasActiveDiff = useEditorStore((s) => !!s.activeDiff)
+  const editorShown = isEditorVisible && (hasOpenTabs || hasActiveDiff)
   const splitDirection = useEditorStore((s) => s.splitDirection)
   const splitRatios = useEditorStore((s) => s.splitRatios)
   const isProblemsOpen = useProblemsStore((s) => s.isOpen)

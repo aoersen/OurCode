@@ -536,6 +536,7 @@ export default function EditorContainer({ panelId }: EditorContainerProps) {
                 language={activeDiff.language}
                 title={activeDiff.fileName}
                 notice={activeDiff.notice}
+                filePath={activeDiff.path}
                 onClose={closeDiff}
                 onRevert={activeDiff.checkpointId ? handleDiffRevert : undefined}
               />

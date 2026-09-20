@@ -5,20 +5,16 @@
  */
 import { v4 as uuidv4 } from 'uuid'
 import type { Checkpoint } from '@/types'
+import { writeToolPaths } from './tools/writePaths'
 
 export async function captureCheckpoint(
   sessionId: string,
   tc: { name: string; arguments?: Record<string, any> },
   messageId?: string,
 ): Promise<Checkpoint | null> {
-  // Single-path tools take arguments.path; multi_edit_file snapshots every
-  // distinct path in its edits array (deduped so a file edited twice is
-  // captured once) so the whole batch can be reverted in one go.
-  const targets = tc.name === 'multi_edit_file'
-    ? Array.from(new Set((Array.isArray(tc.arguments?.edits) ? tc.arguments.edits : [])
-        .map((e: any) => String(e?.path || '').trim())
-        .filter(Boolean)))
-    : (typeof tc.arguments?.path === 'string' && tc.arguments.path ? [tc.arguments.path] : [])
+  // Deduped so a file edited twice is captured once, letting the whole batch be
+  // reverted in one go.
+  const targets = writeToolPaths(tc.name, tc.arguments)
   if (targets.length === 0) return null
 
   const files: Array<{ path: string; content: string; existed: boolean }> = []

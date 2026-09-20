@@ -23,7 +23,8 @@ const mockApi = {
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession } from '@/stores/chatStore'
+import { useChatStore, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages } from '@/stores/chatStore'
+import type { MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { createToolRegistry } from '@/services/tools/ToolRegistry'
@@ -836,12 +837,24 @@ describe('chatStore agent run state', () => {
     useChatStore.getState().queueMessage('s1', '第一条')
     useChatStore.getState().queueMessage('s1', '第二条')
     useChatStore.getState().queueMessage('s2', '另一条')
-    const q = useChatStore.getState().queuedMessagesBySession
-    expect(q['s1']).toEqual(['第一条', '第二条'])
-    expect(q['s2']).toEqual(['另一条'])
+    const contents = (id: string) => (useChatStore.getState().queuedMessagesBySession[id] || []).map((q) => q.content)
+    expect(contents('s1')).toEqual(['第一条', '第二条'])
+    expect(contents('s2')).toEqual(['另一条'])
     useChatStore.getState().clearQueue('s1')
     expect(useChatStore.getState().queuedMessagesBySession['s1']).toBeUndefined()
-    expect(useChatStore.getState().queuedMessagesBySession['s2']).toEqual(['另一条'])
+    expect(contents('s2')).toEqual(['另一条'])
+  })
+
+  it('queueMessage carries image attachments and accepts an image-only entry', () => {
+    const img = { id: 'a1', name: 'shot.png', mimeType: 'image/png', dataBase64: 'AAA' }
+    useChatStore.getState().queueMessage('s1', '看图', [img])
+    useChatStore.getState().queueMessage('s1', '', [img])
+    const q = useChatStore.getState().queuedMessagesBySession['s1']
+    expect(q.map((x) => x.content)).toEqual(['看图', ''])
+    expect(q[0].attachments).toEqual([img])
+    // Nothing at all (no text, no image) is not a message.
+    useChatStore.getState().queueMessage('s2', '   ')
+    expect(useChatStore.getState().queuedMessagesBySession['s2']).toBeUndefined()
   })
 
   it('removeQueuedMessage deletes only the given index and keeps order', () => {
@@ -849,12 +862,13 @@ describe('chatStore agent run state', () => {
     useChatStore.getState().queueMessage('s1', 'B')
     useChatStore.getState().queueMessage('s1', 'C')
     useChatStore.getState().removeQueuedMessage('s1', 1)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['A', 'C'])
+    const contents = () => (useChatStore.getState().queuedMessagesBySession['s1'] || []).map((q) => q.content)
+    expect(contents()).toEqual(['A', 'C'])
     // Invalid index / unknown session are no-ops
     useChatStore.getState().removeQueuedMessage('s1', 5)
     useChatStore.getState().removeQueuedMessage('s1', -1)
     useChatStore.getState().removeQueuedMessage('s2', 0)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['A', 'C'])
+    expect(contents()).toEqual(['A', 'C'])
   })
 
   it('sendQueuedNow stops the run and promotes the picked message to the front', () => {
@@ -866,7 +880,9 @@ describe('chatStore agent run state', () => {
     const abortSpy = vi.spyOn(ac, 'abort')
     useChatStore.getState().sendQueuedNow('s1', 2)
     // The picked message is now first (drained next by the aborted run's finally)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['C', 'A', 'B'])
+    expect(
+      useChatStore.getState().queuedMessagesBySession['s1'].map((q) => q.content)
+    ).toEqual(['C', 'A', 'B'])
     // stopGeneration aborted the controller and dropped it from the map
     expect(abortSpy).toHaveBeenCalledTimes(1)
     expect(useChatStore.getState().abortControllers['s1']).toBeUndefined()
@@ -879,7 +895,9 @@ describe('chatStore agent run state', () => {
     const abortSpy = vi.spyOn(ac, 'abort')
     useChatStore.getState().sendQueuedNow('s1', 3)
     useChatStore.getState().sendQueuedNow('s1', -1)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['A'])
+    expect(
+      useChatStore.getState().queuedMessagesBySession['s1'].map((q) => q.content)
+    ).toEqual(['A'])
     expect(abortSpy).not.toHaveBeenCalled()
   })
 
@@ -1400,5 +1418,108 @@ describe('chatStore window-mode isolation (一人公司与普通 agent 模式)',
     expect(mockApi.saveSession).toHaveBeenCalledTimes(3)
     const lastSaved = mockApi.saveSession.mock.calls[2][0]
     expect(lastSaved.messages).toHaveLength(0)
+  })
+})
+
+describe('loop guard: truncated tool-call arguments', () => {
+  it('flags arguments cut off mid-stream instead of throwing', () => {
+    // A response that hits max_tokens leaves trailing tool calls with partial
+    // JSON. The loop used to call JSON.parse directly, which threw and killed
+    // the whole run.
+    expect(parseToolArguments('{"path":"a.ts","content":"half')).toEqual({ args: {}, ok: false })
+  })
+
+  it('accepts complete arguments', () => {
+    expect(parseToolArguments('{"path":"a.ts"}')).toEqual({ args: { path: 'a.ts' }, ok: true })
+  })
+
+  it('treats missing/empty arguments as a valid empty call', () => {
+    expect(parseToolArguments(undefined)).toEqual({ args: {}, ok: true })
+    expect(parseToolArguments('')).toEqual({ args: {}, ok: true })
+  })
+
+  it('does not execute non-object payloads as arguments', () => {
+    expect(parseToolArguments('"just a string"')).toEqual({ args: {}, ok: true })
+    expect(parseToolArguments('null')).toEqual({ args: {}, ok: true })
+  })
+})
+
+describe('loop guard: identical-call detection', () => {
+  const sig = (name: string, args: Record<string, unknown>) =>
+    toolCallSignature({ id: 'x', name, arguments: args } as any)
+
+  it('signatures of the same call match', () => {
+    expect(sig('read_file', { path: 'a.ts' })).toBe(sig('read_file', { path: 'a.ts' }))
+  })
+
+  it('key order does not change the signature', () => {
+    // Providers stream argument properties in arbitrary order; a naive
+    // JSON.stringify would call these two distinct and never detect the loop.
+    expect(sig('edit_file', { path: 'a.ts', oldText: 'x', newText: 'y' })).toBe(
+      sig('edit_file', { newText: 'y', oldText: 'x', path: 'a.ts' }),
+    )
+  })
+
+  it('different tool or different argument produces a different signature', () => {
+    expect(sig('read_file', { path: 'a.ts' })).not.toBe(sig('read_file', { path: 'b.ts' }))
+    expect(sig('read_file', { path: 'a.ts' })).not.toBe(sig('list_directory', { path: 'a.ts' }))
+  })
+
+  it('nested and array arguments compare structurally, not by reference', () => {
+    expect(sig('multi_edit_file', { path: 'a', edits: [{ oldText: 'x' }, { oldText: 'y' }] })).toBe(
+      sig('multi_edit_file', { edits: [{ oldText: 'x' }, { oldText: 'y' }], path: 'a' }),
+    )
+    expect(sig('multi_edit_file', { edits: [{ oldText: 'x' }] })).not.toBe(
+      sig('multi_edit_file', { edits: [{ oldText: 'z' }] }),
+    )
+  })
+})
+
+describe('vision input: attachments → request images', () => {
+  const img = (over: Partial<MessageAttachment> = {}): MessageAttachment => ({
+    id: 'a1',
+    name: 'shot.png',
+    mimeType: 'image/png',
+    dataBase64: 'iVBORw0KGgo=',
+    ...over,
+  })
+
+  beforeEach(() => {
+    useChatStore.setState({ ...initialState, sessions: [], activeSessionId: null, queuedMessagesBySession: {} })
+    mockApi.saveSession.mockClear()
+  })
+
+  it('images become request image parts; non-images and empty payloads are dropped', () => {
+    expect(toRequestImages([img(), img({ id: 'a2', name: 'b.jpg', mimeType: 'image/jpeg' })])).toEqual([
+      { mimeType: 'image/png', dataBase64: 'iVBORw0KGgo=' },
+      { mimeType: 'image/jpeg', dataBase64: 'iVBORw0KGgo=' },
+    ])
+    // A text file attached as an image would be rejected by every provider.
+    expect(toRequestImages([img({ mimeType: 'application/pdf' })])).toBeUndefined()
+    expect(toRequestImages([img({ dataBase64: '' })])).toBeUndefined()
+    expect(toRequestImages(undefined)).toBeUndefined()
+  })
+
+  it('sendMessage stores attachments on the user message', async () => {
+    const sessionId = makeSession()
+    // No API config here — the loop bails early; we only assert the message.
+    await useChatStore.getState().sendMessage(sessionId, '看图', [], [img()]).catch(() => {})
+    const user = useChatStore.getState().getActiveSession()!.messages.find((m) => m.role === 'user')
+    expect(user?.attachments).toEqual([img()])
+  })
+
+  it('attachment base64 is shipped once, then stripped from later saves', async () => {
+    const sessionId = makeSession()
+    useChatStore.getState().addMessage(sessionId, { role: 'user', content: '看图', attachments: [img()] })
+
+    await useChatStore.getState().saveSession(sessionId)
+    const first = mockApi.saveSession.mock.calls[0][0]
+    expect(first.messages[0].attachments[0].dataBase64).toBe('iVBORw0KGgo=')
+
+    // Every agent round re-saves the whole session; a multi-hundred-KB base64
+    // must not ride along each time (the main process keeps its own copy).
+    await useChatStore.getState().saveSession(sessionId)
+    const second = mockApi.saveSession.mock.calls[1][0]
+    expect(second.messages[0].attachments).toBeUndefined()
   })
 })

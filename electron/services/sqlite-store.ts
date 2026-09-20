@@ -108,6 +108,14 @@ export class SQLiteStore {
     if (!msgColumns.some((c: any) => c.name === 'ttft_ms')) {
       this.db.exec("ALTER TABLE chat_messages ADD COLUMN ttft_ms INTEGER DEFAULT 0")
     }
+    // Image attachments (base64) on user messages. Stored on the message rather
+    // than as a side table so a session load picks them up with the rows they
+    // belong to; the renderer only ships the payload once (see
+    // stripDurableAttachments in chatStore) and the UPSERT below keeps the
+    // stored copy when a later save arrives without it.
+    if (!msgColumns.some((c: any) => c.name === 'attachments')) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+    }
     // Add branch/pin/archive columns to chat_sessions if missing
     const sessColumns = this.db.prepare("PRAGMA table_info(chat_sessions)").all() as any[]
     if (!sessColumns.some((c: any) => c.name === 'active_branch_id')) {
@@ -243,6 +251,7 @@ export class SQLiteStore {
         thinking TEXT DEFAULT '',
         tool_calls TEXT DEFAULT '[]',
         tool_results TEXT DEFAULT '[]',
+        attachments TEXT DEFAULT '[]',
         created_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
       );
@@ -489,6 +498,9 @@ export class SQLiteStore {
       compactionInProgress: false,
         messages: messages.map(msg => {
           const toolResults = parseJsonField<ChatMessage['toolResults']>(msg.tool_results, undefined)
+          const attachments = parseJsonField<ChatMessage['attachments']>(
+            msg.attachments ? this.maybeDecrypt(msg.attachments) : '', undefined
+          )
           return {
             id: msg.id,
             role: msg.role,
@@ -496,6 +508,7 @@ export class SQLiteStore {
             sortOrder: msg.sort_order,
             contextFiles: parseJsonField<string[]>(msg.context_files, []),
             tokenCount: msg.token_count,
+            attachments: attachments?.length ? attachments : undefined,
             thinking: msg.thinking ? this.maybeDecrypt(msg.thinking) : undefined,
             editedAt: msg.edited_at || undefined,
             toolCalls: parseJsonField<ChatMessage['toolCalls']>(msg.tool_calls, undefined)?.length
@@ -623,8 +636,8 @@ export class SQLiteStore {
     // save. Upserting keeps unchanged rows intact and only deletes rows that
     // disappeared from the incoming list (message deleted / history edited).
     const upsertMsg = this.db.prepare(`
-      INSERT INTO chat_messages (id, session_id, role, content, sort_order, context_files, token_count, thinking, tool_calls, tool_results, edited_at, request_started_at, request_duration_ms, request_tokens_in, request_tokens_out, ttft_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chat_messages (id, session_id, role, content, sort_order, context_files, token_count, thinking, tool_calls, tool_results, attachments, edited_at, request_started_at, request_duration_ms, request_tokens_in, request_tokens_out, ttft_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         session_id = excluded.session_id,
         role = excluded.role,
@@ -635,6 +648,9 @@ export class SQLiteStore {
         thinking = excluded.thinking,
         tool_calls = excluded.tool_calls,
         tool_results = excluded.tool_results,
+        -- NULL means "this save carries no attachment payload" (the renderer
+        -- strips base64 once it is durable) — keep the stored copy then.
+        attachments = COALESCE(excluded.attachments, attachments),
         edited_at = excluded.edited_at,
         request_started_at = excluded.request_started_at,
         request_duration_ms = excluded.request_duration_ms,
@@ -656,6 +672,7 @@ export class SQLiteStore {
           msg.thinking ? this.maybeEncrypt(msg.thinking) : '',
           JSON.stringify(msg.toolCalls || []),
           JSON.stringify(msg.toolResults || []),
+          msg.attachments?.length ? this.maybeEncrypt(JSON.stringify(msg.attachments)) : null,
           msg.editedAt || 0,
           msg.requestStartedAt || 0,
           msg.requestDurationMs || 0,

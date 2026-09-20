@@ -4,8 +4,9 @@
  * Given the user's message, retrieves the most relevant files in the workspace
  * (by name match + content keyword search) and appends them as a bounded
  * <retrieved_context> block. Also loads workspace rules / Claude skills
- * (.ourcoderules, .claude/skills, .ourcode/skills) into the system prompt, and
- * honors a .ourcodeignore file (gitignore-style) for tool listings.
+ * (.ourcoderules, AGENTS.md, .cursorrules, .claude/skills, .ourcode/skills)
+ * into the system prompt, and honors a .ourcodeignore file (gitignore-style)
+ * for tool listings.
  *
  * No embeddings — heuristic keyword/symbol retrieval first (cheap, local),
  * which covers ~80% of the value; a local embedding index can be layered on
@@ -225,22 +226,80 @@ async function readFileSnippet(path: string): Promise<string> {
 // ───────────────────────── Workspace rules + skills ─────────────────────────
 
 /**
- * Load workspace knowledge: .ourcoderules / rules.json + Claude-style skills
- * (from .claude/skills and .ourcode/skills directories). Rules files are
- * injected in full; skills are injected as a compact index only — the model
- * loads a skill's full instructions on demand via the skill__<name> tool.
- * Cached by mtime.
+ * Rule file names loaded from the workspace root. OurCode's own names come
+ * first, then the cross-tool standards — so a repo that only carries an
+ * `AGENTS.md` (or was previously used with Cursor / Windsurf) gets its rules
+ * picked up with no migration step.
+ */
+const RULES_FILE_NAMES = [
+  '.ourcoderules', 'rules.json', 'RULES.md',
+  'AGENTS.md',
+  '.cursorrules', '.windsurfrules',
+]
+
+// A mature repo's AGENTS.md is often a multi-kilobyte engineering manual. These
+// ride in the byte-stable prompt prefix, so injecting one in full on every turn
+// inflates the prefix and eats the cache savings; cap each file and say so.
+const MAX_RULES_FILE_CHARS = 20000
+
+// How far up from the active file to look for directory-level AGENTS.md.
+const MAX_NESTED_RULES_LEVELS = 5
+
+function normalizeSlashes(p: string): string {
+  return p.replace(/\\/g, '/')
+}
+
+/**
+ * Directory-level rule files governing the file being edited, outermost first.
+ * Monorepos nest AGENTS.md per package and expect the ones closest to a file
+ * to apply to it; probing with `stat` (which resolves null for a missing path)
+ * keeps this to a handful of cheap IPCs instead of reading every candidate.
+ */
+async function collectNestedRulePaths(rootPath: string, activeFilePath?: string): Promise<string[]> {
+  if (!activeFilePath) return []
+  const root = normalizeSlashes(rootPath).replace(/\/$/, '')
+  const file = normalizeSlashes(activeFilePath)
+  if (!file.startsWith(root + '/')) return []
+  const { stat } = window.electronAPI
+  const found: string[] = []
+  let dir = file.slice(0, file.lastIndexOf('/'))
+  for (let i = 0; i < MAX_NESTED_RULES_LEVELS && dir.length > root.length; i++) {
+    try {
+      const s = await stat(dir + '/AGENTS.md')
+      if (s) found.unshift(dir + '/AGENTS.md')
+    } catch { /* missing */ }
+    dir = dir.slice(0, dir.lastIndexOf('/'))
+  }
+  return found
+}
+
+function capRules(text: string): string {
+  if (text.length <= MAX_RULES_FILE_CHARS) return text
+  return text.slice(0, MAX_RULES_FILE_CHARS) + '\n…（该规则文件已截断，需要完整内容请用 read_file 读取）'
+}
+
+/**
+ * Load workspace knowledge: rule files (.ourcoderules / AGENTS.md /
+ * .cursorrules …) and Claude-style skills (from .claude/skills and
+ * .ourcode/skills directories). Rules files are injected (capped); skills are
+ * injected as a compact index only — the model loads a skill's full
+ * instructions on demand via the skill__<name> tool. Cached by mtime.
+ *
+ * Root-level files only, on purpose: this text rides in the byte-stable prompt
+ * prefix, and anything that varies with the open tab would break provider-side
+ * prompt caching every time the user switches files. Directory-level rules go
+ * through buildActiveFileRulesBlock instead.
  */
 export async function loadWorkspaceKnowledge(rootPath: string): Promise<string> {
   if (!rootPath) return ''
   const key = rootPath
   try {
     const { stat } = window.electronAPI
+    const rootRulePaths = RULES_FILE_NAMES.map((f) => joinPath(rootPath, f))
     let newest = 0
-    const rulesFiles = ['.ourcoderules', 'rules.json', 'RULES.md']
-    for (const f of rulesFiles) {
+    for (const p of rootRulePaths) {
       try {
-        const s = await stat(joinPath(rootPath, f))
+        const s = await stat(p)
         if (s && s.modifiedAt > newest) newest = s.modifiedAt
       } catch { /* missing */ }
     }
@@ -254,15 +313,39 @@ export async function loadWorkspaceKnowledge(rootPath: string): Promise<string> 
     if (cached && cached.mtime >= newest) return cached.text
 
     const parts: string[] = []
-    for (const f of rulesFiles) {
-      const text = await tryReadFile(joinPath(rootPath, f))
-      if (text) parts.push(text.trim())
+    for (const p of rootRulePaths) {
+      const text = (await tryReadFile(p)).trim()
+      if (text) parts.push(capRules(text))
     }
     const skillIndex = await buildSkillIndex(rootPath)
     if (skillIndex) parts.push(skillIndex)
     const text = parts.length ? `\n\n<workspace_knowledge>\n${parts.join('\n\n')}\n</workspace_knowledge>` : ''
     KNOWLEDGE_CACHE.set(key, { mtime: newest, text })
     return text
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Directory-level rule files governing the file currently being edited, as a
+ * per-turn dynamic block. Monorepos nest AGENTS.md per package and expect the
+ * one closest to a file to apply to it — that selection follows the active tab,
+ * so it cannot live in the stable prefix (see loadWorkspaceKnowledge).
+ */
+export async function buildActiveFileRulesBlock(rootPath: string, activeFilePath?: string): Promise<string> {
+  if (!rootPath || !activeFilePath) return ''
+  try {
+    const nestedRulePaths = await collectNestedRulePaths(rootPath, activeFilePath)
+    if (nestedRulePaths.length === 0) return ''
+    const root = normalizeSlashes(rootPath).replace(/\/$/, '')
+    const parts: string[] = []
+    for (const p of nestedRulePaths) {
+      const text = (await tryReadFile(p)).trim()
+      if (!text) continue
+      parts.push(`以下规则来自 ${normalizeSlashes(p).slice(root.length + 1)}，适用于该目录下的文件：\n\n${capRules(text)}`)
+    }
+    return parts.length ? `\n\n<directory_rules>\n${parts.join('\n\n')}\n</directory_rules>` : ''
   } catch {
     return ''
   }

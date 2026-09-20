@@ -85,7 +85,7 @@ export const BUILTIN_AGENTS: Record<string, Omit<SubAgentDefinition, 'name' | 's
       '遵循项目既有测试框架与风格；可以修改测试文件，但默认不修改被测源码；测试必须可重复运行并全部通过。',
     tools: [
       'read_file', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files',
-      'write_file', 'edit_file', 'create_directory', 'run_command',
+      'write_file', 'edit_file', 'create_directory', 'run_command', 'read_terminal_output', 'stop_terminal',
     ],
     maxIterations: 12,
     maxTokensBudget: 120_000,
@@ -147,7 +147,7 @@ export const BUILTIN_AGENTS: Record<string, Omit<SubAgentDefinition, 'name' | 's
       '报告必须逐条对照验收标准给出 通过/失败/缺陷，并引用证据（测试名 / 文件:行 / 命令输出），无证据的"通过"不计入。',
     tools: [
       'read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files',
-      'write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file', 'run_command',
+      'write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file', 'run_command', 'read_terminal_output', 'stop_terminal',
     ],
     // 可读全仓（读不限），只写测试目录与目标模式报告目录。具体测试路径随项目
     // 而异——由工作区 tm-tester.md 编辑，或由任务信封 files_to_modify 精确授予（v2.4）。
@@ -164,7 +164,7 @@ export const BUILTIN_AGENTS: Record<string, Omit<SubAgentDefinition, 'name' | 's
       '报告必须逐条对照验收标准给出 通过/失败/缺陷，并引用证据（测试名 / 文件:行 / 命令输出），无证据的"通过"不计入。',
     tools: [
       'read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files',
-      'write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file', 'run_command',
+      'write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file', 'run_command', 'read_terminal_output', 'stop_terminal',
     ],
     allowedWritePaths: ['.ourcode/targemode', 'src/__tests__', 'tests', 'test'],
     maxIterations: 10,

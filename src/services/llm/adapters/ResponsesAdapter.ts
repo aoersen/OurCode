@@ -2,6 +2,7 @@ import { ApiConfigGroup, LLMRequest, LLMStreamChunk, LLMToolCall, normalizeReaso
 import { LLMAdapter } from '../types'
 import { llmFetch } from '../http'
 import { buildChatUrl, buildModelsUrl } from '../endpoints'
+import { imageDataUrl } from './vision'
 
 /**
  * OpenAI Responses API adapter — POST {base}/v1/responses.
@@ -224,9 +225,18 @@ function buildInputItems(req: LLMRequest): any[] {
       continue
     }
 
+    const parts: any[] = []
+    // Vision: input_image parts take the data: URL form. An empty text part is
+    // skipped only when images follow — a content-less item is rejected.
+    if (m.content || !m.images?.length) {
+      parts.push({ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content })
+    }
+    if (m.role === 'user' && m.images?.length) {
+      for (const img of m.images) parts.push({ type: 'input_image', image_url: imageDataUrl(img) })
+    }
     items.push({
       role: m.role as 'system' | 'user' | 'assistant',
-      content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }],
+      content: parts,
     })
   }
   return items

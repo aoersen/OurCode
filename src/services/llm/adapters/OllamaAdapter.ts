@@ -50,6 +50,10 @@ export class OllamaAdapter implements LLMAdapter {
         if (m.role === 'tool' && m.toolCallId) {
           msg.tool_call_id = m.toolCallId
         }
+        // Vision: Ollama takes a plain base64 array on the message (no data: URL).
+        if (m.role === 'user' && m.images?.length) {
+          msg.images = m.images.map((img) => img.dataBase64)
+        }
         return msg
       }),
       stream: req.stream,

@@ -3,6 +3,7 @@ import { LLMAdapter } from '../types'
 import { mapOpenAiUsage } from '../usage'
 import { llmFetch } from '../http'
 import { buildChatUrl, buildModelsUrl } from '../endpoints'
+import { openAiVisionContent } from './vision'
 
 /**
  * Groq adapter — uses OpenAI-compatible API with Groq-specific optimizations
@@ -20,7 +21,7 @@ export class GroqAdapter implements LLMAdapter {
 
     const body = {
       model: req.model,
-      messages: req.messages.map((m: { role: string; content: string; toolCalls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>; toolCallId?: string }) => {
+      messages: req.messages.map((m) => {
         const msg: Record<string, any> = { role: m.role, content: m.content }
         if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
           msg.tool_calls = m.toolCalls.map((tc) => ({
@@ -32,6 +33,8 @@ export class GroqAdapter implements LLMAdapter {
         if (m.role === 'tool' && m.toolCallId) {
           msg.tool_call_id = m.toolCallId
         }
+        const vision = openAiVisionContent(m)
+        if (vision) msg.content = vision
         return msg
       }),
       temperature: req.temperature,

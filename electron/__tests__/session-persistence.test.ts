@@ -247,6 +247,91 @@ describe.skipIf(!sqliteUsable)('SQLiteStore session persistence', () => {
     }
   })
 
+  describe('image attachments', () => {
+    const att = { id: 'a1', name: 'shot.png', mimeType: 'image/png', dataBase64: 'iVBORw0KGgo=' }
+
+    function withAttachment(attachments?: unknown[]) {
+      return makeSession({
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: '看图',
+            sortOrder: 0,
+            contextFiles: [],
+            tokenCount: 0,
+            createdAt: 1000,
+            ...(attachments ? { attachments } : {}),
+          } as any,
+        ],
+      })
+    }
+
+    it('round-trips base64 attachments on a user message', () => {
+      store.saveSession(withAttachment([att]))
+      const loaded = store.getSessions().find((s) => s.id === 'sess-1')!
+      expect(loaded.messages[0].attachments).toEqual([att])
+    })
+
+    it('keeps the stored payload when a later save omits it', () => {
+      // The renderer strips base64 after the first durable save (every agent
+      // round re-saves the whole session) — the UPSERT must not blank it out.
+      store.saveSession(withAttachment([att]))
+      store.saveSession(withAttachment())
+      const loaded = store.getSessions().find((s) => s.id === 'sess-1')!
+      expect(loaded.messages[0].attachments).toEqual([att])
+    })
+
+    it('leaves attachments unset for messages that never had one', () => {
+      store.saveSession(makeSession({ messages: [{ id: 'm1', role: 'user', content: 'hi', sortOrder: 0, contextFiles: [], tokenCount: 0, createdAt: 1000 } as any] }))
+      const loaded = store.getSessions().find((s) => s.id === 'sess-1')!
+      expect(loaded.messages[0].attachments).toBeUndefined()
+    })
+
+    it('migrates an old chat_messages table by adding the attachments column', () => {
+      // A pre-vision database has no `attachments` column; the UPSERT above
+      // names it, so opening such a DB must ALTER it in before the first save.
+      const dbDir = mkdtempSync(join(tmpdir(), 'attachment-migration-test-'))
+      try {
+        mkdirSync(join(dbDir, 'data'), { recursive: true })
+        const dbPath = join(dbDir, 'data', 'ourcode.db')
+        const old = new Database(dbPath)
+        old.exec(`
+          CREATE TABLE chat_sessions (
+            id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '新对话', config_group_id TEXT NOT NULL,
+            model TEXT DEFAULT '', model_params TEXT DEFAULT '{}', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+          );
+          CREATE TABLE chat_messages (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0, context_files TEXT DEFAULT '[]', token_count INTEGER DEFAULT 0,
+            thinking TEXT DEFAULT '', tool_calls TEXT DEFAULT '[]', tool_results TEXT DEFAULT '[]',
+            edited_at INTEGER DEFAULT 0, created_at INTEGER NOT NULL
+          );
+          INSERT INTO chat_sessions (id, title, config_group_id, model, model_params, created_at, updated_at)
+          VALUES ('group-session', '旧会话', 'group-1', '', '{}', 100, 100);
+          INSERT INTO chat_messages (id, session_id, role, content, sort_order, created_at)
+          VALUES ('old-m1', 'group-session', 'user', '旧的', 0, 100);
+        `)
+        old.close()
+
+        const migrated = new SQLiteStore(dbDir)
+        try {
+          migrated.saveSession({ ...makeSession({ id: 'group-session' }), messages: [
+            { id: 'old-m1', role: 'user', content: '旧的', sortOrder: 0, contextFiles: [], tokenCount: 0, createdAt: 100 } as any,
+            { id: 'new-m2', role: 'user', content: '带图', sortOrder: 1, contextFiles: [], tokenCount: 0, createdAt: 200, attachments: [att] } as any,
+          ] })
+          const loaded = migrated.getSessions().find((s) => s.id === 'group-session')!
+          expect(loaded.messages.find((m) => m.id === 'old-m1')?.attachments).toBeUndefined()
+          expect(loaded.messages.find((m) => m.id === 'new-m2')?.attachments).toEqual([att])
+        } finally {
+          migrated.close()
+        }
+      } finally {
+        rmSync(dbDir, { recursive: true, force: true })
+      }
+    })
+  })
+
   describe('compaction durable lock', () => {
     it('persists compactionInProgress and clears a stale lock on load', async () => {
       const session = makeSession()

@@ -3,9 +3,10 @@ import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import type { ChatSession, Checkpoint } from '@/types'
+import { writeToolPaths } from '@/services/tools/writePaths'
 
 /** File-modifying tool names */
-const FILE_EDIT_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'create_directory'])
+const FILE_EDIT_TOOLS = new Set(['write_file', 'edit_file', 'multi_edit_file', 'delete_file', 'create_directory'])
 
 interface FileChange {
   sessionId: string
@@ -25,17 +26,19 @@ function extractFileChanges(session: ChatSession): FileChange[] {
     if (!msg.toolCalls) continue
     for (const tc of msg.toolCalls) {
       if (!FILE_EDIT_TOOLS.has(tc.name)) continue
-      const fp = tc.arguments?.path || tc.arguments?.filePath || tc.arguments?.target
-      if (!fp || typeof fp !== 'string') continue
-      changes.push({
-        sessionId: session.id,
-        sessionTitle: session.title,
-        sessionTime: session.updatedAt,
-        filePath: fp,
-        fileName: fp.split(/[/\\]/).pop() || fp,
-        toolName: tc.name,
-        messageId: msg.id,
-      })
+      // One entry per touched file — multi_edit_file names several, and each of
+      // them is its own row with its own checkpoint snapshot.
+      for (const fp of writeToolPaths(tc.name, tc.arguments)) {
+        changes.push({
+          sessionId: session.id,
+          sessionTitle: session.title,
+          sessionTime: session.updatedAt,
+          filePath: fp,
+          fileName: fp.split(/[/\\]/).pop() || fp,
+          toolName: tc.name,
+          messageId: msg.id,
+        })
+      }
     }
   }
   return changes
@@ -50,15 +53,20 @@ function formatTime(ts: number): string {
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-/** Resolve repo-relative path to absolute */
+/** Resolve a change's path to absolute. Tool/checkpoint paths are normally
+ *  already absolute (they are the model's own `path` argument), so those must
+ *  pass through untouched — prefixing them produced `E:\proj\C:\…` and the diff
+ *  then read "(文件不存在)" for a file that exists. */
 function resolvePath(relative: string): string {
   const rootPath = useUIStore.getState().rootPath
-  if (!rootPath) return relative
+  if (!rootPath || IS_ABSOLUTE.test(relative)) return relative
   const sep = rootPath.includes('/') ? '/' : '\\'
-  // If already absolute
   if (relative.startsWith(rootPath)) return relative
   return rootPath.replace(/[/\\]$/, '') + sep + relative
 }
+
+/** Windows drive-letter, POSIX root and UNC. */
+const IS_ABSOLUTE = /^([a-zA-Z]:[\\/]|[\\/])/
 
 /** Find the checkpoint holding the pre-edit snapshot of this file change.
  *  Prefer an exact (messageId + path) match: an assistant message with several
