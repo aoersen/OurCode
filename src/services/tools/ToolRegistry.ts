@@ -706,6 +706,66 @@ export function createToolRegistry(): Tool[] {
       },
     },
 
+    // ──────────────── Cross-session knowledge (read/search) ────────────────
+    {
+      name: 'read_session',
+      description:
+        'Read the most recent messages of another chat session (by id or title). ' +
+        'Use it to pick up where another conversation left off, or to check a decision ' +
+        'made there. Returns a bounded transcript (oldest of the tail first). ' +
+        'List candidates with list_agents or find them with search_sessions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          targetSessionId: { type: 'string', description: '目标会话 ID（来自 list_agents / search_sessions，支持唯一前缀）' },
+          targetTitle: { type: 'string', description: '或按标题匹配目标会话（targetSessionId 优先）' },
+          maxMessages: { type: 'number', description: '最多读取的最近消息条数（默认 20，最大 50）' },
+        },
+        required: [],
+      },
+      execute: async (args, context) => {
+        const { useChatStore } = await import('@/stores/chatStore')
+        const { findSessionByIdOrTitle, formatSessionTranscript } = await import('@/services/sessionKnowledge')
+        const { sessions } = useChatStore.getState()
+        const maxMessages = Math.min(Math.max(Number(args.maxMessages) || 20, 1), 50)
+        const target = findSessionByIdOrTitle(
+          sessions,
+          String(args.targetSessionId || '').trim(),
+          String(args.targetTitle || '').trim(),
+        )
+        if (!target) {
+          return 'Error: 找不到目标会话。请先调用 list_agents 查看会话列表，或调用 search_sessions 按内容查找。'
+        }
+        const selfNote = target.id === context?.sessionId ? '（这是当前会话）' : ''
+        return formatSessionTranscript(target, maxMessages) + selfNote
+      },
+    },
+    {
+      name: 'search_sessions',
+      description:
+        'Search the message history of ALL chat sessions for a keyword (case-insensitive) ' +
+        'and return the matching sessions with a context snippet around the first hit. ' +
+        'Use it to find where something was decided/discussed before opening it with read_session.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '要搜索的关键词（消息内容）' },
+          limit: { type: 'number', description: '最多返回的会话数（默认 5，最大 10）' },
+        },
+        required: ['query'],
+      },
+      execute: async (args) => {
+        const { useChatStore } = await import('@/stores/chatStore')
+        const { searchSessionsForQuery } = await import('@/services/sessionKnowledge')
+        const { sessions } = useChatStore.getState()
+        const hits = searchSessionsForQuery(sessions, String(args.query || ''), Number(args.limit) || 5)
+        if (hits.length === 0) return `没有会话包含 "${String(args.query || '').trim()}"`
+        return hits
+          .map((h) => `- 「${h.title}」(${h.sessionId})\n  [${h.role}] ${h.snippet}`)
+          .join('\n\n')
+      },
+    },
+
     // ──────────────── Web tools (read-only network access) ────────────────
     {
       name: 'web_search',

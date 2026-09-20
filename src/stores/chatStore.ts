@@ -34,6 +34,7 @@ import {
 import { v4 as uuidv4 } from 'uuid'
 import { captureCheckpoint as captureCheckpointService } from '@/services/checkpointService'
 import { captureRunPreState, buildRunCommandCheckpoint, type RunPreState } from '@/services/runCommandCheckpoint'
+import { parseSessionReferences, buildReferenceBlock, findSessionByIdOrTitle, MAX_REFERENCES_PER_TURN } from '@/services/sessionKnowledge'
 
 // Wire the LLM cache toggles to user preferences (lazily evaluated per
 // request). Every sendLLMRequest caller — chat, agent loop, arena, subagents,
@@ -2857,6 +2858,32 @@ async function runAgentLoop(
   ))
   let stableSystemPrompt = stable
   let dynamicContext = dynamic
+  // #sess_<id> references — expand into the request's dynamic context so the
+  // model can continue from another conversation (bounded tail, at most
+  // MAX_REFERENCES_PER_TURN sessions per turn). Unresolved ids get an explicit
+  // note instead of silently vanishing.
+  {
+    const refIds = parseSessionReferences(userContent).slice(0, MAX_REFERENCES_PER_TURN)
+    if (refIds.length > 0) {
+      const all = useChatStore.getState().sessions
+      const blocks: string[] = []
+      const unresolved: string[] = []
+      for (const id of refIds) {
+        const target = findSessionByIdOrTitle(all, id)
+        if (!target) {
+          unresolved.push(id)
+          continue
+        }
+        // Self-reference adds nothing (the history is already in context).
+        if (target.id === session.id) continue
+        blocks.push(buildReferenceBlock(target))
+      }
+      if (blocks.length > 0) dynamicContext += blocks.join('')
+      if (unresolved.length > 0) {
+        dynamicContext += `\n\n（提示：${unresolved.map((id) => `#sess_${id}`).join('、')} 未找到对应会话——可用 search_sessions 工具查找相关历史。）`
+      }
+    }
+  }
   // Mode instructions are static text → stable prefix. Target-mode workflow
   // status is per-run state → dynamic context (appended to the final user turn).
   if (agentMode === 'agent') {
