@@ -956,7 +956,11 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('fs:writeFile', async (_event, path: string, content: string, encoding: string, hasBom?: boolean) => {
     assertPathAllowed(path)
-    return fileSystem.writeFile(path, content, encoding, hasBom)
+    await fileSystem.writeFile(path, content, encoding, hasBom)
+    // A successful write moves the file past its reverted state — any stale
+    // 「已回退 → 恢复」forward snapshot for this path is now outdated and must
+    // not be able to restore old AI content over the new one.
+    store.deleteRevertedFileByPath(path)
   })
 
   ipcMain.handle('fs:openStream', async (_event, path: string) => {
@@ -986,7 +990,11 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:closeWriteStream', async (_event, id: number) => {
-    return fileSystem.closeWriteStream(id)
+    const finalPath = await fileSystem.closeWriteStream(id)
+    // Streamed saves (user Ctrl+S) also supersede any pending restore of the
+    // written path — same reasoning as fs:writeFile.
+    if (finalPath) store.deleteRevertedFileByPath(finalPath)
+    return finalPath
   })
 
   ipcMain.handle('fs:abortWriteStream', async (_event, id: number) => {
@@ -1030,7 +1038,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('fs:delete', async (_event, path: string) => {
     assertPathAllowed(path)
-    return fileSystem.delete(path)
+    await fileSystem.delete(path)
+    // Deleting the file supersedes any pending restore of it (same reasoning
+    // as fs:writeFile above).
+    store.deleteRevertedFileByPath(path)
   })
 
   ipcMain.handle('fs:stat', async (_event, path: string) => {
@@ -1832,6 +1843,9 @@ function registerIpcHandlers(): void {
 
   // Revert a checkpoint: restore every snapshotted file (or delete it if it
   // didn't exist at snapshot time), then broadcast so open editors reload.
+  // Before restoring each snapshot the CURRENT (AI-written) state is captured
+  // into the reverted-files record, so the revert can be undone later via
+  // checkpoint:restore (恢复).
   ipcMain.handle('checkpoint:revert', async (_event, checkpointId: string) => {
     const allSessions = store.getSessions()
     let target: import('../shared/types').Checkpoint | null = null
@@ -1843,17 +1857,30 @@ function registerIpcHandlers(): void {
     if (!target) return { ok: false, error: '检查点不存在' }
 
     let restored = 0
+    // Only files that were ACTUALLY reverted get a forward record — a file whose
+    // revert failed keeps its AI content on disk, so restoring it would be a
+    // no-op and must not show up as「已回退」.
+    const forward: Array<{ path: string; content: string; existed: boolean }> = []
     for (const file of target.files) {
       try {
         // Defense in depth: re-validate each path at revert time (the snapshot
         // may predate an allowlist change, or be from an older version).
         if (!file?.path) continue
         assertPathAllowed(file.path)
+        // Capture the current (AI-written) state BEFORE the revert writes the
+        // pre-edit snapshot back — this is what checkpoint:restore replays.
+        let current: { content: string; existed: boolean }
+        try {
+          current = { content: (await fileSystem.readFile(file.path)).content, existed: true }
+        } catch {
+          current = { content: '', existed: false }
+        }
         if (file.existed) {
           await fileSystem.writeFile(file.path, file.content, 'utf-8', false)
         } else if (existsSync(file.path)) {
           await fileSystem.delete(file.path)
         }
+        forward.push({ path: file.path, ...current })
         restored++
       } catch (error: any) {
         console.error(`回滚 ${file.path} 失败:`, error.message)
@@ -1866,9 +1893,9 @@ function registerIpcHandlers(): void {
     // skip this deletion: a broadcast over a closing window previously threw,
     // leaving the file reverted but the checkpoint alive.
     store.deleteCheckpoint(target.id)
-    // Record the reverted files so the summary can still show them as「已回退」
-    // after the snapshot is gone (display-only, survives restart / re-entry).
-    store.addRevertedFiles(target.sessionId, target.files.map((f) => f.path))
+    // Record the reverted files WITH their AI-written forward snapshot so the
+    // summary can show them as「已回退」and offer「恢复」(survives restart).
+    store.addRevertedFiles(target.sessionId, forward.map((f) => ({ ...f, messageId: target.messageId })))
     // Notify open editors to reload the changed files (best-effort).
     try {
       for (const file of target.files) {
@@ -1878,6 +1905,71 @@ function registerIpcHandlers(): void {
       // Ignore notification failures — the revert itself is already complete.
     }
     return { ok: true, restored }
+  })
+
+  // Restore (undo a revert): write the captured AI version of each file back
+  // (or delete it when the AI version didn't exist), snapshot the current
+  // state into a fresh checkpoint attached to the original message — so the
+  // file can be reverted AGAIN — and drop the reverted-files record.
+  ipcMain.handle('checkpoint:restore', async (_event, sessionId: string, filePaths: string[]) => {
+    const wanted = new Set((Array.isArray(filePaths) ? filePaths : []).map(String).filter(Boolean))
+    const records = store.getRevertedFileRecords(sessionId).filter((r) => wanted.has(r.path))
+    const failed: string[] = []
+    let restored = 0
+    for (const rec of records) {
+      try {
+        assertPathAllowed(rec.path)
+        // Legacy rows (reverted before forward snapshots existed) have no
+        // content to restore — refuse instead of writing an empty file over
+        // whatever is on disk now.
+        if (!rec.hasSnapshot) {
+          failed.push(rec.path)
+          console.warn(`无法恢复 ${rec.path}：该回退记录产生于旧版本，未保存可恢复的内容`)
+          continue
+        }
+        // Snapshot the state that will be overwritten so the restored file
+        // stays revertable (回退/恢复 become a round-trip instead of a dead end).
+        let current: { content: string; existed: boolean }
+        try {
+          current = { content: (await fileSystem.readFile(rec.path)).content, existed: true }
+        } catch {
+          current = { content: '', existed: false }
+        }
+        if (rec.existed) {
+          await fileSystem.writeFile(rec.path, rec.content, 'utf-8', false)
+        } else if (existsSync(rec.path)) {
+          await fileSystem.delete(rec.path)
+        }
+        store.addCheckpoint({
+          id: uuidv4(),
+          sessionId,
+          createdAt: Date.now(),
+          label: `恢复 → ${rec.path.split(/[/\\]/).pop() || rec.path}`,
+          messageId: rec.messageId || undefined,
+          files: [{ path: rec.path, ...current }],
+        })
+        store.deleteRevertedFile(sessionId, rec.path)
+        restored++
+      } catch (error: any) {
+        failed.push(rec.path)
+        console.error(`恢复 ${rec.path} 失败:`, error.message)
+      }
+    }
+    try {
+      for (const rec of records) {
+        broadcast('fs:fileChanged', rec.path)
+      }
+    } catch {
+      // Ignore notification failures — the restore itself is already complete.
+    }
+    return { ok: failed.length === 0, restored, failed }
+  })
+
+  // Forward snapshot of one reverted file — used by the file-changes panel to
+  // diff「AI 版本 vs 回退后版本」after a revert.
+  ipcMain.handle('checkpoint:getRevertedRecord', async (_event, sessionId: string, filePath: string) => {
+    const rec = store.getRevertedFileRecords(sessionId).find((r) => r.path === filePath)
+    return rec ?? null
   })
 
   // ───────────────────── MCP (Model Context Protocol) ─────────────────────

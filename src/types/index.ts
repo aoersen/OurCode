@@ -13,7 +13,7 @@ export interface ElectronAPI {
   closeFileStream: (id: number) => Promise<void>
   openWriteStream: (path: string, encoding: string, hasBom?: boolean) => Promise<number>
   writeChunk: (id: number, chunk: string) => Promise<void>
-  closeWriteStream: (id: number) => Promise<void>
+  closeWriteStream: (id: number) => Promise<string | undefined>
   abortWriteStream: (id: number) => Promise<void>
   listDir: (path: string) => Promise<import('@shared/types').FileEntry[]>
   createFile: (path: string) => Promise<void>
@@ -177,6 +177,8 @@ export interface ElectronAPI {
   checkpointDelete: (sessionId: string) => Promise<void>
   checkpointRevert: (checkpointId: string) => Promise<{ ok: boolean; restored: number; error?: string }>
   checkpointListReverted: (sessionId: string) => Promise<string[]>
+  checkpointRestore: (sessionId: string, filePaths: string[]) => Promise<{ ok: boolean; restored: number; failed?: string[]; error?: string }>
+  checkpointGetRevertedRecord: (sessionId: string, filePath: string) => Promise<import('@shared/types').RevertedFileRecord | null>
 
   // MCP (Model Context Protocol)
   mcpListTools: () => Promise<Array<{ server: string; name: string; description?: string; inputSchema?: Record<string, any> }>>

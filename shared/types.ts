@@ -238,6 +238,21 @@ export interface Checkpoint {
   files: CheckpointFile[]
 }
 
+// A reverted file's forward snapshot — captured at revert time so the revert
+// can be undone (恢复). `content`/`existed` describe the AI-written state that
+// was on disk right before the revert, and `messageId` points back at the
+// assistant message whose checkpoint was reverted (used to rebuild a re-
+// revertable checkpoint on restore). `hasSnapshot` is false for legacy rows
+// created before forward snapshots existed — those must never be restored.
+export interface RevertedFileRecord {
+  path: string
+  content: string
+  existed: boolean
+  revertedAt: number
+  messageId?: string
+  hasSnapshot: boolean
+}
+
 // Persistent user memory (injected into the system prompt)
 export interface Memory {
   id: string

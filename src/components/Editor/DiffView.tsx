@@ -15,6 +15,8 @@ interface DiffViewProps {
   title?: string
   /** When provided, renders a "revert this change" button in the header. */
   onRevert?: () => void
+  /** 已回退文件的「恢复」入口 —— 把回退前 AI 写入的版本写回磁盘。 */
+  onRestore?: () => void
   /** Optional banner above the editor (e.g. "no pre-edit snapshot found"). */
   notice?: string
   /** Absolute path of the file under review. Enables per-change 接受/拒绝 arrows:
@@ -38,7 +40,7 @@ const REJECT_ICON =
  * back into the current document and persists it. Both are the same line
  * splice (`@/utils/diffReview`), just in opposite directions.
  */
-export default function DiffView({ original, modified, language, onClose, title, onRevert, notice, filePath }: DiffViewProps) {
+export default function DiffView({ original, modified, language, onClose, title, onRevert, onRestore, notice, filePath }: DiffViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null)
   const originalModelRef = useRef<monaco.editor.ITextModel | null>(null)
@@ -301,6 +303,19 @@ export default function DiffView({ original, modified, language, onClose, title,
                 <path d="M3 4v5h5" />
               </svg>
               {t('editor.revertWholeChange')}
+            </button>
+          )}
+          {onRestore && (
+            <button
+              onClick={onRestore}
+              className="px-2.5 py-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-md hover:bg-emerald-500/30 transition-colors flex items-center gap-1"
+              title={t('editor.restoreWholeChange')}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 12a8 8 0 1 1-2.3-5.7" />
+                <path d="M20 3v6h-6" />
+              </svg>
+              {t('editor.restoreWholeChange')}
             </button>
           )}
           <button

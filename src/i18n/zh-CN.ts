@@ -585,6 +585,12 @@ export const zhCN = {
   'chat.filesChangedReverted': '已回退 {count} 个文件的改动',
   'chat.filesChangedRevertFailed': '有 {count} 个文件的改动回退失败',
   'chat.filesChangedEmpty': '已无待回退的改动',
+  // 撤销回退（找回 AI 写入的版本）
+  'chat.filesChangedRestore': '恢复',
+  'chat.filesChangedRestoreFile': '恢复此文件的 AI 改动',
+  'chat.filesChangedRestoreAll': '恢复全部改动',
+  'chat.filesChangedRestored': '已恢复 {count} 个文件的改动',
+  'chat.filesChangedRestoreFailed': '有 {count} 个文件的改动恢复失败',
 
   // 重新生成前的确认弹窗（会话对文件有调整时）
   'chat.regenerateConfirmTitle': '重新生成',
@@ -1039,6 +1045,7 @@ export const zhCN = {
   'editor.changesRemaining': '剩余 {count} 处改动',
   'editor.changesCleared': '所有改动已确认',
   'editor.revertWholeChange': '回退此变更',
+  'editor.restoreWholeChange': '恢复此变更',
   'editor.diffBufferDirty': '该文件在编辑器中有未保存的修改，请先保存或撤销后再逐块处理。',
   'editor.diffWriteFailed': '写入文件失败，请重试',
   'editor.problems': '问题',

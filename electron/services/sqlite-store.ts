@@ -3,7 +3,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { CryptoService } from './crypto'
-import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, TodoItem, Workflow, AgentRun, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
+import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
 import { DEFAULT_PREFERENCES } from '../../shared/constants'
 
 /** Parse a JSON column safely ('' / null / invalid → fallback) */
@@ -115,6 +115,24 @@ export class SQLiteStore {
     // stored copy when a later save arrives without it.
     if (!msgColumns.some((c: any) => c.name === 'attachments')) {
       this.db.exec("ALTER TABLE chat_messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+    }
+    // Reverted files carry the AI-written forward snapshot (restore_content /
+    // restore_existed) and the source message id so a revert can be undone
+    // (恢复) and the re-created checkpoint re-attaches to its message.
+    // Legacy rows (reverted before this feature) get has_snapshot = 0 and are
+    // never restored — there is no content to restore.
+    const revertedColumns = this.db.prepare("PRAGMA table_info(reverted_files)").all() as any[]
+    if (!revertedColumns.some((c: any) => c.name === 'restore_content')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN restore_content TEXT DEFAULT ''")
+    }
+    if (!revertedColumns.some((c: any) => c.name === 'restore_existed')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN restore_existed INTEGER DEFAULT 1")
+    }
+    if (!revertedColumns.some((c: any) => c.name === 'message_id')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN message_id TEXT DEFAULT ''")
+    }
+    if (!revertedColumns.some((c: any) => c.name === 'has_snapshot')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN has_snapshot INTEGER DEFAULT 0")
     }
     // Add branch/pin/archive columns to chat_sessions if missing
     const sessColumns = this.db.prepare("PRAGMA table_info(chat_sessions)").all() as any[]
@@ -282,10 +300,20 @@ export class SQLiteStore {
       -- Lightweight record of files whose changes were reverted, so the file-
       -- changes summary can still show them as「已回退」after the checkpoint
       -- snapshot itself is deleted (and after restart / session re-entry).
+      -- restore_content / restore_existed keep the AI-written state captured at
+      -- revert time so the revert can be undone (恢复), and message_id points
+      -- back at the source assistant message to rebuild a re-revertable
+      -- checkpoint on restore. has_snapshot marks records that really carry a
+      -- forward snapshot — legacy rows (reverted before this feature) don't,
+      -- and restoring them must be refused instead of writing empty content.
       CREATE TABLE IF NOT EXISTS reverted_files (
         session_id TEXT NOT NULL,
         file_path TEXT NOT NULL,
         reverted_at INTEGER NOT NULL,
+        restore_content TEXT DEFAULT '',
+        restore_existed INTEGER DEFAULT 1,
+        message_id TEXT DEFAULT '',
+        has_snapshot INTEGER DEFAULT 0,
         PRIMARY KEY (session_id, file_path)
       );
 
@@ -821,21 +849,50 @@ export class SQLiteStore {
 
   // ─────────────── Reverted files (display-only, survives checkpoint delete) ─
   getRevertedFiles(sessionId: string): string[] {
-    const rows = this.db.prepare(
-      'SELECT file_path FROM reverted_files WHERE session_id = ? ORDER BY reverted_at ASC'
-    ).all(sessionId) as any[]
-    return rows.map((r) => r.file_path)
+    return this.getRevertedFileRecords(sessionId).map((r) => r.path)
   }
 
-  addRevertedFiles(sessionId: string, filePaths: string[]): void {
+  /** Full forward-snapshot records of a session's reverted files — used to
+   *  restore (undo a revert) and to show the AI-written content in diffs. */
+  getRevertedFileRecords(sessionId: string): RevertedFileRecord[] {
+    const rows = this.db.prepare(
+      'SELECT file_path, restore_content, restore_existed, reverted_at, message_id, has_snapshot FROM reverted_files WHERE session_id = ? ORDER BY reverted_at ASC'
+    ).all(sessionId) as any[]
+    return rows.map((r) => ({
+      path: r.file_path,
+      content: r.restore_content || '',
+      existed: r.restore_existed !== 0,
+      revertedAt: r.reverted_at,
+      messageId: r.message_id || undefined,
+      hasSnapshot: r.has_snapshot !== 0,
+    }))
+  }
+
+  addRevertedFiles(
+    sessionId: string,
+    records: Array<{ path: string; content?: string; existed?: boolean; messageId?: string }>,
+  ): void {
     const now = Date.now()
-    const insert = this.db.prepare(
-      'INSERT OR REPLACE INTO reverted_files (session_id, file_path, reverted_at) VALUES (?, ?, ?)'
-    )
-    for (const p of filePaths) {
-      if (!p) continue
-      insert.run(sessionId, p, now)
+    const insert = this.db.prepare(`
+      INSERT OR REPLACE INTO reverted_files
+        (session_id, file_path, reverted_at, restore_content, restore_existed, message_id, has_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `)
+    for (const r of records) {
+      if (!r?.path) continue
+      insert.run(sessionId, r.path, now, r.content || '', r.existed === false ? 0 : 1, r.messageId || '')
     }
+  }
+
+  deleteRevertedFile(sessionId: string, filePath: string): void {
+    this.db.prepare('DELETE FROM reverted_files WHERE session_id = ? AND file_path = ?').run(sessionId, filePath)
+  }
+
+  /** Drop every reverted record for a path (any session) — called after a
+   *  successful write/delete so a stale forward snapshot can't restore outdated
+   *  AI content over the file's newer state. */
+  deleteRevertedFileByPath(filePath: string): void {
+    this.db.prepare('DELETE FROM reverted_files WHERE file_path = ?').run(filePath)
   }
 
   deleteRevertedFiles(sessionId: string): void {

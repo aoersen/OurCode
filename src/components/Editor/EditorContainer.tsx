@@ -365,6 +365,25 @@ export default function EditorContainer({ panelId }: EditorContainerProps) {
       .catch((error) => console.error('Failed to revert checkpoint:', error))
   }, [])
 
+  // Restore an already-reverted file from the diff view — writes the AI version
+  // captured at revert time back to disk, then reopens the file in a normal tab.
+  const handleDiffRestore = useCallback(() => {
+    const diff = useEditorStore.getState().activeDiff
+    if (!diff?.restoreSessionId || !diff?.restorePath) return
+    const { restoreSessionId: sessionId, restorePath: path } = diff
+    if (!window.confirm(`确定要恢复 "${diff.fileName}" 的 AI 改动吗？此操作会把回退前 AI 写入的版本写回磁盘。`)) return
+    useChatStore.getState().restoreRevertedPath(sessionId, path)
+      .then((ok) => {
+        if (!ok) {
+          useUIStore.getState().showNotification('恢复失败，未找到该文件的回退记录。', 'error')
+          return
+        }
+        window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: path }))
+        return useEditorStore.getState().openFile(path)
+      })
+      .catch((error) => console.error('Failed to restore reverted file:', error))
+  }, [])
+
   // Keep editor options in sync with preferences and the active file's size
   // (large files get a reduced-feature preset). Depends on the file size as a
   // primitive, not the whole `openFiles` array, so this doesn't re-run on every
@@ -539,6 +558,7 @@ export default function EditorContainer({ panelId }: EditorContainerProps) {
                 filePath={activeDiff.path}
                 onClose={closeDiff}
                 onRevert={activeDiff.checkpointId ? handleDiffRevert : undefined}
+                onRestore={activeDiff.restoreSessionId && activeDiff.restorePath ? handleDiffRestore : undefined}
               />
             )}
           </div>

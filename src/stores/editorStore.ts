@@ -122,6 +122,10 @@ export interface ActiveDiff {
   /** 'checkpoint' = AI-edit diff; 'git' = source-control diff (VS Code style). */
   kind: 'checkpoint' | 'git'
   checkpointId?: string
+  /** 已回退文件的恢复入口：会话 id + 文件路径 —— 差异视图右上角渲染「恢复」
+   *  按钮，把回退前 AI 写入的版本写回磁盘。 */
+  restoreSessionId?: string
+  restorePath?: string
   /** Optional banner above the diff (e.g. no pre-edit snapshot found). */
   notice?: string
   /** Git diff extras — set when kind === 'git'. */

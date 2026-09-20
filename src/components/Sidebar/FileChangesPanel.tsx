@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -90,6 +90,9 @@ export default function FileChangesPanel() {
   // Select the ACTION only — a whole-store subscription would re-render this
   // panel on every editorStore change (each cursor move while this tab is open).
   const openFile = useEditorStore((s) => s.openFile)
+  // 已回退文件路径（按会话分组）—— 本地状态而非全局 store：面板跨全部会话展示，
+  // 而 store.revertedFiles 只属于当前激活会话。会话/消息变化后重新拉取。
+  const [revertedBySession, setRevertedBySession] = useState<Record<string, string[]>>({})
 
   // Group file changes by session
   const groupedChanges = useMemo(() => {
@@ -123,6 +126,27 @@ export default function FileChangesPanel() {
     return groups
   }, [sessions])
 
+  // Load each session's reverted-file list so rows can show「已回退」+「恢复」。
+  // Fired whenever the grouping changes (new session / new messages); failed
+  // loads are silently ignored (the row just falls back to 回退/无检查点).
+  useEffect(() => {
+    let cancelled = false
+    const ids = Array.from(new Set(groupedChanges.map((g) => g.sessionId)))
+    for (const sessionId of ids) {
+      window.electronAPI.checkpointListReverted(sessionId)
+        .then((list) => {
+          if (!cancelled) {
+            setRevertedBySession((prev) => ({ ...prev, [sessionId]: Array.isArray(list) ? list : [] }))
+          }
+        })
+        .catch(() => { /* ignore */ })
+    }
+    return () => { cancelled = true }
+  }, [groupedChanges])
+
+  const isReverted = (change: FileChange) =>
+    (revertedBySession[change.sessionId] || []).includes(change.filePath)
+
   const getStatusIcon = (toolName: string) => {
     switch (toolName) {
       case 'write_file': return { icon: 'A', color: 'var(--green, #16a34a)', label: 'added' }
@@ -130,6 +154,14 @@ export default function FileChangesPanel() {
       case 'delete_file': return { icon: 'D', color: 'var(--red, #dc2626)', label: 'deleted' }
       default: return { icon: 'M', color: 'var(--yellow, #d97706)', label: 'modified' }
     }
+  }
+
+  /** Refresh the panel-local reverted list for one session from the DB. */
+  const refreshReverted = async (sessionId: string) => {
+    try {
+      const list = await window.electronAPI.checkpointListReverted(sessionId)
+      setRevertedBySession((prev) => ({ ...prev, [sessionId]: Array.isArray(list) ? list : [] }))
+    } catch { /* ignore */ }
   }
 
   const handleViewDiff = async (change: FileChange) => {
@@ -142,9 +174,23 @@ export default function FileChangesPanel() {
     // no snapshot exists at all do we surface a hint banner.
     let original = ''
     let notice: string | undefined
+    let restoreSessionId: string | undefined
+    let restorePath: string | undefined
     if (cpFile) {
       original = cpFile.existed ? cpFile.content : ''
-    } else {
+    } else if (isReverted(change)) {
+      // 已回退的文件：左侧展示回退前的 AI 版本（从恢复快照取回），这样
+      // 「回退之后之前写的看不到了」不再成立 —— 差异视图里就能看到并找回。
+      // 旧版本产生的回退记录没有保存内容（hasSnapshot=false），跳过。
+      const rec = await window.electronAPI.checkpointGetRevertedRecord(change.sessionId, change.filePath)
+      if (rec?.hasSnapshot) {
+        original = rec.existed ? rec.content : ''
+        notice = '该文件的 AI 改动已回退：左侧为回退前 AI 写入的版本，右侧为当前磁盘内容，可点右上角「恢复」找回。'
+        restoreSessionId = change.sessionId
+        restorePath = change.filePath
+      }
+    }
+    if (!cpFile && !restorePath) {
       notice = '未找到该文件的修改前快照，左侧仅展示当前内容。'
     }
 
@@ -176,6 +222,8 @@ export default function FileChangesPanel() {
       kind: 'checkpoint',
       checkpointId: checkpoint?.id,
       notice,
+      restoreSessionId,
+      restorePath,
     })
   }
 
@@ -185,12 +233,39 @@ export default function FileChangesPanel() {
 
     if (checkpoint) {
       if (confirm(`确定要回退 "${change.fileName}" 的 AI 改动吗？此操作会恢复到 AI 修改之前的内容。`)) {
-        await revertCheckpoint(checkpoint.id)
+        const res = await revertCheckpoint(checkpoint.id)
+        if (res?.ok) {
+          // 一个检查点可能覆盖多个文件 —— 整组重拉，让所有受影响的行都
+          // 变成「已回退」+「恢复」，而不是只标记被点的这一个。
+          await refreshReverted(change.sessionId)
+        }
         // Force file reload in editor
         window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolvePath(change.filePath) }))
       }
+    } else if (isReverted(change)) {
+      alert('该文件的改动已经回退过了，可用行内「恢复」按钮找回 AI 写入的版本。')
     } else {
       alert('没有找到该文件的检查点记录，无法回退。')
+    }
+  }
+
+  const handleRestore = async (change: FileChange) => {
+    if (!confirm(`确定要恢复 "${change.fileName}" 的 AI 改动吗？此操作会把回退前 AI 写入的版本写回磁盘。`)) return
+    try {
+      const res = await window.electronAPI.checkpointRestore(change.sessionId, [change.filePath])
+      if (res?.ok && (res?.restored ?? 0) > 0) {
+        await refreshReverted(change.sessionId)
+        // 恢复会在主进程重建一个检查点（可再次回退）—— 若正是当前激活会话，
+        // 刷新 store 里的检查点，让消息上的「回滚修改」按钮与汇总框恢复可用。
+        if (useChatStore.getState().activeSessionId === change.sessionId) {
+          await loadCheckpoints(change.sessionId)
+        }
+        window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolvePath(change.filePath) }))
+      } else {
+        alert('恢复失败，未找到该文件的回退记录。')
+      }
+    } catch {
+      alert('恢复失败，请重试。')
     }
   }
 
@@ -232,6 +307,7 @@ export default function FileChangesPanel() {
               <div className="space-y-0.5 pl-4">
                 {group.changes.map((change, i) => {
                   const st = getStatusIcon(change.toolName)
+                  const reverted = isReverted(change)
                   return (
                     <div
                       key={`${change.filePath}-${i}`}
@@ -252,6 +328,15 @@ export default function FileChangesPanel() {
                         <span className={`text-[12px] font-mono text-nova-text-primary truncate ${change.toolName === 'delete_file' ? 'line-through text-nova-text-muted' : ''}`}>
                           {change.fileName}
                         </span>
+                        {/* 已回退标记 —— 回退操作在历史里留下可见记录 */}
+                        {reverted && (
+                          <span className="shrink-0 flex items-center gap-0.5 text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-1.5 py-0.5">
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M20 6 9 17l-5-5" />
+                            </svg>
+                            已回退
+                          </span>
+                        )}
                       </div>
                       {/* Hover action pill — slides in from the right */}
                       <div
@@ -269,20 +354,37 @@ export default function FileChangesPanel() {
                           查看变更
                         </button>
                         <span className="w-px h-3 bg-nova-border" />
-                        <button
-                          className="text-[11px] text-nova-text-muted hover:text-error flex items-center gap-0.5 whitespace-nowrap"
-                          title="回滚"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleRevert(change)
-                          }}
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M3 12a9 9 0 1 0 3-6.7" />
-                            <path d="M3 4v5h5" />
-                          </svg>
-                          回退
-                        </button>
+                        {reverted ? (
+                          <button
+                            className="text-[11px] text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 flex items-center gap-0.5 whitespace-nowrap"
+                            title="恢复 AI 写入的版本"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleRestore(change)
+                            }}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M20 12a8 8 0 1 1-2.3-5.7" />
+                              <path d="M20 3v6h-6" />
+                            </svg>
+                            恢复
+                          </button>
+                        ) : (
+                          <button
+                            className="text-[11px] text-nova-text-muted hover:text-error flex items-center gap-0.5 whitespace-nowrap"
+                            title="回滚"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleRevert(change)
+                            }}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M3 12a9 9 0 1 0 3-6.7" />
+                              <path d="M3 4v5h5" />
+                            </svg>
+                            回退
+                          </button>
+                        )}
                       </div>
                     </div>
                   )

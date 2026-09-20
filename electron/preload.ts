@@ -263,6 +263,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkpointDelete: (sessionId: string) => ipcRenderer.invoke('checkpoint:delete', sessionId),
   checkpointRevert: (checkpointId: string) => ipcRenderer.invoke('checkpoint:revert', checkpointId),
   checkpointListReverted: (sessionId: string) => ipcRenderer.invoke('checkpoint:listReverted', sessionId),
+  checkpointRestore: (sessionId: string, filePaths: string[]) => ipcRenderer.invoke('checkpoint:restore', sessionId, filePaths),
+  checkpointGetRevertedRecord: (sessionId: string, filePath: string) => ipcRenderer.invoke('checkpoint:getRevertedRecord', sessionId, filePath),
 
   // MCP
   mcpListTools: () => ipcRenderer.invoke('mcp:listTools'),

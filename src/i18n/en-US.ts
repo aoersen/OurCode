@@ -588,6 +588,12 @@ export const enUS: Record<TranslationKey, string> = {
   'chat.filesChangedReverted': 'Reverted changes to {count} file(s)',
   'chat.filesChangedRevertFailed': 'Failed to revert {count} file(s)',
   'chat.filesChangedEmpty': 'No pending changes to revert',
+  // Undo a revert (bring back the AI-written version)
+  'chat.filesChangedRestore': 'Restore',
+  'chat.filesChangedRestoreFile': 'Restore the AI changes to this file',
+  'chat.filesChangedRestoreAll': 'Restore all changes',
+  'chat.filesChangedRestored': 'Restored changes to {count} file(s)',
+  'chat.filesChangedRestoreFailed': 'Failed to restore {count} file(s)',
 
   // Confirm dialog before regenerating (the session changed files)
   'chat.regenerateConfirmTitle': 'Regenerate',
@@ -1042,6 +1048,7 @@ export const enUS: Record<TranslationKey, string> = {
   'editor.changesRemaining': '{count} changes left',
   'editor.changesCleared': 'All changes reviewed',
   'editor.revertWholeChange': 'Revert This Change',
+  'editor.restoreWholeChange': 'Restore This Change',
   'editor.diffBufferDirty': 'This file has unsaved edits in the editor — save or undo them before reviewing individual changes.',
   'editor.diffWriteFailed': 'Failed to write the file, please retry',
   'editor.problems': 'Problems',

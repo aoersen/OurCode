@@ -718,6 +718,12 @@ interface ChatState {
   revertPathInSession: (sessionId: string, path: string) => Promise<boolean>
   /** Revert a list of file paths; returns ok/failed counts for notifications. */
   revertFilesByPaths: (sessionId: string, paths: string[]) => Promise<{ ok: number; failed: number }>
+  /** Undo a revert for one file path — writes the AI version captured at revert
+   *  time back to disk (a fresh checkpoint is created in the main process so
+   *  the file stays revertable). True when the restore succeeded. */
+  restoreRevertedPath: (sessionId: string, path: string) => Promise<boolean>
+  /** Undo reverts for a list of file paths; returns ok/failed counts. */
+  restoreRevertedPaths: (sessionId: string, paths: string[]) => Promise<{ ok: number; failed: number }>
 
   // Agent run actions
   startAgentRun: (sessionId: string, task: string, opts?: { resumeRunId?: string }) => void
@@ -1161,6 +1167,28 @@ function markInboundSettled(sessionId: string): void {
   else _inboundLaunches.set(sessionId, next)
 }
 
+/** Core of undoing one reverted file (no store reload) — shared by the single-
+ *  and bulk-restore store actions. Only the ACTIVE session's revertedFiles
+ *  list is touched: the file-changes sidebar restores files of OTHER sessions
+ *  too, and those must not clobber the active view. */
+async function restoreRevertedOne(sessionId: string, path: string): Promise<boolean> {
+  try {
+    const res = await window.electronAPI.checkpointRestore(sessionId, [path])
+    const ok = !!res?.ok && (res?.restored ?? 0) > 0
+    if (ok) {
+      const s = useChatStore.getState()
+      useChatStore.setState({
+        revertedFiles: s.activeSessionId === sessionId
+          ? s.revertedFiles.filter((p) => p !== path)
+          : s.revertedFiles,
+      })
+    }
+    return ok
+  } catch {
+    return false
+  }
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -1423,6 +1451,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (await get().revertPathInSession(sessionId, p)) okFiles++
       else failedFiles++
     }
+    return { ok: okFiles, failed: failedFiles }
+  },
+
+  restoreRevertedPath: async (sessionId, path) => {
+    const ok = await restoreRevertedOne(sessionId, path)
+    // The restore re-created a checkpoint (for re-revert) — refresh so the
+    // message-level rollback button and the summary see it again.
+    if (ok && get().activeSessionId === sessionId) void get().loadCheckpoints(sessionId)
+    return ok
+  },
+
+  restoreRevertedPaths: async (sessionId, paths) => {
+    let okFiles = 0
+    let failedFiles = 0
+    for (const p of paths) {
+      if (await restoreRevertedOne(sessionId, p)) okFiles++
+      else failedFiles++
+    }
+    // Single checkpoint reload AFTER the whole batch — per-path reloads would
+    // race each other (each clears + refetches) and the last stale fetch could
+    // win over the freshest state.
+    if (get().activeSessionId === sessionId) void get().loadCheckpoints(sessionId)
     return { ok: okFiles, failed: failedFiles }
   },
 
