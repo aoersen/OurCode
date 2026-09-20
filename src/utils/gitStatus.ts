@@ -20,6 +20,9 @@ export interface GitStatusEntry {
   staged: boolean
   /** rename 前的旧路径（非 rename 时省略）。 */
   oldFile?: string
+  /** 合并/变基冲突未解决（UU / AA / DD / AU / UA）。冲突条目只出一条——
+   *  它不是「两份改动」，而是要用户先处理的一个文件。 */
+  conflict?: boolean
 }
 
 /** 由 porcelain 的 X（index）/Y（worktree）状态列推导展示状态。 */
@@ -42,6 +45,9 @@ function unquote(path: string): string {
   }
   return path
 }
+
+/** 冲突状态对（porcelain 的 XY 两列）。 */
+const CONFLICT_PAIRS = new Set(['UU', 'AA', 'DD', 'AU', 'UA', 'DU', 'UD'])
 
 export function parseGitStatusPorcelain(output: string): GitStatusEntry[] {
   const entries: GitStatusEntry[] = []
@@ -73,6 +79,13 @@ export function parseGitStatusPorcelain(output: string): GitStatusEntry[] {
     const indexChanged = indexStatus !== ' ' && indexStatus !== '?'
     const workChanged = workStatus !== ' ' && workStatus !== '?'
 
+    if (CONFLICT_PAIRS.has(indexStatus + workStatus)) {
+      // 冲突：git 两侧都标了改动，但它既不该进「已暂存」列表（`git commit` 会拒绝），
+      // 也不该拆成两条（用户要处理的是这一个文件）。
+      entries.push({ file, status: statusOf(indexStatus, workStatus), staged: false, oldFile, conflict: true })
+      continue
+    }
+
     if (indexChanged && workChanged) {
       // 部分暂存（MM / AM / AD / RM …）：一条 staged + 一条 unstaged。
       entries.push({ file, status: statusOf(indexStatus, ' '), staged: true, oldFile })
@@ -82,4 +95,15 @@ export function parseGitStatusPorcelain(output: string): GitStatusEntry[] {
     }
   }
   return entries
+}
+
+/** 未解决冲突的文件列表。 */
+export function conflictedFiles(entries: GitStatusEntry[]): string[] {
+  return entries.filter((e) => e.conflict).map((e) => e.file)
+}
+
+/** `git commit`（不带 -a）实际会提交的文件 —— 提交按钮据此判断有没有东西可提，
+ *  而不是先跑一次 `add -A` 把工作区里所有未跟踪文件都塞进这次提交。 */
+export function committableFiles(entries: GitStatusEntry[]): string[] {
+  return entries.filter((e) => e.staged && !e.conflict).map((e) => e.file)
 }

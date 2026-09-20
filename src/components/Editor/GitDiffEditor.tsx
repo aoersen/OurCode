@@ -4,6 +4,7 @@ import { useEditorStore, ActiveDiff } from '@/stores/editorStore'
 import { useI18n } from '@/i18n/useI18n'
 import { parseGitDiff, buildChangePatch, buildHunkPatch, findHunkForChange, DiffChangeRange } from '@/utils/gitDiff'
 import { runGitCommand, fetchGitDiffSides, notifyGitChanged } from '@/services/git'
+import { applyPatchArgs } from '@/utils/gitPatch'
 
 type ChangeAction = 'revert' | 'stage' | 'unstage'
 
@@ -106,20 +107,7 @@ export default function GitDiffEditor({ diff, onClose }: GitDiffEditorProps) {
 
   const tryApplyPatch = useCallback(async (patch: string, action: ChangeAction): Promise<boolean> => {
     const { isStaged: stagedNow } = stateRef.current
-    // Staged diff → the index is the working side; unstage/revert both mean
-    // reverse-apply to the index. Unstaged → the worktree is the working side.
-    let check: string[]
-    let apply: string[]
-    if (action === 'stage') {
-      check = ['apply', '--cached', '--whitespace=nowarn', '--check', '-']
-      apply = ['apply', '--cached', '--whitespace=nowarn', '-']
-    } else if (action === 'unstage' || (action === 'revert' && stagedNow)) {
-      check = ['apply', '--cached', '-R', '--whitespace=nowarn', '--check', '-']
-      apply = ['apply', '--cached', '-R', '--whitespace=nowarn', '-']
-    } else {
-      check = ['apply', '-R', '--whitespace=nowarn', '--check', '-']
-      apply = ['apply', '-R', '--whitespace=nowarn', '-']
-    }
+    const { check, apply } = applyPatchArgs(action, stagedNow)
     const checkRes = await runGitCommand(check, patch)
     if (!checkRes.success) return false
     const applyRes = await runGitCommand(apply, patch)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseGitStatusPorcelain } from '../utils/gitStatus'
+import { parseGitStatusPorcelain, committableFiles, conflictedFiles } from '../utils/gitStatus'
 
 describe('parseGitStatusPorcelain', () => {
   it('parses modified / added / deleted / untracked entries', () => {
@@ -60,5 +60,41 @@ describe('parseGitStatusPorcelain', () => {
 
   it('returns [] for empty output', () => {
     expect(parseGitStatusPorcelain('')).toEqual([])
+  })
+
+  it('marks conflicted entries once, not as a staged + unstaged pair', () => {
+    for (const pair of ['UU', 'AA', 'DD', 'AU', 'UA']) {
+      const entries = parseGitStatusPorcelain(`${pair} src/conflict.ts`)
+      expect(entries, pair).toHaveLength(1)
+      expect(entries[0]).toMatchObject({ file: 'src/conflict.ts', conflict: true, staged: false })
+    }
+  })
+
+  it('keeps non-conflicted entries unmarked', () => {
+    expect(parseGitStatusPorcelain('MM src/partial.ts\n')[0].conflict).toBeUndefined()
+  })
+})
+
+describe('committableFiles', () => {
+  it('is the staged set only — untracked work is never implicit', () => {
+    const entries = parseGitStatusPorcelain(['M  src/staged.ts', ' M src/other.ts', '?? src/new.ts'].join('\n'))
+    expect(committableFiles(entries)).toEqual(['src/staged.ts'])
+  })
+
+  it('excludes conflicted files (git would refuse the commit anyway)', () => {
+    const entries = parseGitStatusPorcelain(['M  src/ok.ts', 'UU src/bad.ts'].join('\n'))
+    expect(committableFiles(entries)).toEqual(['src/ok.ts'])
+  })
+
+  it('counts a partially staged file once', () => {
+    const entries = parseGitStatusPorcelain('MM src/partial.ts')
+    expect(committableFiles(entries)).toEqual(['src/partial.ts'])
+  })
+})
+
+describe('conflictedFiles', () => {
+  it('lists only the conflicted paths', () => {
+    const entries = parseGitStatusPorcelain(['M  a.ts', 'UU b.ts', '?? c.ts'].join('\n'))
+    expect(conflictedFiles(entries)).toEqual(['b.ts'])
   })
 })
