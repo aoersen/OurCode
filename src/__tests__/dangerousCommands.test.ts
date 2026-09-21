@@ -23,6 +23,18 @@ describe('analyzeDangerousCommand', () => {
     expect(analyzeDangerousCommand('format c:')).toBeTruthy()
     expect(analyzeDangerousCommand('shutdown /s /t 0')).toBeTruthy()
     expect(analyzeDangerousCommand('Restart-Computer -Force')).toBeTruthy()
+    expect(analyzeDangerousCommand('npm run build && shutdown')).toBeTruthy()
+  })
+
+  it('does NOT flag the words format/shutdown/reboot inside arguments', () => {
+    // These are everyday coding commands — a naive word match would force the
+    // approval dialog on every round of an auto-approve run.
+    expect(analyzeDangerousCommand('npm run format')).toBeNull()
+    expect(analyzeDangerousCommand('ruff format .')).toBeNull()
+    expect(analyzeDangerousCommand('clang-format -i src/*.cpp')).toBeNull()
+    expect(analyzeDangerousCommand('git log --format=%h -5')).toBeNull()
+    expect(analyzeDangerousCommand('python train.py --mode shutdown')).toBeNull()
+    expect(analyzeDangerousCommand('echo reboot now')).toBeNull()
   })
 
   it('flags remote-execution shapes', () => {

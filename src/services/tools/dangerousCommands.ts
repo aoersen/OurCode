@@ -41,7 +41,7 @@ const CHECKS: Array<(command: string) => DangerFinding | null> = [
     if (!ROOTISH_RM_TARGET.test(m[3])) return null
     return { reason: `递归强制删除根目录/家目录级路径：${m[3].trim()}` }
   },
-  (c) => /\b(format|diskpart|shutdown|reboot)\b/i.test(c)
+  (c) => /(?:^|[;&|]\s*)(?:format|diskpart|shutdown|reboot)\b(?!-)/i.test(c)
     ? { reason: '磁盘格式化 / 关机重启类系统命令' }
     : null,
   (c) => /\bRestart-Computer\b|\bStop-Computer\b/i.test(c)
