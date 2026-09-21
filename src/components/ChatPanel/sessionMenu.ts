@@ -18,6 +18,7 @@ export interface SessionMenuTarget {
 export function useSessionMenu() {
   const t = useI18n()
   const deleteSession = useChatStore((s) => s.deleteSession)
+  const runningSessionIds = useChatStore((s) => s.runningSessionIds)
   const renameSession = useChatStore((s) => s.renameSession)
   const exportSession = useChatStore((s) => s.exportSession)
   const togglePin = useChatStore((s) => s.togglePin)
@@ -25,7 +26,10 @@ export function useSessionMenu() {
   const showContextMenu = useUIStore((s) => s.showContextMenu)
 
   const handleDelete = (sessionId: string) => {
-    if (confirm(t('chat.deleteSessionConfirm'))) {
+    // Deleting stops the run — the user must know the file edits it already made
+    // lose their rollback snapshots along with the conversation.
+    const running = runningSessionIds.includes(sessionId)
+    if (confirm(t(running ? 'chat.deleteSessionConfirmRunning' : 'chat.deleteSessionConfirm'))) {
       deleteSession(sessionId)
     }
   }

@@ -1605,3 +1605,70 @@ describe('chatStore subagent run persistence (一人公司任务流回看)', () 
     expect(useChatStore.getState().subagentProgress).toEqual({})
   })
 })
+
+describe('deleting a session stops its run', () => {
+  const reset = () => {
+    vi.clearAllMocks()
+    useChatStore.setState({ ...initialState, sessions: [], activeSessionId: null })
+  }
+
+  it('aborts the controller and drops every per-session leftover', () => {
+    reset()
+    const id = makeSession('del-1')
+    const controller = new AbortController()
+    useChatStore.setState((s) => ({
+      runningSessionIds: [...s.runningSessionIds, id],
+      abortControllers: { ...s.abortControllers, [id]: controller },
+      queuedMessagesBySession: { ...s.queuedMessagesBySession, [id]: [{ content: '稍后发' } as never] },
+      inboundQueue: [
+        { targetSessionId: id, senderTitle: 'peer', content: '投给它', hold: false },
+        { targetSessionId: 'other', senderTitle: 'peer', content: '别人的', hold: false },
+      ],
+      streamingBySession: { ...s.streamingBySession, [id]: { content: 'x', thinking: '' } },
+      runPhaseBySession: { ...s.runPhaseBySession, [id]: 'tool' as never },
+      activeRuns: { ...s.activeRuns, [id]: { runId: 'r1', sessionId: id } },
+      agentTraces: { ...s.agentTraces, [id]: [] },
+      batchApprovedBySession: { ...s.batchApprovedBySession, [id]: true },
+    }))
+
+    useChatStore.getState().deleteSession(id)
+
+    // The run must be taken down, not orphaned: an un-aborted loop keeps writing
+    // files in a workspace whose checkpoints were deleted with the session.
+    expect(controller.signal.aborted).toBe(true)
+    const st = useChatStore.getState()
+    expect(st.sessions.find((x) => x.id === id)).toBeUndefined()
+    expect(st.runningSessionIds).not.toContain(id)
+    expect(st.queuedMessagesBySession[id]).toBeUndefined()
+    expect(st.streamingBySession[id]).toBeUndefined()
+    expect(st.runPhaseBySession[id]).toBeUndefined()
+    expect(st.activeRuns[id]).toBeUndefined()
+    expect(st.agentTraces[id]).toBeUndefined()
+    expect(st.batchApprovedBySession[id]).toBeUndefined()
+    // Only this session's queued inbound send goes; a peer's still lands.
+    expect(st.inboundQueue.map((m) => m.targetSessionId)).toEqual(['other'])
+    expect(mockApi.checkpointDelete).toHaveBeenCalledWith(id)
+  })
+
+  it('clears only the deleted session’s dialog slot', () => {
+    reset()
+    const gone = makeSession('del-2')
+    useChatStore.setState({ activeSessionId: gone })
+    const keep = makeSession('keep-1')
+    const call = { id: 'c1', name: 'write_file', arguments: {} }
+    useChatStore.setState({
+      pendingApproval: { sessionId: keep, toolCall: call as never, preview: 'p' },
+      pendingQuestion: { sessionId: keep, id: 'q1', question: '还在吗' } as never,
+    })
+
+    useChatStore.getState().deleteSession(gone)
+
+    const st = useChatStore.getState()
+    expect(st.pendingApproval?.sessionId).toBe(keep)
+    expect(st.pendingQuestion?.sessionId).toBe(keep)
+
+    useChatStore.getState().deleteSession(keep)
+    expect(useChatStore.getState().pendingApproval).toBeNull()
+    expect(useChatStore.getState().pendingQuestion).toBeNull()
+  })
+})

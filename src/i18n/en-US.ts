@@ -615,6 +615,7 @@ export const enUS: Record<TranslationKey, string> = {
   'chat.branchFromMessage': 'Start a new chat from this message (keeps this message and everything before it)',
   'chat.branch': 'New chat',
   'chat.deleteSessionConfirm': 'Delete this chat?',
+  'chat.deleteSessionConfirmRunning': 'This chat is still running. Deleting it stops the run, and the files it already changed lose their rollback snapshots. Delete anyway?',
   'chat.renameSessionPrompt': 'Enter a new name for this chat:',
   'chat.pin': 'Pin',
   'chat.unpin': 'Unpin',

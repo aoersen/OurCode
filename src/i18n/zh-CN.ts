@@ -612,6 +612,7 @@ export const zhCN = {
   'chat.branchFromMessage': '从此消息新开一个对话（保留此消息及之前的记录）',
   'chat.branch': '新开对话',
   'chat.deleteSessionConfirm': '确定删除此对话？',
+  'chat.deleteSessionConfirmRunning': '该对话仍在运行中。删除会停止本次运行，且它已改动的文件会连同回退快照一起删除。确定删除？',
   'chat.renameSessionPrompt': '输入新的对话名称：',
   'chat.pin': '置顶',
   'chat.unpin': '取消置顶',

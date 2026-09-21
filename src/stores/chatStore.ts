@@ -1848,6 +1848,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteSession: (sessionId) => {
+    // Stop the run BEFORE anything is torn down. A deleted conversation must not
+    // keep executing tools — those writes land in a workspace whose checkpoints
+    // are deleted two lines below, so the edits would become irreversible while
+    // nothing on screen still shows them. stopGeneration aborts the loop and
+    // resolves the approval/question/batch promise it may be blocked on, so the
+    // run unwinds instead of hanging on a dialog that can never render again.
+    get().stopGeneration(sessionId)
     set((s) => {
       const remaining = s.sessions.filter((sess) => sess.id !== sessionId)
       // Drop transient sub-agent progress belonging to the deleted session
@@ -1855,6 +1862,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       for (const [id, p] of Object.entries(subagentProgress)) {
         if (p.sessionId === sessionId) delete subagentProgress[id]
       }
+      // Everything else keyed by session: the unwinding run reads these in its
+      // finally, so leftovers would let a queued type-ahead message or an
+      // inbound send_message write into a conversation the user threw away.
+      const drop = <T extends Record<string, unknown>>(map: T): T =>
+        Object.fromEntries(Object.entries(map).filter(([k]) => k !== sessionId)) as T
       // 顺带清掉从未用过的幽灵会话（新建后没发消息的空对话）；"下一个激活"绝不
       // 能落到幽灵上——否则删除当前对话后界面会跳到一个不可见的空白会话。若当前
       // 激活会话（可能是用户正在输入的空对话）没被删除则保留它。
@@ -1869,6 +1881,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         checkpoints: s.activeSessionId === sessionId ? [] : s.checkpoints,
         revertedFiles: s.activeSessionId === sessionId ? [] : s.revertedFiles,
         subagentProgress,
+        // stopGeneration only signals the loop; the flag comes down when that
+        // loop unwinds through its finally. A deleted session must not leave a
+        // dangling "running" entry behind in the meantime.
+        runningSessionIds: s.runningSessionIds.filter((id) => id !== sessionId),
+        queuedMessagesBySession: drop(s.queuedMessagesBySession),
+        inboundQueue: s.inboundQueue.filter((m) => m.targetSessionId !== sessionId),
+        streamingBySession: drop(s.streamingBySession),
+        runPhaseBySession: drop(s.runPhaseBySession),
+        streamLastActivityBySession: drop(s.streamLastActivityBySession),
+        agentTraces: drop(s.agentTraces),
+        activeRuns: drop(s.activeRuns),
+        batchApprovedBySession: drop(s.batchApprovedBySession),
       }
     })
     window.electronAPI.deleteSession(sessionId)
