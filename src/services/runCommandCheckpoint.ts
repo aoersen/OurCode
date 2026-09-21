@@ -125,10 +125,14 @@ function hostSep(hint: string): string {
   return hint.includes('\\') ? '\\' : '/'
 }
 
-/** Is `p` equal to or inside `root`? Both are normalized to `sep` first. */
+/** Is `p` equal to or inside `root`? Both are normalized to `sep` first.
+ *  Case-insensitive like the main-process allowlist (isPathAllowed lowercases
+ *  on win32): a case mismatch here would otherwise silently drop the whole
+ *  checkpoint. On case-sensitive systems a wrong-case match can only make
+ *  this check PASS — the main-side allowlist then rejects, which fails safe. */
 function isWithin(p: string, root: string, sep: string): boolean {
-  const P = p.replace(/[\\/]/g, sep)
-  const R = root.replace(/[\\/]/g, sep).replace(/[\\/]+$/, '')
+  const P = p.replace(/[\\/]/g, sep).toLowerCase()
+  const R = root.replace(/[\\/]/g, sep).replace(/[\\/]+$/, '').toLowerCase()
   return P === R || P.startsWith(R + sep)
 }
 

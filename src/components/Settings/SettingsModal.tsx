@@ -824,7 +824,11 @@ export default function SettingsModal() {
                 } />
                 <SettingRow label="模型线日志" desc="把每次模型请求（请求体、每次尝试的结果、缓存命中）以脱敏 JSONL 逐行记录到本地 userData/wire-logs —— 调试 agent 轮次时可完整回放。聊天数据加密开启时强制关闭，避免明文日志绕过加密" right={
                   <div className="flex items-center gap-2">
-                    <ToggleButton on={preferences.wireLogEnabled !== false} onClick={() => savePreferences({ wireLogEnabled: preferences.wireLogEnabled === false })} />
+                    <ToggleButton
+                      on={preferences.wireLogEnabled !== false && !preferences.encryptChatData}
+                      disabled={!!preferences.encryptChatData}
+                      onClick={() => { if (!preferences.encryptChatData) savePreferences({ wireLogEnabled: preferences.wireLogEnabled === false }) }}
+                    />
                     <button
                       onClick={() => { void window.electronAPI.wireLogOpenDir().catch(() => {}) }}
                       className="px-2.5 py-1 text-xs text-nova-accent bg-nova-accent/10 hover:bg-nova-accent/20 rounded-md transition-colors"
@@ -1079,11 +1083,12 @@ function SettingRow({ label, desc, right }: { label: string; desc: string; right
   )
 }
 
-function ToggleButton({ on, onClick }: { on: boolean; onClick: () => void }) {
+function ToggleButton({ on, onClick, disabled = false }: { on: boolean; onClick: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
-      className="w-10 h-[22px] rounded-full transition-colors relative shrink-0 border-none cursor-pointer"
+      disabled={disabled}
+      className={`w-10 h-[22px] rounded-full transition-colors relative shrink-0 border-none ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
       style={{ background: on ? 'var(--accent)' : 'var(--border)' }}
     >
       <div

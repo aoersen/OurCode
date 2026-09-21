@@ -2247,6 +2247,9 @@ function registerIpcHandlers(): void {
   // effort by design: a logging failure never affects the request path.
   ipcMain.handle('log:wireAppend', async (_event, sessionId: string, line: string) => {
     if (typeof sessionId !== 'string' || typeof line !== 'string') return false
+    // 聊天数据加密开启时主进程兜底拒绝明文线日志——渲染层的开关门是主策略,
+    // 这里是纵深防御(加密状态下绝不允许明文落盘)。
+    if (store.isChatEncrypted) return false
     return wireLog.append(sessionId, line)
   })
   ipcMain.handle('log:deleteSession', async (_event, sessionId: string) => {

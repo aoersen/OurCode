@@ -53,6 +53,12 @@ export class SQLiteStore {
     this.encryptChat = value
   }
 
+  /** True when chat-data at-rest encryption is enabled — the wire log gates
+   *  on this (a plaintext log must never bypass the encryption feature). */
+  get isChatEncrypted(): boolean {
+    return this.encryptChat
+  }
+
   getCrypto(): CryptoService {
     return this.crypto
   }
