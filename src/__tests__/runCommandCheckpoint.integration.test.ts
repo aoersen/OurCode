@@ -35,8 +35,10 @@ beforeAll(async () => {
   await git(['config', 'user.name', 't'], repo)
   await git(['config', 'core.autocrlf', 'false'], repo)
   await fs.mkdir(join(repo, 'sub'))
+  await fs.mkdir(join(repo, 'nested'))
   await fs.writeFile(join(repo, 'a.txt'), 'base-a\n')
   await fs.writeFile(join(repo, 'sub', 'b.txt'), 'base-b\n')
+  await fs.writeFile(join(repo, 'nested', 'in.txt'), 'base-in\n')
   await git(['add', '-A'], repo)
   await git(['commit', '-q', '-m', 'init'], repo)
 
@@ -192,5 +194,23 @@ describe('runCommandCheckpoint against real git', () => {
     await fs.writeFile(join(repo, 'my spaced file.txt'), 'spaced2\n')
     const cp = await buildRunCommandCheckpoint(pre!, 'touch', 's1', 'm1')
     expect(findByPath(cp, 'my spaced file.txt')?.content).toBe('spaced\n')
+  })
+
+  it('works from a subdirectory of the repo and skips paths outside it', async () => {
+    const { captureRunPreState, buildRunCommandCheckpoint } = await loadModule()
+    const nested = join(repo, 'nested')
+    const pre = await captureRunPreState(nested)
+    expect(pre).not.toBeNull()
+
+    // The "command": modify a file INSIDE the subdirectory and one OUTSIDE it.
+    await fs.writeFile(join(nested, 'in.txt'), 'changed-in\n')
+    await fs.writeFile(join(repo, 'a.txt'), 'changed-outside\n')
+
+    const cp = await buildRunCommandCheckpoint(pre!, 'fmt', 's1', 'm1')
+    expect(cp).not.toBeNull()
+    // Inside the workdir: HEAD lookup goes through the 'nested/' prefix.
+    expect(findByPath(cp, 'nested/in.txt')).toEqual({ path: join(nested, 'in.txt'), content: 'base-in\n', existed: true })
+    // Outside the workdir ('../a.txt'): not snapshot-able, must not appear.
+    expect(findByPath(cp, 'a.txt')).toBeUndefined()
   })
 })

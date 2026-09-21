@@ -14,12 +14,19 @@
  *          D0 capture, or from `git show HEAD:<path>` for files that were
  *          clean before, or "did not exist" for files the command created.
  *
- * All git reads go through the existing gitExec/gitExecRaw IPC (allowlisted,
- * 15s timeout, 5MB output cap), so no new privilege surface is opened. Files
- * over MAX_SNAPSHOT_FILE_BYTES are skipped entirely — a snapshot with empty
- * content for an existing file would let a revert clobber it with an empty
- * string, which is worse than no snapshot. Non-git workspaces fall through:
- * rev-parse fails and the caller gets null (nothing captured).
+ * Git runs FROM the command's working directory (always inside the fs
+ * allowlist), while status paths are repo-root-relative — so workspaces
+ * nested inside a larger repo also work, without ever using the repo root as
+ * a gitExec cwd (which the fs allowlist would reject). Files outside the
+ * OPENED WORKSPACE root are skipped explicitly (isWithin): they cannot be
+ * snapshotted and must not be reverted.
+ *
+ * Files over MAX_SNAPSHOT_FILE_BYTES are skipped entirely — a snapshot with
+ * empty content for an existing file would let a revert clobber it with an
+ * empty string, which is worse than no snapshot. The same skip applies to
+ * files that exist but cannot be read, so a transient read failure can never
+ * turn into a destructive "did not exist" revert record. Non-git workspaces
+ * fall through: rev-parse fails and the caller gets null (nothing captured).
  */
 import { v4 as uuidv4 } from 'uuid'
 import type { Checkpoint } from '@/types'
@@ -32,18 +39,22 @@ export interface RunFileState {
   existed: boolean
   content: string
   tracked: boolean
-  /** True when the file was too large to snapshot — it must be skipped in the
-   *  post phase too, or a revert would write empty content over it. */
+  /** True when the file was too large / unreadable to snapshot — it must be
+   *  skipped in the post phase too, or a revert would write empty content
+   *  over it. */
   oversized?: boolean
 }
 
 /** Pre-command capture: repo root + dirty set D0 with disk contents. */
 export interface RunPreState {
+  /** The repository root (git paths are relative to it). */
   root: string
-  /** Host path separator ('\\' on Windows) — derived from workDir, used to
-   *  normalize git's forward-slash paths into the same spelling the rest of
-   *  the app uses (FileChangesPanel compares paths literally). */
+  /** Host path separator ('\\' on Windows) — derived from the workspace path. */
   sep: string
+  /** The command's working directory (allowed gitExec cwd). */
+  workDir: string
+  /** The opened workspace root — paths outside it are never snapshotted. */
+  workspaceRoot: string
   dirty: Map<string, RunFileState>
 }
 
@@ -101,32 +112,42 @@ export function classifyCandidates(
   return out
 }
 
-/** Join a repo-root-relative git path onto the root. Git reports '/' separators
- *  (and returns the root itself forward-slashed on Windows) — normalize to the
- *  host's spelling so checkpoint paths compare equal with the paths the rest
- *  of the app stores. */
+/** Join a repo-root-relative git path onto the root, normalizing to `sep`.
+ *  Git reports '/' separators (and returns the root forward-slashed on
+ *  Windows); checkpoint paths must use the host spelling so they compare
+ *  equal with the paths the rest of the app stores. */
 function joinRepoPath(root: string, rel: string, sep: string): string {
   return `${root.replace(/[\\/]+$/, '')}${sep}${rel.replace(/\//g, sep)}`
 }
 
-/** Host separator style, inferred from the (host-spelled) working directory. */
-function hostSep(workDir: string): string {
-  return workDir.includes('\\') ? '\\' : '/'
+/** Host separator style, inferred from the (host-spelled) workspace path. */
+function hostSep(hint: string): string {
+  return hint.includes('\\') ? '\\' : '/'
+}
+
+/** Is `p` equal to or inside `root`? Both are normalized to `sep` first. */
+function isWithin(p: string, root: string, sep: string): boolean {
+  const P = p.replace(/[\\/]/g, sep)
+  const R = root.replace(/[\\/]/g, sep).replace(/[\\/]+$/, '')
+  return P === R || P.startsWith(R + sep)
 }
 
 /**
  * Capture the pre-command state for a run_command about to execute in
- * `workDir`. Resolves the repo root first (rev-parse), then snapshots the
- * dirty set. Null when workDir is not inside a git repository.
+ * `workDir`. Git runs FROM workDir (an allowed path); status paths are
+ * repo-root-relative, and files outside `workspaceRoot` are skipped — they
+ * cannot be snapshotted and must not be reverted. Null when workDir is not
+ * inside a git repository.
  */
-export async function captureRunPreState(workDir: string): Promise<RunPreState | null> {
+export async function captureRunPreState(workDir: string, workspaceRoot?: string): Promise<RunPreState | null> {
   try {
     const rootRes = await window.electronAPI.gitExec(workDir, ['rev-parse', '--show-toplevel'])
     if (!rootRes?.success) return null
-    const sep = hostSep(workDir)
-    const root = sep === '\\' ? rootRes.output.trim().replace(/\//g, '\\') : rootRes.output.trim()
+    const wsRoot = workspaceRoot || workDir
+    const sep = hostSep(wsRoot)
+    const root = rootRes.output.trim().replace(/[\\/]+$/, '').replace(/[\\/]/g, sep)
     if (!root) return null
-    const statusRes = await window.electronAPI.gitExec(root, ['status', '--porcelain', '-z'])
+    const statusRes = await window.electronAPI.gitExec(workDir, ['status', '--porcelain', '-z'])
     if (!statusRes?.success) return null
     const dirty = new Map<string, RunFileState>()
     for (const e of parsePorcelainZ(statusRes.output)) {
@@ -135,23 +156,39 @@ export async function captureRunPreState(workDir: string): Promise<RunPreState |
       // the post-phase can restore it from HEAD when the command did the move.
       // (A COPY keeps the original on disk, so no synthetic deletion there.)
       if (e.renameFrom && e.code.startsWith('R')) {
-        dirty.set(e.renameFrom, { existed: false, content: '', tracked: true })
+        const oldAbs = joinRepoPath(root, e.renameFrom, sep)
+        if (isWithin(oldAbs, wsRoot, sep)) {
+          dirty.set(e.renameFrom, { existed: false, content: '', tracked: true })
+        }
       }
       const abs = joinRepoPath(root, e.path, sep)
+      if (!isWithin(abs, wsRoot, sep)) continue
+      let st: { size: number; isFile: boolean } | null
       try {
-        const st = await window.electronAPI.stat(abs)
-        if (st && st.size > MAX_SNAPSHOT_FILE_BYTES) {
-          dirty.set(e.path, { existed: true, content: '', tracked, oversized: true })
-          continue
-        }
-        const { content } = await window.electronAPI.readFile(abs)
-        dirty.set(e.path, { existed: true, content, tracked })
+        st = await window.electronAPI.stat(abs)
       } catch {
+        // A stat FAILURE is not "file missing" — record nothing rather than a
+        // destructive false "deleted" that a revert would enforce.
+        continue
+      }
+      if (!st) {
         // Missing on disk (deleted in worktree) — still a member of D0.
         dirty.set(e.path, { existed: false, content: '', tracked })
+      } else if (st.size > MAX_SNAPSHOT_FILE_BYTES || !st.isFile) {
+        // Oversized files / untracked directories: skip in the post phase
+        // (a snapshot with empty content would let a revert clobber them).
+        dirty.set(e.path, { existed: true, content: '', tracked, oversized: true })
+      } else {
+        try {
+          const { content } = await window.electronAPI.readFile(abs)
+          dirty.set(e.path, { existed: true, content, tracked })
+        } catch {
+          // Exists but unreadable — skip; never let a revert delete it.
+          dirty.set(e.path, { existed: true, content: '', tracked, oversized: true })
+        }
       }
     }
-    return { root, sep, dirty }
+    return { root, sep, workDir, workspaceRoot: wsRoot, dirty }
   } catch {
     return null
   }
@@ -170,7 +207,7 @@ export async function buildRunCommandCheckpoint(
 ): Promise<Checkpoint | null> {
   let postDirty: Map<string, string>
   try {
-    const statusRes = await window.electronAPI.gitExec(pre.root, ['status', '--porcelain', '-z'])
+    const statusRes = await window.electronAPI.gitExec(pre.workDir, ['status', '--porcelain', '-z'])
     if (!statusRes?.success) return null
     postDirty = new Map<string, string>()
     for (const e of parsePorcelainZ(statusRes.output)) {
@@ -178,7 +215,8 @@ export async function buildRunCommandCheckpoint(
         // A rename means: old path deleted in the worktree, new path exists
         // but is not in HEAD. Synthesize 'D ' / '??' so the classifier pulls
         // the old content from HEAD and treats the new path as command-created.
-        postDirty.set(e.renameFrom, 'D ')
+        const oldAbs = joinRepoPath(pre.root, e.renameFrom, pre.sep)
+        if (isWithin(oldAbs, pre.workspaceRoot, pre.sep)) postDirty.set(e.renameFrom, 'D ')
         postDirty.set(e.path, '??')
       } else if (e.code.startsWith('C') || e.code.startsWith('A')) {
         // Staged copy / staged new file: the path is NOT in HEAD (an added
@@ -198,6 +236,7 @@ export async function buildRunCommandCheckpoint(
   for (const { rel, source } of classifyCandidates(pre.dirty, postDirty)) {
     if (source === 'skip') continue
     const abs = joinRepoPath(pre.root, rel, pre.sep)
+    if (!isWithin(abs, pre.workspaceRoot, pre.sep)) continue
 
     // Pre-command content.
     let preContent = ''
@@ -209,8 +248,9 @@ export async function buildRunCommandCheckpoint(
     } else if (source === 'head') {
       try {
         // gitExecRaw: byte-exact stdout (gitExec trims, which would corrupt
-        // leading/trailing whitespace in the snapshot).
-        const res = await window.electronAPI.gitExecRaw(pre.root, ['show', `HEAD:${rel}`])
+        // leading/trailing whitespace in the snapshot). Status paths are
+        // repo-root-relative, so `rel` is exactly the HEAD blob path.
+        const res = await window.electronAPI.gitExecRaw(pre.workDir, ['show', `HEAD:${rel}`])
         if (!res?.success) continue
         if (Buffer.byteLength(res.output, 'utf8') > MAX_SNAPSHOT_FILE_BYTES) continue
         preContent = res.output
@@ -221,19 +261,21 @@ export async function buildRunCommandCheckpoint(
     }
     // source === 'new': the command created the file — pre state is "absent".
 
-    // Current on-disk content (skip oversized — see the module comment).
+    // Current on-disk content. Skip oversized / directories / unreadable —
+    // a false "absent" here would make the revert DELETE the file.
     let curContent = ''
     let curExisted = false
     try {
       const st = await window.electronAPI.stat(abs)
       if (st) {
-        if (st.size > MAX_SNAPSHOT_FILE_BYTES) continue
+        if (st.size > MAX_SNAPSHOT_FILE_BYTES || !st.isFile) continue
         const { content } = await window.electronAPI.readFile(abs)
         curContent = content
         curExisted = true
       }
     } catch {
-      curExisted = false
+      // Unreadable right now — skip this file entirely.
+      continue
     }
 
     if (curExisted === preExisted && curContent === preContent) continue
