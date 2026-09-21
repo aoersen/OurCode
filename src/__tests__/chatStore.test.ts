@@ -17,6 +17,7 @@ const mockApi = {
   checkpointListReverted: vi.fn(async () => []),
   checkpointSave: vi.fn(async () => {}),
   checkpointDelete: vi.fn(async () => {}),
+  checkpointRevert: vi.fn(async () => ({ ok: true, restored: 1 })),
   spillDeleteSession: vi.fn(async () => {}),
   wireLogDeleteSession: vi.fn(async () => {}),
   saveConfigGroup: vi.fn(async () => ({})),
@@ -26,7 +27,7 @@ const mockApi = {
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages } from '@/stores/chatStore'
+import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages } from '@/stores/chatStore'
 import type { MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -1670,5 +1671,54 @@ describe('deleting a session stops its run', () => {
     useChatStore.getState().deleteSession(keep)
     expect(useChatStore.getState().pendingApproval).toBeNull()
     expect(useChatStore.getState().pendingQuestion).toBeNull()
+  })
+})
+
+describe('reconcileInterruptedRuns (crash recovery)', () => {
+  const run = (id: string, status: string) =>
+    ({ id, task: 't', status, startedAt: 1, toolCallCount: 0, fileChangeCount: 0, stepCount: 0 } as never)
+
+  it('turns a run left in-flight by a crash into a terminal error', () => {
+    const session = { id: 's1', agentRuns: [run('a', 'running'), run('b', 'done')] }
+    const fixed = reconcileInterruptedRuns(session)
+    expect(fixed.agentRuns![0].status).toBe('error')
+    expect(fixed.agentRuns![0].finishedAt).toBeTypeOf('number')
+    expect(fixed.agentRuns![0].lastError).toContain('崩溃')
+    expect(fixed.agentRuns![1].status).toBe('done')
+  })
+
+  it('leaves an already-settled session object untouched', () => {
+    const session = { id: 's1', agentRuns: [run('b', 'stopped')] }
+    expect(reconcileInterruptedRuns(session)).toBe(session)
+    expect(reconcileInterruptedRuns({ id: 's2' })).toEqual({ id: 's2' })
+  })
+})
+
+describe('reverting every snapshot of a path', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({ ...initialState, sessions: [], activeSessionId: null })
+  })
+
+  it('applies newest first so it lands on the pre-AI state', async () => {
+    const id = makeSession('ro-1')
+    const cp = (cid: string, createdAt: number) => ({
+      id: cid, sessionId: id, createdAt, label: '', messageId: '',
+      files: [{ path: 'C:/p/a.ts', content: cid, existed: true }],
+    })
+    // loadCheckpoints returns ASC while an in-flight run prepends DESC — the
+    // order used to decide the outcome, so '回退全部' restored a mid-run state
+    // depending on whether the session had been re-opened.
+    useChatStore.setState({ checkpoints: [cp('old', 1), cp('mid', 2), cp('new', 3)] as never })
+    const applied: string[] = []
+    mockApi.checkpointRevert.mockImplementation(async (cid: string) => {
+      applied.push(cid)
+      return { ok: true, restored: 1 }
+    })
+
+    await expect(useChatStore.getState().revertPathInSession(id, 'C:/p/a.ts')).resolves.toBe(true)
+    expect(applied).toEqual(['new', 'mid', 'old'])
+    expect(useChatStore.getState().checkpoints).toEqual([])
+    expect(useChatStore.getState().revertedFiles).toContain('C:/p/a.ts')
   })
 })

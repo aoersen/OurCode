@@ -125,6 +125,23 @@ describe('maybeCompact', () => {
     expect(compacted!.messages[1].content!.startsWith(SUMMARY_MARKER)).toBe(true)
   })
 
+  it('excludes request-only messages from the summarized count', async () => {
+    // Same shape as the case above, plus the per-turn dynamic-context message
+    // the runner assembles onto the request without storing it on the session.
+    // Counting it would make summaryMessageCount grow faster than the session,
+    // so every following turn slices away real history that still renders.
+    const withSynthetic = [
+      sys,
+      user('x'.repeat(100)),
+      { role: 'user' as const, content: 'MEMORY / 编辑器状态', synthetic: true },
+      assistant('y'.repeat(100)),
+      user('CURRENT TURN'),
+    ]
+    const compacted = await maybeCompact(baseOpts({ messages: withSynthetic, contextWindow: 200 }))
+    expect(compacted).not.toBeNull()
+    expect(compacted!.boundaryCount).toBe(1)
+  })
+
   it('force skips the budget check (context-overflow fallback)', async () => {
     const tiny = [sys, user('u1'), assistant('a1'), user('u2')]
     const result = await maybeCompact(baseOpts({ messages: tiny, force: true, keepRecentTokens: 1 }))

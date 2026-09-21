@@ -876,12 +876,38 @@ export interface QueuedMessage {
   attachments?: MessageAttachment[]
 }
 
+/**
+ * A run can never still be in flight when the app starts — but its status is
+ * persisted mid-run (the loop saves the session for compaction, and any edit
+ * action saves it too), so a crash or a quit leaves an `agentRuns` row claiming
+ * otherwise. ChatMessage renders live statuses as a spinner, which would then
+ * spin forever over a run that no longer exists. Called on load only, never on
+ * a live session, so a genuinely running loop is untouched.
+ */
+export function reconcileInterruptedRuns<T extends { agentRuns?: AgentRun[] }>(session: T): T {
+  if (!session.agentRuns?.length) return session
+  const live: AgentRun['status'][] = ['running', 'creating_plan', 'approved_running']
+  if (!session.agentRuns.some((r) => live.includes(r.status))) return session
+  return {
+    ...session,
+    agentRuns: session.agentRuns.map((r) =>
+      live.includes(r.status)
+        ? { ...r, status: 'error' as const, finishedAt: r.finishedAt ?? Date.now(), lastError: '应用在该次运行结束前退出或崩溃，运行结果未确认' }
+        : r
+    ),
+  }
+}
+
 type RequestMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   toolCalls?: LLMToolCall[]
   toolCallId?: string
   images?: Array<{ mimeType: string; dataBase64: string }>
+  /** Request-only message that was never stored on the session — see the same
+   *  field on CompactMessage: compaction must not count it into
+   *  summaryMessageCount. */
+  synthetic?: boolean
 }
 
 /** Attachments that can go into a chat request — images only. Other file types
@@ -1514,9 +1540,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Read the freshest checkpoints from the store (not a render closure): the
     // previous revert may have consumed a checkpoint that also snapshotted other
     // files, so a later revert must see it already gone.
+    //
+    // Apply newest → oldest, and sort explicitly rather than trusting the list's
+    // order: an in-flight run keeps `checkpoints` newest-first (each capture is
+    // prepended) while loadCheckpoints returns them oldest-first, so relying on
+    // array order made "回退全部" end on whichever snapshot happened to be last —
+    // i.e. a mid-run state instead of the pre-AI state, depending on whether the
+    // session had been re-opened.
     const cps = get().checkpoints
       .filter((cp) => cp.sessionId === sessionId)
       .filter((cp) => (cp.files || []).some((f) => f.path === path))
+      .sort((a, b) => b.createdAt - a.createdAt)
+    // Nothing to revert is success, not failure: the common case is that one
+    // checkpoint covered several files and reverting a sibling already consumed
+    // it, which restored this path too.
     if (cps.length === 0) return true
     let ok = 0
     for (const cp of cps) {
@@ -1728,7 +1765,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // agentMode 也一律归一为 'agent'——chat 模式已移除，升级前的旧会话
       // （可能存着 'chat'）重新加载后同样按 agent 模式运行。
       const normalized = sessions.map((s) => ({
-        ...s,
+        ...reconcileInterruptedRuns(s),
         agentMode: 'agent' as const,
         lastUserMessageAt: s.lastUserMessageAt ?? deriveLastUserMessageAt(s),
       }))
@@ -3059,7 +3096,7 @@ async function runAgentLoop(
         content: dynamicContext + '\n\n' + messages[lastIdx].content,
       }
     } else {
-      messages.push({ role: 'user', content: dynamicContext })
+      messages.push({ role: 'user', content: dynamicContext, synthetic: true })
     }
   }
 
@@ -4083,8 +4120,16 @@ async function runAgentLoop(
             ? roundImageNotes.join('\n')
             : '以上是本轮工具返回的截图，请据此判断页面状态。',
           images: roundImages.length ? roundImages : undefined,
+          synthetic: true,
         })
       }
+
+      // Commit the round to disk. Until now a run only saved in its finally, so
+      // a crash between rounds lost the transcript of work whose EFFECTS
+      // survived (the files the agent already wrote) — the conversation would
+      // come back without any record of what changed the workspace. The store
+      // upserts messages in place for exactly this per-round write pattern.
+      void chatStore.saveSession(sessionId)
 
       // Plan submitted — pause the loop until the user approves
       if (planSubmitted) break
