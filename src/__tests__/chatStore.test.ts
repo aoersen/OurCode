@@ -27,7 +27,7 @@ const mockApi = {
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages } from '@/stores/chatStore'
+import { useChatStore, reconcileInterruptedRuns, APPROVAL_AUTO_REJECT_MS, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages } from '@/stores/chatStore'
 import type { MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -1720,5 +1720,104 @@ describe('reverting every snapshot of a path', () => {
     expect(applied).toEqual(['new', 'mid', 'old'])
     expect(useChatStore.getState().checkpoints).toEqual([])
     expect(useChatStore.getState().revertedFiles).toContain('C:/p/a.ts')
+  })
+})
+
+describe('decision backlog across parallel conversations', () => {
+  const mk = (id: string) => ({ id, title: id, messages: [], configGroupId: 'c', model: 'm', createdAt: 1, updatedAt: 1 })
+  const approval = (sessionId: string, callId: string): never =>
+    ({ kind: 'approval', sessionId, value: { sessionId, toolCall: { id: callId, name: 'write_file', arguments: {} }, preview: callId } }) as never
+  const question = (sessionId: string, q: string): never =>
+    ({ kind: 'question', sessionId, value: { sessionId, id: q, question: q } }) as never
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({ ...initialState, sessions: [mk('A'), mk('B')] as never, activeSessionId: 'A' })
+  })
+
+  it('parks a second decision instead of overwriting the one on screen', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(approval('A', 'call-a'))
+    st().offerDecision(approval('B', 'call-b'))
+
+    // Overwriting used to leave A's run awaiting a dialog that no longer
+    // existed, and B's answer would have been shown in A's conversation.
+    expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['B'])
+  })
+
+  it('swaps slots with the conversation the user switches to', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(approval('A', 'call-a'))
+    st().offerDecision(approval('B', 'call-b'))
+
+    st().setActiveSession('B')
+    expect(st().pendingApproval?.toolCall.id).toBe('call-b')
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['A'])
+
+    st().setActiveSession('A')
+    expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+    // B's approval is still unanswered, so it goes back to the backlog.
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['B'])
+
+    // Switching to B surfaces it; answering B leaves A's own (unanswered)
+    // approval parked rather than hijacking B's now-empty slot.
+    st().setActiveSession('B')
+    expect(st().pendingApproval?.toolCall.id).toBe('call-b')
+    st().approveToolCall()
+    expect(st().pendingApproval).toBeNull()
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['A'])
+  })
+
+  it('promotes the next parked decision of the same session once answered', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(question('A', 'q1'))
+    st().offerDecision(question('A', 'q2'))
+    expect(st().pendingQuestion?.question).toBe('q1')
+    expect(st().decisionBacklog).toHaveLength(1)
+
+    st().answerQuestion('答复一')
+    expect(st().pendingQuestion?.question).toBe('q2')
+    expect(st().decisionBacklog).toHaveLength(0)
+
+    st().answerQuestion('答复二')
+    expect(st().pendingQuestion).toBeNull()
+  })
+
+  it('clears only a deleted session’s parked decisions', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(approval('A', 'call-a'))
+    st().offerDecision(approval('B', 'call-b'))
+    st().deleteSession('B')
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual([])
+    expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+  })
+
+  it('never auto-rejects an approval that was never shown', () => {
+    vi.useFakeTimers()
+    try {
+      const st = () => useChatStore.getState()
+      st().offerDecision(approval('B', 'call-b'))
+      vi.advanceTimersByTime(APPROVAL_AUTO_REJECT_MS + 1000)
+      // The old 60s clock started at creation, so a background approval expired
+      // unseen and the model got a bare "denied".
+      expect(st().decisionBacklog).toHaveLength(1)
+      expect(st().pendingApproval).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('auto-rejects a shown approval once the user ignores it for 60s', () => {
+    vi.useFakeTimers()
+    try {
+      const st = () => useChatStore.getState()
+      st().offerDecision(approval('A', 'call-a'))
+      expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+      vi.advanceTimersByTime(APPROVAL_AUTO_REJECT_MS + 1000)
+      expect(st().pendingApproval).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

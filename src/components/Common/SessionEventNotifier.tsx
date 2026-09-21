@@ -17,6 +17,9 @@ function collectNeedsInputIds(state: ReturnType<typeof useChatStore.getState>): 
   if (state.pendingQuestion?.sessionId) ids.add(state.pendingQuestion.sessionId)
   if (state.pendingApproval?.sessionId) ids.add(state.pendingApproval.sessionId)
   if (state.batchApproval?.sessionId) ids.add(state.batchApproval.sessionId)
+  // Parked ones matter most: a background session's prompt has no dialog to show
+  // itself, so this transition is what tells the user something is waiting.
+  for (const parked of state.decisionBacklog) ids.add(parked.sessionId)
   for (const sess of state.sessions) {
     if (sess.planStatus === 'pending_approval') ids.add(sess.id)
   }

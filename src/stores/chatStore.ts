@@ -728,6 +728,18 @@ interface ChatState {
   toolAllowlist: Record<string, string[]>
   /** Pending batch-approval dialog (agent mode: first round with write tools) */
   batchApproval: { sessionId: string; runId: string; tools: ToolCall[]; previews: string[] } | null
+  /** Decisions whose session is not on screen (or that lost their slot to a
+   *  peer), kept here instead of overwriting the slot — see offerDecision. */
+  decisionBacklog: ParkedDecision[]
+  /** Present a decision: shows it when its session is foreground and the slot
+   *  is free, otherwise parks it. Never destroys another session's prompt. */
+  offerDecision: (decision: ParkedDecision) => void
+  /** Forget a session's parked decisions without answering them (its run ended,
+   *  was stopped, or the session was deleted). */
+  withdrawDecisions: (sessionId: string) => void
+  /** Re-fill the slots from the backlog for the session on screen, parking
+   *  whatever they currently hold for a different session. */
+  rebalanceDecisions: () => void
 
   // ── Inline decision dock (docked above the mode bar, replaces popups) ──
   /** Pending regenerate / revert-all confirmation rendered inline in the
@@ -1202,6 +1214,68 @@ const _batchResolves = new Map<string, (decision: 'confirm' | 'all' | 'reject') 
 // Pending ask-user-question resolves
 const _questionResolves = new Map<string, (answer: string) => void>()
 
+/** Which single slot renders each kind of decision. The slots keep their exact
+ *  shape and remain the only thing the dialogs read. */
+const DECISION_SLOT = {
+  approval: 'pendingApproval',
+  question: 'pendingQuestion',
+  batch: 'batchApproval',
+} as const
+
+export type DecisionKind = keyof typeof DECISION_SLOT
+
+/** An answerable state that has been set (a run is awaiting it) but is not on
+ *  screen — either its session is in the background, or a decision of the same
+ *  kind already holds the slot. Losing one of these strands that run forever:
+ *  its promise has no dialog left to resolve it. */
+export type ParkedDecision =
+  | { kind: 'approval'; sessionId: string; value: NonNullable<ChatState['pendingApproval']> }
+  | { kind: 'question'; sessionId: string; value: NonNullable<ChatState['pendingQuestion']> }
+  | { kind: 'batch'; sessionId: string; value: NonNullable<ChatState['batchApproval']> }
+
+/** How long a SHOWN approval may be ignored before it counts as a rejection.
+ *  The clock starts when the dialog actually reaches the user (see
+ *  armApprovalTimer), never while it sits in the backlog. */
+export const APPROVAL_AUTO_REJECT_MS = 60_000
+const _approvalTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+const readSlot = (state: ChatState, kind: DecisionKind): { sessionId: string } | null =>
+  (state[DECISION_SLOT[kind]] as { sessionId: string } | null) ?? null
+
+/** Build the state patch that writes (or clears) one decision slot. Keeps the
+ *  kind→slot mapping in one place instead of repeating a switch at each site. */
+const slotPatch = (kind: DecisionKind, value: unknown): Partial<ChatState> =>
+  kind === 'approval'
+    ? { pendingApproval: value as ChatState['pendingApproval'] }
+    : kind === 'question'
+      ? { pendingQuestion: value as ChatState['pendingQuestion'] }
+      : { batchApproval: value as ChatState['batchApproval'] }
+
+/**
+ * Start the "ignored = rejected" clock for a shown approval.
+ *
+ * It is armed at presentation, not at request time: the previous behaviour
+ * auto-rejected 60s after a dialog was CREATED, so an approval raised by a
+ * background session expired unseen and the model received a bare "denied" the
+ * user never had a chance to look at.
+ */
+function armApprovalTimer(sessionId: string): void {
+  disarmApprovalTimer(sessionId)
+  _approvalTimers.set(sessionId, setTimeout(() => {
+    _approvalTimers.delete(sessionId)
+    const st = useChatStore.getState()
+    // Parked (not on screen) keeps waiting — only what the user can see expires.
+    if (st.pendingApproval?.sessionId !== sessionId) return
+    st.rejectToolCall()
+  }, APPROVAL_AUTO_REJECT_MS))
+}
+
+function disarmApprovalTimer(sessionId: string): void {
+  const timer = _approvalTimers.get(sessionId)
+  if (timer) clearTimeout(timer)
+  _approvalTimers.delete(sessionId)
+}
+
 // Inbound-delivery guard: reference count of agent-loop chains (re)launched
 // per session by receiveInboundMessage / the finally-drain. Each launch
 // increments before running, each settled chain decrements. Using a count
@@ -1291,24 +1365,79 @@ export const useChatStore = create<ChatState>((set, get) => ({
   batchApprovedBySession: {},
   toolAllowlist: {},
   batchApproval: null,
+  decisionBacklog: [],
   inlineConfirm: null,
   targetModeStatus: null,
+
+  offerDecision: (decision) => {
+    const state = get()
+    const current = readSlot(state, decision.kind)
+    if (!current && decision.sessionId === state.activeSessionId) {
+      set(slotPatch(decision.kind, decision.value))
+      if (decision.kind === 'approval') armApprovalTimer(decision.sessionId)
+      return
+    }
+    // Parked rather than swapped in: overwriting the slot would strand the other
+    // session's run on a dialog that can no longer be answered.
+    set((s) => ({ decisionBacklog: [...s.decisionBacklog, decision] }))
+  },
+
+  withdrawDecisions: (sessionId) => {
+    disarmApprovalTimer(sessionId)
+    set((s) => {
+      const kept = s.decisionBacklog.filter((d) => d.sessionId !== sessionId)
+      return kept.length === s.decisionBacklog.length ? {} : { decisionBacklog: kept }
+    })
+  },
+
+  rebalanceDecisions: () => {
+    const state = get()
+    const active = state.activeSessionId
+    let backlog = state.decisionBacklog
+    const patch: Partial<ChatState> = {}
+    let changed = false
+    for (const kind of Object.keys(DECISION_SLOT) as DecisionKind[]) {
+      const current = readSlot(state, kind)
+      const index = backlog.findIndex((d) => d.kind === kind && d.sessionId === active)
+      if (index >= 0 && current?.sessionId !== active) {
+        const promoted = backlog[index]
+        backlog = [...backlog.slice(0, index), ...backlog.slice(index + 1)]
+        if (current && current.sessionId !== active) {
+          backlog = [...backlog, { kind, sessionId: current.sessionId, value: current } as ParkedDecision]
+        }
+        Object.assign(patch, slotPatch(kind, promoted.value))
+        if (kind === 'approval') armApprovalTimer(promoted.sessionId)
+        changed = true
+      } else if (current && active && current.sessionId !== active) {
+        // A slot showing a background session's decision is unanswerable from
+        // here and hides the one that isn't — park it and leave the slot empty.
+        backlog = [...backlog, { kind, sessionId: current.sessionId, value: current } as ParkedDecision]
+        Object.assign(patch, slotPatch(kind, null))
+        changed = true
+      }
+    }
+    if (changed) set({ ...patch, decisionBacklog: backlog })
+  },
 
   approveToolCall: () => {
     const { pendingApproval } = get()
     if (pendingApproval) {
+      disarmApprovalTimer(pendingApproval.sessionId)
       _approvalResolves.get(pendingApproval.sessionId)?.(true)
       _approvalResolves.delete(pendingApproval.sessionId)
       set({ pendingApproval: null })
+      get().rebalanceDecisions()
     }
   },
 
   rejectToolCall: () => {
     const { pendingApproval } = get()
     if (pendingApproval) {
+      disarmApprovalTimer(pendingApproval.sessionId)
       _approvalResolves.get(pendingApproval.sessionId)?.(false)
       _approvalResolves.delete(pendingApproval.sessionId)
       set({ pendingApproval: null })
+      get().rebalanceDecisions()
     }
   },
 
@@ -1324,6 +1453,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (pendingQuestion) delete questionGate[pendingQuestion.sessionId]
       return { pendingQuestion: null, questionGate }
     })
+    get().rebalanceDecisions()
   },
 
   setQuestionGate: (sessionId, gate) => set((s) => ({
@@ -1494,10 +1624,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
   },
 
-  approveBatchRun: (sessionId) => set((s) => ({
-    batchApprovedBySession: { ...s.batchApprovedBySession, [sessionId]: true },
-    batchApproval: s.batchApproval?.sessionId === sessionId ? null : s.batchApproval,
-  })),
+  approveBatchRun: (sessionId) => {
+    set((s) => ({
+      batchApprovedBySession: { ...s.batchApprovedBySession, [sessionId]: true },
+      batchApproval: s.batchApproval?.sessionId === sessionId ? null : s.batchApproval,
+    }))
+    get().rebalanceDecisions()
+  },
 
   decideBatchApproval: (decision) => {
     const { batchApproval } = get()
@@ -1506,6 +1639,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       _batchResolves.delete(batchApproval.sessionId)
     }
     set({ batchApproval: null })
+    get().rebalanceDecisions()
   },
 
   allowToolPermanently: (toolName) => {
@@ -1997,8 +2131,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     localStorage.setItem(LAST_SESSION_KEY, sessionId)
     // Re-entering a session with a deferred question re-arms its confirm bar
     // ("later" only defers while the user is away — the bar comes back when
-    // they switch to the session again).
-    if (get().pendingQuestion?.sessionId === sessionId && get().questionGate[sessionId] === 'dismissed') {
+    // they switch to the session again). The question may be parked rather than
+    // in the slot, so check both.
+    const waitingHere = get().pendingQuestion?.sessionId === sessionId
+      || get().decisionBacklog.some((d) => d.kind === 'question' && d.sessionId === sessionId)
+    if (waitingHere && get().questionGate[sessionId] === 'dismissed') {
       get().setQuestionGate(sessionId, 'confirm')
     }
     set((s) => ({
@@ -2007,6 +2144,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 留在内存里只会让列表计数和内存膨胀；首条消息发出后即成为真正会话。
       sessions: s.sessions.filter((x) => x.id === sessionId || !isGhostSession(x)),
     }))
+    // Bring this session's own prompts into the slots (and push out whatever a
+    // background session was holding) — otherwise the dialogs keep asking about
+    // a conversation the user just left.
+    get().rebalanceDecisions()
     get().loadCheckpoints(sessionId)
   },
 
@@ -2469,6 +2610,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         inlineConfirm: s.inlineConfirm?.sessionId === sessionId ? null : s.inlineConfirm,
       }
     })
+    // Its parked prompts are now orphaned (the promise they were waiting on is
+    // settled) — dropping them keeps a later promotion from re-opening a dialog
+    // for a run that no longer exists.
+    disarmApprovalTimer(sessionId)
+    get().withdrawDecisions(sessionId)
+    get().rebalanceDecisions()
   },
 
   // Branch: fork the conversation into a NEW session. Everything up to and
@@ -2711,6 +2858,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       batchApprovedBySession: {},
       toolAllowlist: {},
       batchApproval: null,
+      decisionBacklog: [],
       inlineConfirm: null,
     })
   },
@@ -3307,27 +3455,26 @@ async function runAgentLoop(
     getPreview: (tc) => toolExecutor.getPreview(tc),
     isAborted: () => abortController.signal.aborted,
     // Show the per-tool approval dialog (project edit mode / batch / allowlist
-    // exemptions are all folded into needsApproval above). 60s auto-reject so
-    // the loop never hangs on a dangling dialog.
+    // exemptions are all folded into needsApproval above). The 60s
+    // auto-reject clock starts when the dialog reaches the screen — see
+    // armApprovalTimer — so a background session's approval can't expire unseen.
     onDialog: async (tc, preview) => {
       touchActivity() // waiting on the user ≠ model silence
-      useChatStore.setState({ pendingApproval: { sessionId, toolCall: tc, preview } })
-
       // Reject any previous pending approval for this session to prevent
       // dangling promises (each session waits on its own resolve slot)
       if (_approvalResolves.has(sessionId)) {
+        disarmApprovalTimer(sessionId)
         _approvalResolves.get(sessionId)!(false)
         _approvalResolves.delete(sessionId)
       }
 
       return new Promise<boolean>((resolve) => {
         _approvalResolves.set(sessionId, resolve)
-        setTimeout(() => {
-          if (_approvalResolves.get(sessionId) === resolve) {
-            _approvalResolves.delete(sessionId)
-            resolve(false)
-          }
-        }, 60000)
+        useChatStore.getState().offerDecision({
+          kind: 'approval',
+          sessionId,
+          value: { sessionId, toolCall: tc, preview },
+        })
       })
     },
   }))
@@ -3735,12 +3882,13 @@ async function runAgentLoop(
             if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
             _questionResolves.set(sessionId, resolve)
             const onSession = useChatStore.getState().activeSessionId === sessionId
-            useChatStore.setState({
-              pendingQuestion: { sessionId, id: `flail-${Date.now()}`, question, options },
-              questionGate: {
-                ...useChatStore.getState().questionGate,
-                [sessionId]: onSession ? 'auto' : 'confirm',
-              },
+            useChatStore.setState((s) => ({
+              questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+            }))
+            useChatStore.getState().offerDecision({
+              kind: 'question',
+              sessionId,
+              value: { sessionId, id: `flail-${Date.now()}`, question, options },
             })
             // 60s 无人应答按「保持计划模式」继续（与批量审批的兜底一致），
             // 避免用户离席时整个 run 无限挂起
@@ -3821,7 +3969,11 @@ async function runAgentLoop(
           const decision = await new Promise<'confirm' | 'all' | 'reject'>((resolve) => {
             if (_batchResolves.has(sessionId)) { _batchResolves.get(sessionId)!('reject'); _batchResolves.delete(sessionId) }
             _batchResolves.set(sessionId, resolve)
-            useChatStore.setState({ batchApproval: { sessionId, runId: runId || '', tools: batchTools, previews: batchTools.map((tc) => toolExecutor.getPreview(tc)) } })
+            useChatStore.getState().offerDecision({
+              kind: 'batch',
+              sessionId,
+              value: { sessionId, runId: runId || '', tools: batchTools, previews: batchTools.map((tc) => toolExecutor.getPreview(tc)) },
+            })
             // Auto-reject if the user never responds (60s), so the agent loop
             // doesn't hang forever on a dangling batch dialog
             setTimeout(() => {
@@ -3839,6 +3991,9 @@ async function runAgentLoop(
           } else if (decision === 'reject') {
             batchRejectedRef.current = new Set(batchTools.map((t) => t.id))
           }
+          // The timeout path settles without going through decideBatchApproval,
+          // so let another conversation's parked prompt take the freed slot.
+          useChatStore.getState().rebalanceDecisions()
         }
       }
 
@@ -4009,18 +4164,24 @@ async function runAgentLoop(
             // and confirm via the QuestionConfirmBar ('confirm').
             const onSession = useChatStore.getState().activeSessionId === sessionId
             touchActivity() // waiting on the user ≠ model silence
-            useChatStore.setState({
-              pendingQuestion: {
+            useChatStore.setState((s) => ({
+              questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+            }))
+            // No timeout here on purpose: an answer is the only thing that can
+            // settle this. It used to be lost whenever another conversation
+            // asked a question (single slot, overwritten → this run awaited a
+            // dialog that no longer existed, forever). Now it parks and comes
+            // back when the user switches here.
+            useChatStore.getState().offerDecision({
+              kind: 'question',
+              sessionId,
+              value: {
                 sessionId,
                 id: tc.id,
                 question: String(tc.arguments.question || '请确认'),
                 options: Array.isArray(tc.arguments.options) ? tc.arguments.options.map(String) : undefined,
                 multiSelect: tc.arguments.multiSelect === true,
                 preview: Array.isArray(tc.arguments.preview) ? tc.arguments.preview.map(String) : undefined,
-              },
-              questionGate: {
-                ...useChatStore.getState().questionGate,
-                [sessionId]: onSession ? 'auto' : 'confirm',
               },
             })
           })
@@ -4165,12 +4326,13 @@ async function runAgentLoop(
           if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
           _questionResolves.set(sessionId, resolve)
           const onSession = useChatStore.getState().activeSessionId === sessionId
-          useChatStore.setState({
-            pendingQuestion: { sessionId, id: `cmdbreak-${Date.now()}`, question, options },
-            questionGate: {
-              ...useChatStore.getState().questionGate,
-              [sessionId]: onSession ? 'auto' : 'confirm',
-            },
+          useChatStore.setState((s) => ({
+            questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+          }))
+          useChatStore.getState().offerDecision({
+            kind: 'question',
+            sessionId,
+            value: { sessionId, id: `cmdbreak-${Date.now()}`, question, options },
           })
           setTimeout(() => {
             if (_questionResolves.get(sessionId) === resolve) {
@@ -4351,6 +4513,11 @@ async function runAgentLoop(
     _approvalResolves.delete(sessionId)
     _batchResolves.delete(sessionId)
     _questionResolves.delete(sessionId)
+    // Any prompt this run raised — shown or parked — dies with it, and another
+    // conversation's parked prompt may now take the freed slot.
+    disarmApprovalTimer(sessionId)
+    useChatStore.getState().withdrawDecisions(sessionId)
+    useChatStore.getState().rebalanceDecisions()
     chatStore.saveSession(sessionId)
 
     // Persist this run's token/timing events into the usage dashboard

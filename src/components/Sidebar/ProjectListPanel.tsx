@@ -107,6 +107,7 @@ export default function ProjectListPanel() {
   const pendingQuestion = useChatStore((s) => s.pendingQuestion)
   const pendingApproval = useChatStore((s) => s.pendingApproval)
   const batchApproval = useChatStore((s) => s.batchApproval)
+  const decisionBacklog = useChatStore((s) => s.decisionBacklog)
   const setActiveSession = useChatStore((s) => s.setActiveSession)
   const createSession = useChatStore((s) => s.createSession)
   const t = useI18n()
@@ -128,14 +129,17 @@ export default function ProjectListPanel() {
 
   // Sessions waiting on the user (question / tool approval / batch approval /
   // plan approval) — shown as an accent "待处理" pill in the list (需求 3).
+  // Parked decisions count too: that prompt has no dialog anywhere else until
+  // the user opens the conversation that is waiting.
   const attentionSessionIds = useMemo(() => {
     const ids = new Set<string>()
     if (pendingQuestion?.sessionId) ids.add(pendingQuestion.sessionId)
     if (pendingApproval?.sessionId) ids.add(pendingApproval.sessionId)
     if (batchApproval?.sessionId) ids.add(batchApproval.sessionId)
+    for (const parked of decisionBacklog) ids.add(parked.sessionId)
     for (const s of sessions) if (s.planStatus === 'pending_approval') ids.add(s.id)
     return ids
-  }, [pendingQuestion, pendingApproval, batchApproval, sessions])
+  }, [pendingQuestion, pendingApproval, batchApproval, decisionBacklog, sessions])
 
   // Sessions whose last agent run errored — red dot (design: 对话历史状态).
   const errorSessionIds = useMemo(() => {
