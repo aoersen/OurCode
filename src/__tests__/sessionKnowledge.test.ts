@@ -113,4 +113,13 @@ describe('searchSessionsForQuery', () => {
     expect(searchSessionsForQuery(sessions, '关键字', 2)).toHaveLength(2)
     expect(searchSessionsForQuery(sessions, '  ')).toEqual([])
   })
+
+  it('skips archived sessions (explicit reads still possible)', () => {
+    const archived = session('s-arch', '归档会话', [msg('user', '关键字出现')])
+    archived.archivedAt = Date.now()
+    const live = session('s-live', '活跃会话', [msg('user', '关键字出现')])
+    const hits = searchSessionsForQuery([archived, live], '关键字')
+    expect(hits).toHaveLength(1)
+    expect(hits[0].sessionId).toBe('s-live')
+  })
 })

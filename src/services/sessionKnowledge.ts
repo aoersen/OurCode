@@ -109,6 +109,10 @@ export function searchSessionsForQuery(
   const cap = Math.min(Math.max(limit, 1), 10)
   const hits: SessionKnowledgeHit[] = []
   for (const s of sessions) {
+    // Archived sessions are hidden from the session list by the user's choice
+    // — a keyword search must not quietly resurrect them. Explicit reads
+    // (read_session by id / #sess_ reference) still work.
+    if (s.archivedAt) continue
     // Newest messages first — the most recent hit is the most relevant one.
     for (let i = s.messages.length - 1; i >= 0; i--) {
       const m = s.messages[i]
