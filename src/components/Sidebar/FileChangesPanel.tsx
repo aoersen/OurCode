@@ -191,7 +191,7 @@ export default function FileChangesPanel() {
       }
     }
     if (!cpFile && !restorePath) {
-      notice = '未找到该文件的修改前快照，左侧仅展示当前内容。'
+      notice = '未找到该文件修改前的内容，左侧仅展示当前内容。'
     }
 
     // Read current file content
@@ -245,7 +245,7 @@ export default function FileChangesPanel() {
     } else if (isReverted(change)) {
       alert('该文件的改动已经回退过了，可用行内「恢复」按钮找回 AI 写入的版本。')
     } else {
-      alert('没有找到该文件的检查点记录，无法回退。')
+      alert('未找到该文件可回退的记录。')
     }
   }
 
@@ -262,7 +262,7 @@ export default function FileChangesPanel() {
         }
         window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolvePath(change.filePath) }))
       } else {
-        alert('恢复失败，未找到该文件的回退记录。')
+        alert('恢复失败：未找到该文件可恢复的改动。')
       }
     } catch {
       alert('恢复失败，请重试。')

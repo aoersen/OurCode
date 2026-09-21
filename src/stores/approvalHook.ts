@@ -23,12 +23,6 @@ export interface ApprovalPreHookOptions {
   batchRejectedRef: { current: Set<string> }
   /** Live approval decision (project edit mode / batch / allowlist). */
   needsApproval: (name: string) => boolean
-  /** Whether the tool is approval-gated by default — drives the auto-approve
-   *  counter (only exempted approval tools count, read-only tools don't). */
-  requiresApproval?: (name: string) => boolean
-  /** Called when an approval-gated tool passes WITHOUT a dialog (edit-mode /
-   *  batch / allowlist exemption) — feeds the auto-approve visibility counter. */
-  onAutoApprove?: (toolCall: ToolCall) => void
   /** Preview text shown in the dialog. */
   getPreview: (toolCall: ToolCall) => string
   /** True once the enclosing run has been aborted — deny without a dialog. */
@@ -58,7 +52,6 @@ export function createApprovalPreHook(opts: ApprovalPreHookOptions): (
       ? analyzeDangerousCommand(String(toolCall.arguments?.command || ''))
       : null
     if (!opts.needsApproval(toolCall.name) && !danger) {
-      if (opts.requiresApproval?.(toolCall.name)) opts.onAutoApprove?.(toolCall)
       return { allow: true }
     }
 

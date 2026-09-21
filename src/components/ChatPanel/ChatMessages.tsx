@@ -647,7 +647,6 @@ function LiveStreamBlock({
               {runPhase?.phase === 'compacting' && t('chat.phaseCompacting')}
               {runPhase?.phase === 'waiting' && t('chat.phaseWaiting')}
               {(!runPhase || runPhase.phase === 'streaming') && t('chat.analyzing')}
-              {runPhase?.detail ? ` · ${runPhase.detail}` : ''}
               {phaseElapsed > 0 ? ` ${phaseElapsed}s` : ''}
             </div>
           </div>

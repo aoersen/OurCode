@@ -28,6 +28,14 @@ import { createPhaseCheckpoint } from '@/services/targetMode/phaseCheckpoint'
 
 const MERGE_INTERVAL = 200 // 任务/进度合并窗口（ms）
 const RECEIVE_POSE_MS = 1500 // 交接飞递时长内保持 receiving 姿态
+
+/** 主循环相位的用户可读文案（相位 id 不直接上屏）。 */
+const SUPERVISOR_PHASE_TEXT: Record<string, string> = {
+  preparing: '准备上下文',
+  compacting: '压缩历史',
+  waiting: '等待模型响应',
+  streaming: '执行中',
+}
 const COMPLETED_HOLD_MS = 3000 // completed 展示时长后释放槽位
 const ERROR_HOLD_MS = 5000
 
@@ -248,8 +256,7 @@ function syncSupervisor(phaseEntry: { phase: AgentRunPhase; since?: number; deta
   if (slot1.status !== target) setSlotStatus(1, target)
   if (!supervisorTaskSet) {
     supervisorTaskSet = true
-    const detail = phaseEntry.detail ? ` · ${phaseEntry.detail}` : ''
-    setSlotTask(1, `监管 Agent 调度中：${phaseEntry.phase}${detail}`, 30)
+    setSlotTask(1, `监管 Agent 调度中：${SUPERVISOR_PHASE_TEXT[phaseEntry.phase] ?? '处理中'}`, 30)
   }
 }
 

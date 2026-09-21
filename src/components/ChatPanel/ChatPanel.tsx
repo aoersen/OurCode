@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import ChatMessages from './ChatMessages'
 import AgentStatusMiniPanel from './AgentStatusMiniPanel'
-import { AutoApproveBanner } from './AgentPanel'
 import AgentTraceView from './AgentTraceView'
 import ChatInput from './ChatInput'
 import ChatSidebar from './ChatSidebar'
@@ -312,10 +311,7 @@ export default function ChatPanel() {
                   pinned to the visible chat area (NOT the scrolling message
                   list), so it stays put while the conversation scrolls. */}
               {view === 'chat' && activeSession && (
-                <>
-                  <AutoApproveBanner sessionId={activeSession.id} />
-                  <AgentStatusMiniPanel sessionId={activeSession.id} />
-                </>
+                <AgentStatusMiniPanel sessionId={activeSession.id} />
               )}
 
               {/* 内嵌决策区 —— 询问选择 / 工具审批 / 重新生成 / 回退全部等框

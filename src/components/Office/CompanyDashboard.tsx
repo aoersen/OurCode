@@ -21,6 +21,14 @@ import type { SubAgentProgress } from '@shared/types'
 
 const POLL_INTERVAL = 5000
 
+/** 主循环相位的用户可读文案（相位 id 不直接上屏）。 */
+const SUPERVISOR_PHASE_TEXT: Record<string, string> = {
+  preparing: '准备上下文',
+  compacting: '压缩历史',
+  waiting: '等待模型响应',
+  streaming: '执行中',
+}
+
 /** 数据/状态专用等宽字体(时间戳、代号、百分比、状态词)。 */
 const MONO_FONT = "'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace"
 
@@ -185,7 +193,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
         return {
           slot,
           st: phase ? 'working' : 'idle',
-          doing: phase ? `监管 Agent 调度中 · ${phase}` : '待命中 · 等待派发任务',
+          doing: phase ? `监管 Agent 调度中 · ${SUPERVISOR_PHASE_TEXT[phase] ?? '处理中'}` : '待命中 · 等待派发任务',
           selection: '监管',
         }
       }

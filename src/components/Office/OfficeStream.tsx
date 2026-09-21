@@ -400,7 +400,6 @@ function LiveStatusLine({ sessionId }: { sessionId: string }) {
           {runPhase?.phase === 'compacting' && t('chat.phaseCompacting')}
           {runPhase?.phase === 'waiting' && t('chat.phaseWaiting')}
           {(!runPhase || runPhase.phase === 'streaming') && t('office.supervising')}
-          {runPhase?.detail ? ` · ${runPhase.detail}` : ''}
           {(phaseElapsed > 0 || elapsed > 0) && ` · ${elapsed}s`}
         </span>
       </div>

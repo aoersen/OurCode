@@ -6,7 +6,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useShortcutStore, ShortcutPreset } from '@/stores/shortcutStore'
 import { ApiConfigGroup, ModelInfo } from '@/types'
 import {
-  buildChatUrl, buildModelsUrl, resolveFormat, FORMAT_META, PROVIDER_REGISTRY, getProviderMeta,
+  resolveFormat, FORMAT_META, PROVIDER_REGISTRY, getProviderMeta,
   EndpointFormat,
 } from '@/services/llm/endpoints'
 import McpConfigSection from './McpConfigSection'
@@ -21,25 +21,6 @@ const CONFIG_COLORS = [
 
 /** Only these wire formats are offered as explicit overrides. */
 const FORMAT_ORDER: EndpointFormat[] = ['openai', 'responses', 'anthropic']
-
-/** Final chat-request URL the selected config would actually POST to. */
-function previewChatUrl(group: Partial<ApiConfigGroup>): string {
-  const base = (group.baseUrl || '').trim().replace(/\/+$/, '')
-  if (!base) return ''
-  const fmt = resolveFormat(group.provider || 'custom', group.apiFormat)
-  const url = buildChatUrl(base, fmt, (group.defaultModel || '').trim() || undefined)
-  return fmt === 'gemini' ? `${url}?key=…` : url
-}
-
-/** Model-list URL (only when the selected format exposes one). */
-function previewModelsUrl(group: Partial<ApiConfigGroup>): string | null {
-  const base = (group.baseUrl || '').trim().replace(/\/+$/, '')
-  if (!base) return null
-  const fmt = resolveFormat(group.provider || 'custom', group.apiFormat)
-  const url = buildModelsUrl(base, fmt)
-  if (!url) return null
-  return fmt === 'gemini' ? `${url}?key=…` : url
-}
 
 export default function SettingsModal() {
   const {
@@ -461,13 +442,12 @@ export default function SettingsModal() {
                       </div>
                     </div>
 
-                    {/* Base URL + full URL preview */}
+                    {/* Base URL */}
                     <div className="flex flex-col gap-1">
                       <label className="text-[11px] font-medium text-nova-text-secondary">API 基础 URL <span className="text-red-400">*</span></label>
                       <input type="text" value={editingGroup.baseUrl || ''} onChange={(e) => setEditingGroup({ ...editingGroup, baseUrl: e.target.value })}
                         placeholder={providerMeta?.defaultBaseUrl || 'https://api.example.com/v1'}
                         className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-[13px] text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors font-mono" />
-                      <UrlPreview group={editingGroup} />
                       <label className="flex items-center gap-1.5 text-[11px] text-nova-text-secondary cursor-pointer select-none mt-0.5">
                         <input
                           type="checkbox"
@@ -475,7 +455,7 @@ export default function SettingsModal() {
                           onChange={(e) => setEditingGroup({ ...editingGroup, skipTlsVerify: e.target.checked })}
                           className="accent-nova-accent"
                         />
-                        <span>跳过证书校验（内网自签名 / 私有 CA 证书的 HTTPS 地址可勾选）</span>
+                        <span>跳过证书校验（仅内网自签名证书）</span>
                       </label>
                     </div>
 
@@ -483,7 +463,6 @@ export default function SettingsModal() {
                     <div className="flex flex-col gap-1">
                       <label className="text-[11px] font-medium text-nova-text-secondary">
                         API 请求格式
-                        <span className="ml-1.5 text-[10px] text-nova-text-muted font-normal">提供商 ≠ 请求格式：同一网关可暴露多种格式</span>
                       </label>
                       <div className="grid grid-cols-4 gap-1.5">
                         <button
@@ -610,7 +589,7 @@ export default function SettingsModal() {
                       ) : (
                         !fetchingModels && (
                           <div className="text-[10px] text-nova-text-muted px-2 py-1 bg-nova-hover/40 border border-dashed border-nova-border rounded-md">
-                            还没有模型。点「获取模型列表」从接口拉取，或在下方手动添加。
+                            暂无模型：点「获取模型列表」拉取，或在下方手动添加。
                           </div>
                         )
                       )}
@@ -683,7 +662,7 @@ export default function SettingsModal() {
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></svg>
                     </div>
                     <div className="text-sm font-semibold">选择一个提供商开始配置</div>
-                    <div className="text-xs text-nova-text-muted max-w-[300px]">从左侧列表选择提供商创建新配置，或点击已保存配置进行编辑。每个配置都支持测试连接、获取模型列表。</div>
+                    <div className="text-xs text-nova-text-muted max-w-[300px]">从左侧选择提供商新建配置，或点击已保存配置进行编辑。</div>
                   </div>
                 )}
               </div>
@@ -783,16 +762,16 @@ export default function SettingsModal() {
                 <SettingRow label="允许 AI 自动记忆" desc="开启后 AI 可在对话中自动把重要信息保存到长期记忆" right={
                   <ToggleButton on={preferences.aiAutoMemory} onClick={() => savePreferences({ aiAutoMemory: !preferences.aiAutoMemory })} />
                 } />
-                <SettingRow label="LLM 响应缓存" desc="相同请求直接复用上次结果、不再调用 API（仅缓存 temperature=0 的确定性请求）" right={
+                <SettingRow label="LLM 响应缓存" desc="相同请求直接复用上次结果，不再调用 API" right={
                   <ToggleButton on={preferences.llmResponseCache} onClick={() => savePreferences({ llmResponseCache: !preferences.llmResponseCache })} />
                 } />
-                <SettingRow label="Anthropic 提示词缓存" desc="发送 cache_control 断点，重复的历史前缀按缓存价计费（Claude 约 1/10）" right={
+                <SettingRow label="Anthropic 提示词缓存" desc="重复的历史内容按缓存价计费（约 1/10）" right={
                   <ToggleButton on={preferences.anthropicPromptCache} onClick={() => savePreferences({ anthropicPromptCache: !preferences.anthropicPromptCache })} />
                 } />
-                <SettingRow label="Anthropic 缓存 1 小时 TTL" desc="把缓存断点的存活时间从默认 5 分钟延长到 1 小时 —— 长 agent 任务中途慢工具轮不会让前缀缓存过期。需要模型支持 1h 临时缓存，不支持会 400（可关）" right={
+                <SettingRow label="Anthropic 缓存延长到 1 小时" desc="需模型支持，不支持时请求会失败" right={
                   <ToggleButton on={!!preferences.anthropicPromptCache1h} onClick={() => savePreferences({ anthropicPromptCache1h: !preferences.anthropicPromptCache1h })} />
                 } />
-                <SettingRow label="接收会话间消息" desc="其他会话通过 send_message 发来的消息如何处理（接受=投递并自动处理；暂存=只投递不自动处理；拒绝=对方发送时报错）" right={
+                <SettingRow label="接收会话间消息" desc="其他会话发来的消息如何处理" right={
                   <select value={preferences.crossSessionInbound ?? 'accept'} onChange={(e) => savePreferences({ crossSessionInbound: e.target.value as 'accept' | 'hold' | 'refuse' })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">
                     <option value="accept">✅ 接受并自动处理</option>
@@ -800,7 +779,7 @@ export default function SettingsModal() {
                     <option value="refuse">🚫 拒绝接收</option>
                   </select>
                 } />
-                <SettingRow label="Agent 工具调用轮数上限" desc="Agent 循环中 LLM 一轮接一轮调用工具的轮数上限；「无限」（默认）不设限，仅在偶发死循环时需要主动设限" right={
+                <SettingRow label="Agent 工具调用轮数上限" desc="Agent 循环中连续调用工具的轮数上限，防止一次运行过久" right={
                   <select value={preferences.agentMaxIterations ?? 0} onChange={(e) => savePreferences({ agentMaxIterations: Number(e.target.value) })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">
                     <option value={0}>♾️ 无限（默认）</option>
@@ -810,10 +789,10 @@ export default function SettingsModal() {
                     <option value={500}>500 轮</option>
                   </select>
                 } />
-                <SettingRow label="LLM 请求自动重试" desc="流式响应未产出任何内容前，自动重试瞬时性失败（超时 / 网络 / 限流 / 5xx）；鉴权错误、参数错误、上下文溢出一律不重试" right={
+                <SettingRow label="LLM 请求自动重试" desc="自动重试瞬时性失败（超时 / 网络 / 限流）" right={
                   <ToggleButton on={preferences.llmRetryEnabled !== false} onClick={() => savePreferences({ llmRetryEnabled: preferences.llmRetryEnabled === false })} />
                 } />
-                <SettingRow label="重试次数上限" desc="每次请求失败后最多自动重试的次数（指数退避，单次最长约 10 秒等待）" right={
+                <SettingRow label="重试次数上限" desc="每次请求失败后最多自动重试的次数" right={
                   <select value={preferences.llmRetryMaxRetries ?? 2} onChange={(e) => savePreferences({ llmRetryMaxRetries: Number(e.target.value) })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">
                     <option value={0}>0 次（关闭重试）</option>
@@ -822,7 +801,7 @@ export default function SettingsModal() {
                     <option value={3}>3 次</option>
                   </select>
                 } />
-                <SettingRow label="模型线日志" desc="把每次模型请求（请求体、每次尝试的结果、缓存命中）以脱敏 JSONL 逐行记录到本地 userData/wire-logs —— 调试 agent 轮次时可完整回放。聊天数据加密开启时强制关闭，避免明文日志绕过加密" right={
+                <SettingRow label="模型请求日志" desc="把每次模型请求（脱敏）记录到本地日志文件；聊天数据加密开启时强制关闭" right={
                   <div className="flex items-center gap-2">
                     <ToggleButton
                       on={preferences.wireLogEnabled !== false && !preferences.encryptChatData}
@@ -837,7 +816,7 @@ export default function SettingsModal() {
                     </button>
                   </div>
                 } />
-                <SettingRow label="工具输出截断上限" desc="MCP / 命令输出等无上限的工具结果超过该字符数时保留首尾并提示分页读取；内置工具自身上限更低，默认不影响现有行为" right={
+                <SettingRow label="工具输出截断上限" desc="工具结果超过该字符数时截断，保留首尾" right={
                   <select value={preferences.toolOutputMaxChars ?? 150000} onChange={(e) => savePreferences({ toolOutputMaxChars: Number(e.target.value) })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">
                     <option value={50000}>50K 字符</option>
@@ -847,10 +826,10 @@ export default function SettingsModal() {
                     <option value={500000}>500K 字符</option>
                   </select>
                 } />
-                <SettingRow label="上下文压缩" desc="估算上下文超过模型窗口阈值时，把较早的历史压缩为摘要（仅请求视角替换，原始消息永不删除）；关掉则退回旧的有损裁剪" right={
+                <SettingRow label="上下文压缩" desc="上下文接近窗口上限时，把较早的历史压缩为摘要（原始消息不删除）" right={
                   <ToggleButton on={preferences.contextCompaction !== false} onClick={() => savePreferences({ contextCompaction: preferences.contextCompaction === false })} />
                 } />
-                <SettingRow label="压缩触发阈值" desc="估算上下文占模型窗口的比例，超过即压缩（与裁剪预留相同的水位；宁可提前一点，不要等到真溢出）" right={
+                <SettingRow label="压缩触发阈值" desc="估算上下文占模型窗口的比例，超过即压缩" right={
                   <select value={preferences.contextCompactionRatio ?? 0.8} onChange={(e) => savePreferences({ contextCompactionRatio: Number(e.target.value) })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">
                     <option value={0.7}>70%</option>
@@ -858,7 +837,7 @@ export default function SettingsModal() {
                     <option value={0.9}>90%</option>
                   </select>
                 } />
-                <SettingRow label="压缩使用模型" desc="生成压缩摘要的模型；「跟随会话」用当前会话模型，可单独指定更便宜的模型来省 token" right={
+                <SettingRow label="压缩使用模型" desc="生成压缩摘要的模型，可指定更便宜的模型省 token" right={
                   <select value={preferences.contextCompactionModel ?? ''} onChange={(e) => savePreferences({ contextCompactionModel: e.target.value || undefined })}
                     className="px-3 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-sm text-nova-text-primary outline-none w-[160px]">
                     <option value="">跟随会话模型（默认）</option>
@@ -1096,40 +1075,6 @@ function ToggleButton({ on, onClick, disabled = false }: { on: boolean; onClick:
         style={{ left: on ? '20px' : '1px' }}
       />
     </button>
-  )
-}
-
-/** Live preview of the exact URLs the current config would hit. */
-function UrlPreview({ group }: { group: Partial<ApiConfigGroup> }) {
-  const chatUrl = previewChatUrl(group)
-  const modelsUrl = previewModelsUrl(group)
-  if (!chatUrl && !modelsUrl) return null
-
-  const copy = async (text: string) => {
-    try { await navigator.clipboard.writeText(text) } catch { /* clipboard unavailable */ }
-  }
-
-  return (
-    <div className="flex flex-col gap-0.5 px-2 py-1 bg-nova-hover/50 border border-nova-border rounded-md">
-      {chatUrl && (
-        <div className="flex items-center gap-1.5 text-[10px] font-mono break-all">
-          <span className="text-nova-text-muted shrink-0">最终请求地址</span>
-          <span className="text-nova-accent flex-1 break-all">{chatUrl}</span>
-          <button onClick={() => copy(chatUrl)} title="复制" className="text-nova-text-muted hover:text-nova-text-primary shrink-0 transition-colors">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-          </button>
-        </div>
-      )}
-      {modelsUrl && (
-        <div className="flex items-center gap-1.5 text-[10px] font-mono break-all">
-          <span className="text-nova-text-muted shrink-0">模型列表地址</span>
-          <span className="text-nova-text-secondary flex-1 break-all">{modelsUrl}</span>
-          <button onClick={() => copy(modelsUrl)} title="复制" className="text-nova-text-muted hover:text-nova-text-primary shrink-0 transition-colors">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-          </button>
-        </div>
-      )}
-    </div>
   )
 }
 

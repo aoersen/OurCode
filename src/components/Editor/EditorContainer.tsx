@@ -375,7 +375,7 @@ export default function EditorContainer({ panelId }: EditorContainerProps) {
     useChatStore.getState().restoreRevertedPath(sessionId, path)
       .then((ok) => {
         if (!ok) {
-          useUIStore.getState().showNotification('恢复失败，未找到该文件的回退记录。', 'error')
+          useUIStore.getState().showNotification('恢复失败：未找到该文件可恢复的改动。', 'error')
           return
         }
         window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: path }))

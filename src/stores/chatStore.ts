@@ -730,10 +730,6 @@ interface ChatState {
   subagentProgress: Record<string, SubAgentProgress>
   /** Per-session batch-approval flag (true = remaining tools auto-approved) */
   batchApprovedBySession: Record<string, boolean>
-  /** Per-session count of approval-gated tools that passed WITHOUT a dialog
-   *  (edit-mode / batch / allowlist exemption) — feeds the auto-approve
-   *  visibility banner so silent approvals never stay invisible. */
-  autoApprovedBySession: Record<string, number>
   /** Per-project "always allow this tool" allowlist (projectPath → tool names) */
   toolAllowlist: Record<string, string[]>
   /** Pending batch-approval dialog (agent mode: first round with write tools) */
@@ -1245,7 +1241,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   agentTraces: {},
   subagentProgress: {},
   batchApprovedBySession: {},
-  autoApprovedBySession: {},
   toolAllowlist: {},
   batchApproval: null,
   inlineConfirm: null,
@@ -1821,9 +1816,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         checkpoints: s.activeSessionId === sessionId ? [] : s.checkpoints,
         revertedFiles: s.activeSessionId === sessionId ? [] : s.revertedFiles,
         subagentProgress,
-        autoApprovedBySession: Object.fromEntries(
-          Object.entries(s.autoApprovedBySession).filter(([k]) => k !== sessionId),
-        ),
       }
     })
     window.electronAPI.deleteSession(sessionId)
@@ -2603,7 +2595,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       agentTraces: {},
       subagentProgress: {},
       batchApprovedBySession: {},
-  autoApprovedBySession: {},
       toolAllowlist: {},
       batchApproval: null,
       inlineConfirm: null,
@@ -3196,17 +3187,6 @@ async function runAgentLoop(
     sessionId,
     batchRejectedRef,
     needsApproval,
-    requiresApproval: (name) => toolExecutor.requiresApproval(name),
-    // Auto-approve visibility: every approval-gated call that passes without
-    // a dialog bumps the session's counter (rendered as a banner).
-    onAutoApprove: () => {
-      useChatStore.setState((s) => ({
-        autoApprovedBySession: {
-          ...s.autoApprovedBySession,
-          [sessionId]: (s.autoApprovedBySession[sessionId] || 0) + 1,
-        },
-      }))
-    },
     getPreview: (tc) => toolExecutor.getPreview(tc),
     isAborted: () => abortController.signal.aborted,
     // Show the per-tool approval dialog (project edit mode / batch / allowlist

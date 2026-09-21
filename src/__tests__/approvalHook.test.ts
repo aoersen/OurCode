@@ -121,17 +121,4 @@ describe('createApprovalPreHook', () => {
     expect(r).toEqual({ allow: true })
     expect(onDialog).not.toHaveBeenCalled()
   })
-
-  it('reports auto-approved calls only for approval-gated tools', async () => {
-    const onAutoApprove = vi.fn()
-    const hook = makeHook({
-      needsApproval: () => false,
-      requiresApproval: (name) => name.startsWith('write_'),
-      onAutoApprove,
-    })
-    await hook(tc('w1'), { sessionId: 's1' }) // write tool, exempted → counted
-    await hook(tc('r1', 'read_file'), { sessionId: 's1' }) // read-only → not counted
-    expect(onAutoApprove).toHaveBeenCalledTimes(1)
-    expect(onAutoApprove).toHaveBeenCalledWith(expect.objectContaining({ name: 'write_file' }))
-  })
 })
