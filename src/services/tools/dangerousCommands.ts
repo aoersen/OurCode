@@ -41,7 +41,12 @@ const CHECKS: Array<(command: string) => DangerFinding | null> = [
     if (!ROOTISH_RM_TARGET.test(m[3])) return null
     return { reason: `递归强制删除根目录/家目录级路径：${m[3].trim()}` }
   },
-  (c) => /(?:^|[;&|]\s*)(?:format|diskpart|shutdown|reboot)\b(?!-)/i.test(c)
+  // Command position = string start / newline / separator, plus canonical
+  // command prefixes (sudo, cmd /c, sh -c). The keyword must sit right after
+  // them — 'npm run format' or '--format=' never match. The prefixes sit
+  // OUTSIDE the anchor alternation so they apply after '^' as well as after
+  // separators.
+  (c) => /(?:^|[\n;&|])\s*(?:(?:sudo|doas)\s+)?(?:cmd\s+\/c\s+)?(?:(?:ba|z)?sh\s+-c\s+)?(?:format|diskpart|shutdown|reboot)\b(?!-)/i.test(c)
     ? { reason: '磁盘格式化 / 关机重启类系统命令' }
     : null,
   (c) => /\bRestart-Computer\b|\bStop-Computer\b/i.test(c)
