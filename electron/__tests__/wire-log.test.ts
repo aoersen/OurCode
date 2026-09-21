@@ -53,6 +53,19 @@ describe('WireLogService', () => {
     expect(current.trim()).toBe('b'.repeat(30))
   })
 
+  it('serializes concurrent appends at the rotation boundary', async () => {
+    const store = new WireLogService(baseDir, { maxSessionBytes: 40 })
+    // Fire several appends at once across the budget boundary — the chain
+    // serializes stat→rotate→append so no line is lost or interleaved.
+    const bodies = ['a'.repeat(15), 'b'.repeat(15), 'c'.repeat(15), 'd'.repeat(15)]
+    const results = await Promise.all(bodies.map((b) => store.append('s', b)))
+    expect(results.every(Boolean)).toBe(true)
+    const cur = await fs.readFile(join(baseDir, 's.jsonl'), 'utf8').catch(() => '')
+    const rot = await fs.readFile(join(baseDir, 's.jsonl.1'), 'utf8').catch(() => '')
+    const lines = [...cur.split('\n'), ...rot.split('\n')].filter((l) => l.length > 0)
+    expect(lines.sort()).toEqual([...bodies].sort())
+  })
+
   it('deleteSession removes current and rotated generations', async () => {
     const store = new WireLogService(baseDir, { maxSessionBytes: 10 })
     await store.append('s', 'x'.repeat(8))

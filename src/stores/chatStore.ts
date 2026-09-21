@@ -74,7 +74,13 @@ configureSecretRedaction(() => {
 const _wireCtxRef: { current: WireLogContext } = { current: {} }
 let _wireTurnSeq = 0
 configureWireLog({
-  enabled: () => useEditorStore.getState().preferences.wireLogEnabled !== false,
+  enabled: () => {
+    const prefs = useEditorStore.getState().preferences
+    // Chat-data encryption must not be silently bypassed by a plaintext log —
+    // when encryptChatData is on, the wire log stays off regardless of the
+    // toggle (the log would otherwise be an unencrypted copy of every turn).
+    return prefs.wireLogEnabled !== false && !prefs.encryptChatData
+  },
   getContext: () => _wireCtxRef.current,
 })
 
@@ -3246,7 +3252,9 @@ async function runAgentLoop(
       const workDir = String(tc.arguments?.cwd || ctx.projectPath || getWorkspaceRoot() || '')
       if (workDir) {
         try {
-          const pre = await captureRunPreState(workDir)
+          // projectPath is the workspace boundary + host separator hint:
+          // files outside it are never snapshotted, and paths use its spelling.
+          const pre = await captureRunPreState(workDir, ctx.projectPath || undefined)
           if (pre) runPreStates.set(ctx.toolCallId ?? tc.id, pre)
         } catch { /* run-command checkpoint is best-effort */ }
       }

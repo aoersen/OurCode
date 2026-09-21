@@ -822,7 +822,7 @@ export default function SettingsModal() {
                     <option value={3}>3 次</option>
                   </select>
                 } />
-                <SettingRow label="模型线日志" desc="把每次模型请求（请求体、每次尝试的结果、缓存命中）以脱敏 JSONL 逐行记录到本地 userData/wire-logs —— 调试 agent 轮次时可完整回放" right={
+                <SettingRow label="模型线日志" desc="把每次模型请求（请求体、每次尝试的结果、缓存命中）以脱敏 JSONL 逐行记录到本地 userData/wire-logs —— 调试 agent 轮次时可完整回放。聊天数据加密开启时强制关闭，避免明文日志绕过加密" right={
                   <div className="flex items-center gap-2">
                     <ToggleButton on={preferences.wireLogEnabled !== false} onClick={() => savePreferences({ wireLogEnabled: preferences.wireLogEnabled === false })} />
                     <button

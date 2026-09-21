@@ -44,6 +44,10 @@ export interface WireLogLimits {
 export class WireLogService {
   private readonly maxLineBytes: number
   private readonly maxSessionBytes: number
+  /** Appends are serialized through this chain: stat→rotate→append is not
+   *  atomic, and concurrent appends (main loop + subagents) at the rotation
+   *  boundary could otherwise drop a generation or interleave lines. */
+  private chain: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly baseDir: string,
@@ -63,9 +67,19 @@ export class WireLogService {
    * arguments are unusable, the line is oversized, or the write fails —
    * callers treat logging as best-effort and never block on the outcome.
    */
-  async append(sessionId: string, line: string): Promise<boolean> {
-    if (!sessionId || typeof line !== 'string' || !line) return false
-    if (Buffer.byteLength(line, 'utf8') > this.maxLineBytes) return false
+  append(sessionId: string, line: string): Promise<boolean> {
+    if (!sessionId || typeof line !== 'string' || !line) return Promise.resolve(false)
+    if (Buffer.byteLength(line, 'utf8') > this.maxLineBytes) return Promise.resolve(false)
+    const task = this.chain.then(() => this.doAppend(sessionId, line))
+    // The chain survives failed appends so one bad write never wedges the rest.
+    this.chain = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
+  private async doAppend(sessionId: string, line: string): Promise<boolean> {
     const file = this.fileOf(sessionId)
     try {
       await fs.mkdir(this.baseDir, { recursive: true, mode: 0o700 })
