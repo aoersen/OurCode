@@ -415,7 +415,6 @@ export interface UserPreferences {
   chatPosition: 'right' | 'bottom'
   /** 'system' follows the OS locale (zh-* → zh-CN, otherwise en-US) */
   language: 'zh-CN' | 'en-US' | 'system'
-  encryptChatData: boolean
   /** When enabled the chat history becomes editable: edit messages, drag to
    *  reorder, and batch-delete. Off by default so history can't be mangled
    *  by an accidental drag. */

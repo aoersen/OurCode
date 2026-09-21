@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authorize: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_AUTHORIZE, path),
   watch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_WATCH, path),
   unwatch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_UNWATCH, path),
+  // Workspace trust. authorize() now reports whether the path was accepted;
+  // trustRequest() is what raises the native confirmation.
+  trustRequest: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REQUEST, path),
+  trustStatus: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_STATUS, path),
+  trustRevoke: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REVOKE, path),
   openInFinder: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_OPEN_IN_FINDER, path),
   copyPath: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_COPY_PATH, path),
   copy: (src: string, dest: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_COPY, src, dest),

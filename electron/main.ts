@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, session, Notification, protocol, type WebContents, type IpcMainInvokeEvent } from 'electron'
-import { join, resolve, dirname, sep, relative, isAbsolute, extname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
+import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, session, Notification, protocol, type WebContents, type IpcMainInvokeEvent, type MessageBoxOptions } from 'electron'
+import { join, resolve, dirname, relative, isAbsolute, extname, basename } from 'path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
 import { exec, execFile, spawn } from 'child_process'
@@ -32,6 +32,7 @@ import {
   initBrowserSession,
 } from './services/browser-session'
 import { SpillStore } from './services/spill-store'
+import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
 import { v4 as uuidv4 } from 'uuid'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { UsageEvent, BrowserAction, BrowserActOptions } from '../shared/types'
@@ -73,17 +74,20 @@ process.on('unhandledRejection', (reason) => appendCrashLog('unhandledRejection'
 app.on('child-process-gone', (_event, details) => appendCrashLog('child-process-gone', details))
 
 /**
- * Paths the renderer is allowed to touch. Populated from the dialogs that the
- * user explicitly opened (open folder / open file / save file), explicit
- * fs:authorize calls and the watched project root. Every fs:* handler validates
- * against this allowlist so that a compromised renderer (e.g. via the Markdown
- * surface) cannot read/write/delete arbitrary files outside what the user
- * opened.
+ * Paths the renderer is allowed to touch. Populated from the dialogs the user
+ * explicitly answered and from renderer-named paths that workspace trust already
+ * covers (see authorizeRendererPath / WorkspaceTrust). Every fs:* handler
+ * validates against this allowlist so that a compromised renderer (e.g. via the
+ * Markdown surface) cannot read/write/delete arbitrary files outside what the
+ * user opened.
  */
 const allowedRoots: Set<string> = new Set()
 
+/** The workspace-trust authority, created once the SQLite store is open. */
+let trust: WorkspaceTrust | null = null
+
 function normalizePath(p: string): string {
-  return resolve(p)
+  return canonicalDir(p)
 }
 
 /** Register a directory (and everything under it) as accessible to the renderer */
@@ -92,17 +96,28 @@ function registerRoot(p: string): void {
   allowedRoots.add(normalizePath(p))
 }
 
+/**
+ * Register a path the renderer named, but only if trust for it was established
+ * somewhere the renderer can't forge — a native dialog the user answered, or a
+ * grant persisted by an earlier run. Returns false when the path is untrusted;
+ * callers must then surface the trust affordance instead of pretending the
+ * workspace is merely empty.
+ */
+function authorizeRendererPath(p: string): boolean {
+  if (!p || !isAbsolute(p)) return false
+  if (!trust || !trust.isTrusted(p)) return false
+  registerRoot(p)
+  return true
+}
+
 /** Check whether a path is inside any registered root */
 function isPathAllowed(p: string): boolean {
-  const normalized = normalizePath(p)
-  // Windows paths are case-insensitive, but resolve() keeps the input's case —
-  // roots and requests can legitimately differ in case (OS dialog vs stored
-  // session string), so compare case-insensitively on win32.
-  const win = process.platform === 'win32'
-  const probe = win ? normalized.toLowerCase() : normalized
+  // normalizePath already folds case on Windows, where the same folder has
+  // many spellings (OS dialog vs stored session string).
+  const probe = normalizePath(p)
+  if (!probe) return false
   for (const root of allowedRoots) {
-    const r = win ? root.toLowerCase() : root
-    if (probe === r || probe.startsWith(r + sep)) return true
+    if (isWithinDir(root, probe)) return true
   }
   return false
 }
@@ -1082,7 +1097,10 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:watch', async (_event, path: string) => {
-    registerRoot(path)
+    // Watching is also what starts a workspace's MCP servers, so this is the
+    // one call that turns an untrusted folder into code execution. Untrusted
+    // roots register nothing at all and say so.
+    if (!authorizeRendererPath(path)) return { ok: false, untrusted: true }
     // Batch watcher events per root: a build (or install) emits hundreds of
     // change events in quick succession; broadcasting each one as its own
     // fs:fileChanged IPC message floods the renderer and forces a full
@@ -1116,6 +1134,7 @@ function registerIpcHandlers(): void {
     } catch (error: any) {
       console.error('MCP 配置加载失败:', error.message)
     }
+    return { ok: true }
   })
 
   ipcMain.handle('fs:unwatch', async (_event, path: string) => {
@@ -1126,9 +1145,78 @@ function registerIpcHandlers(): void {
   // loading MCP config. The renderer probes paths at startup (restoring the
   // last project) when the allowlist is still empty — fs:watch can't be reused
   // there because it would start a watcher / reload MCP servers as a side
-  // effect.
+  // effect. Registration is refused unless trust exists; the renderer reports
+  // back and offers trust:request.
   ipcMain.handle('fs:authorize', async (_event, path: string) => {
+    return authorizeRendererPath(path)
+  })
+
+  // Ask the user to trust a workspace. The confirmation is a NATIVE dialog that
+  // only the main process opens — a renderer that got past the fs allowlist
+  // must not also be able to answer the trust prompt on the user's behalf.
+  ipcMain.handle('trust:request', async (event, path: string) => {
+    if (!path || !isAbsolute(path)) return false
+    if (authorizeRendererPath(path)) return true
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      return false
+    }
+    if (!isDir) return false
+    // A prompt the user can't read isn't a consent. The renderer's i18n lives
+    // behind the allowlist we are about to open, so the wording comes from the
+    // OS locale here.
+    const zh = app.getLocale().toLowerCase().startsWith('zh')
+    const options: MessageBoxOptions = zh
+      ? {
+          type: 'warning',
+          title: '信任该文件夹？',
+          message: `是否允许 OurCode 使用「${basename(path)}」？`,
+          detail:
+            `${path}\n\n` +
+            '信任后 IDE 才能读写该文件夹，并且会启动它自带的 MCP 服务——即 ' +
+            'mcp_config.json / .mcp.json 里声明的进程。只信任来源可靠的文件夹。',
+          buttons: ['信任并继续', '不信任'],
+        }
+      : {
+          type: 'warning',
+          title: 'Trust this folder?',
+          message: `Allow OurCode to work in "${basename(path)}"?`,
+          detail:
+            `${path}\n\n` +
+            'Only after you trust it can the IDE read and write the folder, and it will start ' +
+            'the folder\u2019s own MCP servers \u2014 the processes declared in mcp_config.json / ' +
+            '.mcp.json. Trust folders you know where they came from.',
+          buttons: ['Trust', "Don't trust"],
+        }
+    Object.assign(options, { defaultId: 1, cancelId: 1, noLink: true })
+    const win = windowFromEvent(event) ?? mainWindow
+    const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+    if (response !== 0) return false
+    trust?.grant(path)
     registerRoot(path)
+    return true
+  })
+
+  ipcMain.handle('trust:status', async (_event, path: string) => {
+    return { trusted: !!path && !!trust?.isTrusted(path) }
+  })
+
+  // Withdraw trust: forget the durable grant, drop it from the session
+  // allowlist, stop watching it, and take down the MCP servers it started.
+  ipcMain.handle('trust:revoke', async (_event, path: string) => {
+    if (!path || !isAbsolute(path)) return false
+    trust?.revoke(path)
+    const canonical = normalizePath(path)
+    allowedRoots.delete(canonical)
+    try {
+      fileSystem.unwatch(path)
+    } catch {
+      /* not watched — nothing to stop */
+    }
+    if (mcp && normalizePath(mcp.loadedRoot || '') === canonical) mcp.stopAll()
+    return true
   })
 
   ipcMain.handle('fs:openInFinder', async (_event, path: string) => {
@@ -1342,13 +1430,18 @@ function registerIpcHandlers(): void {
     store.clearResponseCache()
   })
 
-  // Dialog handlers
+  // Dialog handlers — a path the user picked here is trusted by definition, and
+  // remembering it is what lets the next run restore the same workspace without
+  // asking again.
   ipcMain.handle('dialog:openFolder', async (event) => {
     const result = await dialog.showOpenDialog(windowFromEvent(event) ?? mainWindow!, {
       properties: ['openDirectory'],
     })
     const selected = result.canceled ? null : result.filePaths[0]
-    if (selected) registerRoot(selected)
+    if (selected) {
+      trust?.grant(selected)
+      registerRoot(selected)
+    }
     return selected
   })
 
@@ -1357,7 +1450,11 @@ function registerIpcHandlers(): void {
       properties: ['openFile'],
     })
     const selected = result.canceled ? null : result.filePaths[0]
-    if (selected) registerRoot(dirname(selected))
+    if (selected) {
+      const parent = dirname(selected)
+      trust?.grant(parent)
+      registerRoot(parent)
+    }
     return selected
   })
 
@@ -1366,7 +1463,11 @@ function registerIpcHandlers(): void {
       defaultPath,
     })
     const selected = result.canceled ? null : result.filePath
-    if (selected) registerRoot(dirname(selected))
+    if (selected) {
+      const parent = dirname(selected)
+      trust?.grant(parent)
+      registerRoot(parent)
+    }
     return selected
   })
 
@@ -2301,9 +2402,6 @@ function registerIpcHandlers(): void {
   // effort by design: a logging failure never affects the request path.
   ipcMain.handle('log:wireAppend', async (_event, sessionId: string, line: string) => {
     if (typeof sessionId !== 'string' || typeof line !== 'string') return false
-    // 聊天数据加密开启时主进程兜底拒绝明文线日志——渲染层的开关门是主策略,
-    // 这里是纵深防御(加密状态下绝不允许明文落盘)。
-    if (store.isChatEncrypted) return false
     return wireLog.append(sessionId, line)
   })
   ipcMain.handle('log:deleteSession', async (_event, sessionId: string) => {
@@ -2475,6 +2573,14 @@ app.whenReady().then(() => {
   fileSystem = new FileSystemService()
   fileIndex = new FileIndexService(fileSystem)
   store = new SQLiteStore(userDataPath)
+  // Trust needs the store for its durable grants, so it can only exist here.
+  // The userData dir is the app's own and never needs asking about.
+  trust = new WorkspaceTrust({
+    load: () => store.listTrustedWorkspaces(),
+    add: (p) => store.trustWorkspace(p),
+    remove: (p) => store.untrustWorkspace(p),
+  })
+  trust.addAppOwned(userDataPath)
   backup = new BackupService(join(userDataPath, 'backups'))
   // Tool-output spill store: full outputs of oversized tool results live under
   // userData/spill/<session>/ (read_file can page them back). Sweep the TTL on

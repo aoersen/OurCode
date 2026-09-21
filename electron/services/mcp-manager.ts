@@ -106,6 +106,24 @@ export interface McpServerStatus {
   retry?: number
   /** Last failure reason, kept while failed. */
   error?: string
+  /** Runs code that shipped inside the app package rather than something the
+   *  machine or the workspace provides — the renderer uses this to decide
+   *  whether an `mcp__*` call needs the user's approval. */
+  bundled?: boolean
+}
+
+/**
+ * True when the server can only be the app's own code: Electron's Node runtime
+ * plus entry points that resolve inside the packaged mcp-servers dir.
+ *
+ * Every other shape (`node`, `npx`, an installed CLI, a remote URL) executes
+ * something this install didn't ship, so its tools keep the approval gate.
+ */
+export function isBundledServerConfig(server: McpServerConfig): boolean {
+  if (server.serverUrl || server.url) return false
+  if (server.command !== 'bundled-node') return false
+  const args = server.args || []
+  return args.length > 0 && args.every((arg) => arg.startsWith('bundled:'))
 }
 
 interface ServerConnection {
@@ -848,13 +866,20 @@ export class MCPManager extends EventEmitter {
     return Array.from(this.connections.keys())
   }
 
+  /** The workspace whose mcp_config.json is currently loaded ('' if none). */
+  get loadedRoot(): string {
+    return this.rootPath
+  }
+
   /** Per-server connection state for the management UI — one entry per
    *  configured server (disabled/stopped servers included). */
   getStatus(): McpServerStatus[] {
     return Object.keys(this.config).map((name) => {
       const server = this.config[name]
-      if (server.disabled) return { name, state: 'disabled' }
-      return this.statuses.get(name) || { name, state: 'stopped' }
+      const bundled = isBundledServerConfig(server)
+      if (server.disabled) return { name, state: 'disabled', bundled }
+      const status = this.statuses.get(name) || { name, state: 'stopped' }
+      return { ...status, bundled }
     })
   }
 }

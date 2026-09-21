@@ -88,6 +88,8 @@ export const enUS: Record<TranslationKey, string> = {
   // ── Project list ────────────────────────────────────────────────────────
   'project.open': 'Open project',
   'project.removeFromList': 'Remove from list',
+  'project.trustWorkspace': 'Trust this folder',
+  'project.untrustWorkspace': 'Revoke trust',
 
   // ── Layout ─────────────────────────────────────────────────────────────
   'layout.menubar': 'Main Menu',
@@ -882,6 +884,7 @@ export const enUS: Record<TranslationKey, string> = {
   'sidebar.noFolderOpen': 'No folder opened',
   'sidebar.orUse': 'or use',
   'sidebar.searchFiles': 'Search files...',
+  'sidebar.untrustedWorkspace': 'Untrusted folder — the IDE neither reads its files nor starts the MCP servers it declares.',
   'sidebar.loading': 'Loading files...',
   'sidebar.cut': 'Cut',
   'sidebar.renamePrompt': 'Enter a new name:',

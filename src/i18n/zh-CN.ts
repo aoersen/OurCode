@@ -85,6 +85,8 @@ export const zhCN = {
   // ── 项目列表 ────────────────────────────────────────────────────────────
   'project.open': '打开项目',
   'project.removeFromList': '从列表中移除',
+  'project.trustWorkspace': '信任此文件夹',
+  'project.untrustWorkspace': '取消信任',
 
   // ── 顶栏 / 布局 ────────────────────────────────────────────────────────
   'layout.menubar': '主菜单',
@@ -879,6 +881,7 @@ export const zhCN = {
   'sidebar.noFolderOpen': '未打开文件夹',
   'sidebar.orUse': '或使用',
   'sidebar.searchFiles': '搜索文件...',
+  'sidebar.untrustedWorkspace': '未信任的文件夹：IDE 不会读取它的内容，也不会启动它自带的 MCP 服务。',
   'sidebar.loading': '加载文件中...',
   'sidebar.cut': '剪切',
   'sidebar.renamePrompt': '输入新名称:',

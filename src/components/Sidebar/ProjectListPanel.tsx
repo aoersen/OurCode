@@ -98,6 +98,8 @@ export default function ProjectListPanel() {
   const reorderProjects = useUIStore((s) => s.reorderProjects)
   const removeProject = useUIStore((s) => s.removeProject)
   const showContextMenu = useUIStore((s) => s.showContextMenu)
+  const requestProjectTrust = useUIStore((s) => s.requestProjectTrust)
+  const revokeProjectTrust = useUIStore((s) => s.revokeProjectTrust)
   const rollActiveSessionAwayFrom = useChatStore((s) => s.rollActiveSessionAwayFrom)
   const sessions = useChatStore((s) => s.sessions)
   const runningSessionIds = useChatStore((s) => s.runningSessionIds)
@@ -304,14 +306,29 @@ export default function ProjectListPanel() {
   }
 
   /** Project-card context menu (right-click or hover ⋯): open the project,
-   *  start a chat in it, or remove it from the list. Removing only hides the
-   *  project — its sessions stay bound and reappear when it's re-opened. */
-  const handleProjectMenu = (e: React.MouseEvent, projectPath: string) => {
+   *  start a chat in it, manage whether it is trusted, or remove it from the
+   *  list. Removing only hides the project — its sessions stay bound and
+   *  reappear when it's re-opened. */
+  const handleProjectMenu = async (e: React.MouseEvent, projectPath: string) => {
     e.preventDefault()
     e.stopPropagation()
-    showContextMenu(e.clientX, e.clientY, [
+    const x = e.clientX
+    const y = e.clientY
+    // Which trust action applies is main's answer, not a renderer-side guess.
+    let trusted = true
+    try {
+      trusted = (await window.electronAPI.trustStatus(projectPath))?.trusted !== false
+    } catch {
+      /* bridge unavailable — offer the grant path, which is the safe default */
+      trusted = false
+    }
+    showContextMenu(x, y, [
       { label: t('project.open'), icon: '📂', action: () => handleEnterProject(projectPath) },
       { label: t('chat.newChat'), icon: '💬', action: () => handleNewSessionForProject(projectPath) },
+      { separator: true, label: '' },
+      trusted
+        ? { label: t('project.untrustWorkspace'), icon: '🛡️', action: () => void revokeProjectTrust(projectPath) }
+        : { label: t('project.trustWorkspace'), icon: '🛡️', action: () => void requestProjectTrust(projectPath) },
       { separator: true, label: '' },
       { label: t('project.removeFromList'), icon: '🗑️', action: () => handleRemoveProject(projectPath) },
     ])

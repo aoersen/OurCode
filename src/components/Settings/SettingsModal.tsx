@@ -801,12 +801,11 @@ export default function SettingsModal() {
                     <option value={3}>3 次</option>
                   </select>
                 } />
-                <SettingRow label="模型请求日志" desc="把每次模型请求（脱敏）记录到本地日志文件；聊天数据加密开启时强制关闭" right={
+                <SettingRow label="模型请求日志" desc="把每次模型请求（脱敏）记录到本地日志文件；内容是明文，排查完建议关闭" right={
                   <div className="flex items-center gap-2">
                     <ToggleButton
-                      on={preferences.wireLogEnabled !== false && !preferences.encryptChatData}
-                      disabled={!!preferences.encryptChatData}
-                      onClick={() => { if (!preferences.encryptChatData) savePreferences({ wireLogEnabled: preferences.wireLogEnabled === false }) }}
+                      on={preferences.wireLogEnabled !== false}
+                      onClick={() => { savePreferences({ wireLogEnabled: preferences.wireLogEnabled === false }) }}
                     />
                     <button
                       onClick={() => { void window.electronAPI.wireLogOpenDir().catch(() => {}) }}

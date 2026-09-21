@@ -74,13 +74,7 @@ configureSecretRedaction(() => {
 const _wireCtxRef: { current: WireLogContext } = { current: {} }
 let _wireTurnSeq = 0
 configureWireLog({
-  enabled: () => {
-    const prefs = useEditorStore.getState().preferences
-    // Chat-data encryption must not be silently bypassed by a plaintext log —
-    // when encryptChatData is on, the wire log stays off regardless of the
-    // toggle (the log would otherwise be an unencrypted copy of every turn).
-    return prefs.wireLogEnabled !== false && !prefs.encryptChatData
-  },
+  enabled: () => useEditorStore.getState().preferences.wireLogEnabled !== false,
   getContext: () => _wireCtxRef.current,
 })
 

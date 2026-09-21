@@ -21,9 +21,13 @@ export interface ElectronAPI {
   rename: (oldPath: string, newPath: string) => Promise<void>
   delete: (path: string) => Promise<void>
   stat: (path: string) => Promise<import('@shared/types').FileStat | null>
-  authorize: (path: string) => Promise<void>
-  watch: (path: string) => Promise<void>
+  /** False when the main process refused to register the path (untrusted workspace) */
+  authorize: (path: string) => Promise<boolean>
+  watch: (path: string) => Promise<{ ok: boolean; untrusted?: boolean } | undefined>
   unwatch: (path: string) => Promise<void>
+  trustRequest: (path: string) => Promise<boolean>
+  trustStatus: (path: string) => Promise<{ trusted: boolean }>
+  trustRevoke: (path: string) => Promise<boolean>
   openInFinder: (path: string) => Promise<void>
   copyPath: (path: string) => Promise<void>
   copy: (src: string, dest: string) => Promise<void>
@@ -196,7 +200,7 @@ export interface ElectronAPI {
   mcpGetConfig: (rootPath: string) => Promise<{ ok: boolean; config: { mcpServers: Record<string, any> }; file: string | null; error?: string }>
   mcpSaveConfig: (rootPath: string, config: { mcpServers: Record<string, any> }, file?: string | null) => Promise<{ ok: boolean; file?: string; error?: string }>
   mcpToolDefinitions: () => Promise<import('@shared/types').ToolDefinition[]>
-  mcpStatus: () => Promise<Array<{ name: string; state: 'connecting' | 'ready' | 'failed' | 'restarting' | 'disabled' | 'stopped'; retry?: number; error?: string }>>
+  mcpStatus: () => Promise<Array<{ name: string; state: 'connecting' | 'ready' | 'failed' | 'restarting' | 'disabled' | 'stopped'; retry?: number; error?: string; bundled?: boolean }>>
   mcpListResources: () => Promise<Array<{ server: string; uri: string; name?: string; mimeType?: string; description?: string }>>
   mcpReadResource: (server: string, uri: string) => Promise<{ ok: boolean; result?: string; error?: string }>
   mcpListPrompts: () => Promise<Array<{ server: string; name: string; description?: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }>>

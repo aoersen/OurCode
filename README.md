@@ -189,9 +189,11 @@ Plugins reach the command palette by calling `api.commands.register` at runtime;
 
 ## 🔐 Security
 
-- All `fs:*` IPC handlers validate paths against an explicit allowlist (only folders you opened).
+- A folder has to be trusted before it is used. An untrusted folder is neither read nor written, and the MCP servers it declares (`mcp_config.json` / `.mcp.json`) are never started. Every `fs:*` IPC handler re-validates the path against the trusted roots, resolving symlinks so a link inside a workspace cannot point outside it; trust is granted only through a native dialog the main process itself opens.
+- MCP servers that don't ship inside the app package need your approval on every tool call.
 - Strict Content-Security-Policy in the renderer.
-- API keys are encrypted with AES-256-GCM using a machine-bound key.
+- API keys are stored encrypted (AES-256-GCM) under a key derived from this machine's id plus a fixed salt. That keeps a copied database file from revealing them, and nothing more — anything running as your user can redo the same derivation.
+- Chat transcripts, tool outputs and the model wire log are plaintext in the app's data directory.
 - Markdown rendered in chat is sanitized with DOMPurify.
 
 ## 📄 License

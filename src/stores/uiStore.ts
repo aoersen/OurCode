@@ -135,6 +135,15 @@ interface UIState {
   setSidebarWidth: (width: number) => void
   setActiveSidebarTab: (tab: SidebarTab) => void
   setRootPath: (path: string | null) => void
+  /** Set to the current workspace root when main refused to register it (the
+   *  folder has never been trusted); null while the workspace is usable. */
+  untrustedProjectPath: string | null
+  /** Grant trust for a workspace — main opens the native confirmation, so the
+   *  answer cannot come from this renderer. Resolves true when access is on. */
+  requestProjectTrust: (path: string) => Promise<boolean>
+  /** Withdraw trust: main forgets the grant, stops watching, drops the
+   *  workspace's MCP servers, and the folder goes back to the untrusted state. */
+  revokeProjectTrust: (path: string) => Promise<void>
   /** Remove a project from the list ("从列表中移除") — its sessions stay bound
    *  and reappear when the project is re-opened. Callers must ALSO roll the
    *  active conversation away from it (chatStore.rollActiveSessionAwayFrom) so
@@ -213,6 +222,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sidebarWidth: 330,
   activeSidebarTab: 'files',
   rootPath: null,
+  untrustedProjectPath: null,
   recentProjects: (() => { try { return JSON.parse(localStorage.getItem(modeKey('recentProjects')) || '[]') } catch { return [] } })(),
   recentProjectTimes: (() => { try { return JSON.parse(localStorage.getItem(modeKey('recentProjectTimes')) || '{}') } catch { return {} } })(),
   removedProjects: (() => { try { return JSON.parse(localStorage.getItem(modeKey('removedProjects')) || '[]') } catch { return [] } })(),
@@ -292,7 +302,20 @@ export const useUIStore = create<UIState>((set, get) => ({
       // list view (new session / saved session / settings picker) never mounts
       // it — without this, every fs:*/search:* call for the workspace would be
       // rejected with "路径不在允许范围内".
-      window.electronAPI?.authorize?.(path)
+      //
+      // Main now answers this call: false means the folder is not trusted, so
+      // nothing under it is readable until the user grants trust (a native
+      // dialog main itself raises). Only an explicit false counts — a stubbed
+      // bridge answering nothing is not evidence of distrust.
+      void Promise.resolve(window.electronAPI?.authorize?.(path))
+        .then((ok) => {
+          set((s) =>
+            s.rootPath !== path
+              ? {}
+              : { untrustedProjectPath: ok === false ? path : null }
+          )
+        })
+        .catch(() => { /* bridge failed — FileTree reports it on first read */ })
       set((s) => {
         // The project list keeps a STABLE order — a project is added once and
         // keeps its position (re-opening it never bumps it to the front). NEWLY
@@ -316,6 +339,28 @@ export const useUIStore = create<UIState>((set, get) => ({
       })
     }
   },
+  requestProjectTrust: async (path) => {
+    let granted = false
+    try {
+      granted = (await window.electronAPI?.trustRequest?.(path)) === true
+    } catch {
+      granted = false
+    }
+    if (granted) set({ untrustedProjectPath: null })
+    return granted
+  },
+
+  revokeProjectTrust: async (path) => {
+    try {
+      await window.electronAPI?.trustRevoke?.(path)
+    } catch {
+      /* main already forgot it — the local state below is what matters */
+    }
+    // The current workspace just lost its access rights: say so, so the tree
+    // stops looking like an empty project.
+    set((s) => (s.rootPath === path ? { untrustedProjectPath: path } : {}))
+  },
+
   removeProject: (path) => {
     set((s) => {
       const updated = s.recentProjects.filter((p) => p !== path)
@@ -478,7 +523,14 @@ export const useUIStore = create<UIState>((set, get) => ({
     // (the allowlist is empty at startup), so authorize first — otherwise this
     // stat is rejected and the last project never restores.
     try {
-      await window.electronAPI.authorize(path)
+      const ok = await window.electronAPI.authorize(path)
+      if (ok === false) {
+        // Restored from an earlier run but never trusted (or trust was
+        // withdrawn) — don't open a workspace we can't read; the project list
+        // offers the 信任 action instead.
+        set({ untrustedProjectPath: path })
+        return
+      }
       const stat = await window.electronAPI.stat(path)
       if (!stat || !stat.isDirectory) return
     } catch {

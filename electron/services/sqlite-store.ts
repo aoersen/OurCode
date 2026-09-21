@@ -22,7 +22,6 @@ function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
 export class SQLiteStore {
   private db: Database.Database
   private crypto: CryptoService
-  private encryptChat: boolean = false
 
   constructor(userDataPath: string) {
     const dbDir = join(userDataPath, 'data')
@@ -40,26 +39,6 @@ export class SQLiteStore {
 
     this.initTables()
     this.migrateTables()
-    this.loadEncryptFlag()
-  }
-
-  private loadEncryptFlag(): void {
-    const row = this.db.prepare("SELECT value FROM user_preferences WHERE key = 'encryptChatData'").get() as any
-    if (row) {
-      try {
-        this.encryptChat = JSON.parse(row.value) === true
-      } catch { this.encryptChat = false }
-    }
-  }
-
-  setEncryptChat(value: boolean): void {
-    this.encryptChat = value
-  }
-
-  /** True when chat-data at-rest encryption is enabled — the wire log gates
-   *  on this (a plaintext log must never bypass the encryption feature). */
-  get isChatEncrypted(): boolean {
-    return this.encryptChat
   }
 
   getCrypto(): CryptoService {
@@ -378,6 +357,11 @@ export class SQLiteStore {
         hits INTEGER DEFAULT 1
       );
 
+      CREATE TABLE IF NOT EXISTS workspace_trust (
+        path TEXT PRIMARY KEY,
+        trusted_at INTEGER NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id, sort_order);
       CREATE INDEX IF NOT EXISTS idx_sessions_config ON chat_sessions(config_group_id);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at);
@@ -518,11 +502,11 @@ export class SQLiteStore {
           messages: (b.messages || []).map((msg: any) => ({
             id: msg.id,
             role: msg.role,
-            content: this.maybeDecrypt(msg.content),
+            content: msg.content,
             sortOrder: msg.sortOrder,
             contextFiles: msg.contextFiles || [],
             tokenCount: msg.tokenCount || 0,
-            thinking: msg.thinking ? this.maybeDecrypt(msg.thinking) : undefined,
+            thinking: msg.thinking ? msg.thinking : undefined,
             editedAt: msg.editedAt || undefined,
             toolCalls: msg.toolCalls?.length ? msg.toolCalls : undefined,
             toolResults: msg.toolResults?.length ? msg.toolResults : undefined,
@@ -551,17 +535,17 @@ export class SQLiteStore {
         messages: messages.map(msg => {
           const toolResults = parseJsonField<ChatMessage['toolResults']>(msg.tool_results, undefined)
           const attachments = parseJsonField<ChatMessage['attachments']>(
-            msg.attachments ? this.maybeDecrypt(msg.attachments) : '', undefined
+            msg.attachments ? msg.attachments : '', undefined
           )
           return {
             id: msg.id,
             role: msg.role,
-            content: this.maybeDecrypt(msg.content),
+            content: msg.content,
             sortOrder: msg.sort_order,
             contextFiles: parseJsonField<string[]>(msg.context_files, []),
             tokenCount: msg.token_count,
             attachments: attachments?.length ? attachments : undefined,
-            thinking: msg.thinking ? this.maybeDecrypt(msg.thinking) : undefined,
+            thinking: msg.thinking ? msg.thinking : undefined,
             editedAt: msg.edited_at || undefined,
             toolCalls: parseJsonField<ChatMessage['toolCalls']>(msg.tool_calls, undefined)?.length
               ? parseJsonField<ChatMessage['toolCalls']>(msg.tool_calls, undefined)
@@ -717,14 +701,14 @@ export class SQLiteStore {
           msg.id,
           id,
           msg.role,
-          this.maybeEncrypt(msg.content),
+          msg.content,
           msg.sortOrder,
           JSON.stringify(msg.contextFiles),
           msg.tokenCount,
-          msg.thinking ? this.maybeEncrypt(msg.thinking) : '',
+          msg.thinking ? msg.thinking : '',
           JSON.stringify(msg.toolCalls || []),
           JSON.stringify(msg.toolResults || []),
-          msg.attachments?.length ? this.maybeEncrypt(JSON.stringify(msg.attachments)) : null,
+          msg.attachments?.length ? JSON.stringify(msg.attachments) : null,
           msg.editedAt || 0,
           msg.requestStartedAt || 0,
           msg.requestDurationMs || 0,
@@ -824,22 +808,23 @@ export class SQLiteStore {
     saveMany(Object.entries(prefs))
   }
 
-  // Encrypt/Decrypt helpers for chat content
-  private maybeEncrypt(text: string): string {
-    if (!this.encryptChat || !this.crypto.hasChatKey()) return text
-    return this.crypto.encryptChat(text).toString('base64')
+  // ── Workspace trust ──────────────────────────────────────────────────────
+  // Deliberately NOT exposed through any generic preferences IPC: the renderer
+  // must not be able to write its own allowlist. Only the main process reads or
+  // extends this table, and only after the user answered a native dialog.
+  listTrustedWorkspaces(): string[] {
+    const rows = this.db.prepare('SELECT path FROM workspace_trust ORDER BY trusted_at ASC').all() as Array<{ path: string }>
+    return rows.map((r) => r.path)
   }
 
-  private maybeDecrypt(text: string): string {
-    if (!this.encryptChat || !this.crypto.hasChatKey()) return text
-    try {
-      const buf = Buffer.from(text, 'base64')
-      // Only attempt decrypt if buffer is large enough for IV+TAG+data
-      if (buf.length > 32) return this.crypto.decryptChat(buf)
-    } catch {
-      // Not encrypted (plaintext from before encryption was enabled)
-    }
-    return text
+  trustWorkspace(path: string): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO workspace_trust (path, trusted_at) VALUES (?, ?)')
+      .run(path, Date.now())
+  }
+
+  untrustWorkspace(path: string): void {
+    this.db.prepare('DELETE FROM workspace_trust WHERE path = ?').run(path)
   }
 
   // ───────────────────── Memories (persistent user context) ─────────────────────
@@ -847,7 +832,7 @@ export class SQLiteStore {
     const rows = this.db.prepare('SELECT * FROM memories ORDER BY updated_at DESC').all() as any[]
     return rows.map((row) => ({
       id: row.id,
-      content: this.maybeDecrypt(row.content),
+      content: row.content,
       scope: (row.scope || 'global') as Memory['scope'],
       projectPath: row.project_path || undefined,
       createdAt: row.created_at,
@@ -859,7 +844,7 @@ export class SQLiteStore {
     const id = uuidv4()
     const now = Date.now()
     this.db.prepare('INSERT INTO memories (id, content, scope, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, this.maybeEncrypt(content), scope || 'global', projectPath || '', now, now)
+      .run(id, content), scope || 'global', projectPath || '', now, now
     return { id, content, scope: scope || 'global', projectPath, createdAt: now, updatedAt: now }
   }
 
@@ -965,7 +950,7 @@ export class SQLiteStore {
       id: row.id,
       name: row.name,
       description: row.description || '',
-      prompt: this.maybeDecrypt(row.prompt),
+      prompt: row.prompt,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }))
@@ -975,7 +960,7 @@ export class SQLiteStore {
     const id = uuidv4()
     const now = Date.now()
     this.db.prepare('INSERT INTO workflows (id, name, description, prompt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, input.name || '未命名工作流', input.description || '', this.maybeEncrypt(input.prompt), now, now)
+      .run(id, input.name || '未命名工作流', input.description || '', input.prompt), now, now
     return { id, name: input.name || '未命名工作流', description: input.description || '', prompt: input.prompt, createdAt: now, updatedAt: now }
   }
 
@@ -1157,6 +1142,8 @@ export class SQLiteStore {
     this.db.exec('DELETE FROM reverted_files')
     this.db.exec('DELETE FROM workflows')
     this.db.exec('DELETE FROM usage_events')
+    // A reset means "start over" — every workspace has to be re-trusted.
+    this.db.exec('DELETE FROM workspace_trust')
   }
 
   private closed = false

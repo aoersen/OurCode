@@ -50,10 +50,11 @@ export const IPC_CHANNELS = {
   LLM_CACHE_PUT: 'llmCache:put',
   LLM_CACHE_CLEAR: 'llmCache:clear',
 
-  // Encryption
-  CRYPTO_SET_MASTER_KEY: 'crypto:setMasterKey',
-  CRYPTO_UNLOCK: 'crypto:unlock',
-  CRYPTO_IS_LOCKED: 'crypto:isLocked',
+  // Workspace trust — answered by a native dialog the main process opens, so a
+  // compromised renderer can neither grant itself access nor forge the answer.
+  TRUST_REQUEST: 'trust:request',
+  TRUST_STATUS: 'trust:status',
+  TRUST_REVOKE: 'trust:revoke',
 
   // App
   APP_GET_PATH: 'app:getPath',
@@ -158,7 +159,6 @@ export const DEFAULT_PREFERENCES = {
   showHiddenFiles: false,
   chatPosition: 'right' as const,
   language: 'system' as const,
-  encryptChatData: false,
   chatHistoryEditMode: false,
   aiAutoMemory: true,
   llmResponseCache: true,

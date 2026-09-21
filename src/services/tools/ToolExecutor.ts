@@ -88,6 +88,9 @@ export class ToolExecutor {
   private toolMap: Map<string, Tool>
   /** Dynamic tools from MCP servers (fetched via IPC, merged into definitions) */
   private dynamicTools: ToolDefinition[] = []
+  /** MCP servers that run the app's own packaged code — the only ones whose
+   *  tools skip approval (everything else executes third-party code). */
+  private bundledMcpServers: Set<string> = new Set()
   /** Dynamic skill tools (skill__<name>) from the workspace skill manager */
   private skillTools: ToolDefinition[] = []
   /** Session context for usage attribution (set by the agent loop) */
@@ -264,6 +267,22 @@ export class ToolExecutor {
     } catch {
       this.dynamicTools = []
     }
+    // Which servers are app-shipped is read from the same snapshot as the tool
+    // list, so switching workspaces can't leave the previous one's exemption
+    // behind — an unreadable status means nothing is exempt.
+    try {
+      const status = await window.electronAPI.mcpStatus()
+      this.bundledMcpServers = new Set((status || []).filter((s) => s.bundled).map((s) => s.name))
+    } catch {
+      this.bundledMcpServers = new Set()
+    }
+  }
+
+  /** Server an `mcp__<server>__<tool>` name belongs to (same split as usage). */
+  private mcpServerOf(toolName: string): string {
+    const rest = toolName.slice('mcp__'.length)
+    const sep = rest.indexOf('__')
+    return sep === -1 ? rest : rest.slice(0, sep)
   }
 
   /** Refresh skill tool definitions from the workspace SkillManager. `projectPath`
@@ -302,8 +321,11 @@ export class ToolExecutor {
 
   /** Check if a tool requires user approval */
   requiresApproval(toolName: string): boolean {
-    // MCP tools are user-configured servers — their calls run without extra approval
-    if (toolName.startsWith('mcp__')) return false
+    // An MCP server runs third-party code the user installed, so its tools are
+    // approval-gated like any other side effect. Only servers that execute the
+    // app's own packaged code skip it — otherwise the bundled git MCP would nag
+    // on every status check.
+    if (toolName.startsWith('mcp__')) return !this.bundledMcpServers.has(this.mcpServerOf(toolName))
     // Skill tools are read-only (they only load instructions)
     if (toolName.startsWith('skill__')) return false
     const tool = this.toolMap.get(toolName)

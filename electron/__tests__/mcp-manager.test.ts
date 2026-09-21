@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { join } from 'path'
 import { mkdirSync, rmSync, writeFileSync } from 'fs'
-import { MCPManager, extractMcpText, toMcpToolDefinition, shouldResetRetry } from '../services/mcp-manager'
+import { MCPManager, extractMcpText, isBundledServerConfig, toMcpToolDefinition, shouldResetRetry } from '../services/mcp-manager'
 
 const MOCK = join(__dirname, 'fixtures', 'mock-mcp-server.js')
 
@@ -306,5 +306,35 @@ describe('MCP backoff-budget reset + stale tools', () => {
       manager.stopAll()
       expect((manager as any).lastKnownTools.size).toBe(0)
     })
+  })
+})
+
+describe('isBundledServerConfig — which MCP tools skip approval', () => {
+  it('accepts only the app’s own runtime plus app-shipped entry points', () => {
+    expect(isBundledServerConfig({ command: 'bundled-node', args: ['bundled:git-server/server.js'] })).toBe(true)
+    // Anything else runs code this install did not ship.
+    expect(isBundledServerConfig({ command: 'node', args: ['mcp-servers/git-server/server.js'] })).toBe(false)
+    expect(isBundledServerConfig({ command: 'bundled-node', args: ['server.js'] })).toBe(false)
+    expect(isBundledServerConfig({ command: 'bundled-node', args: ['bundled:../../evil.js'] })).toBe(true) // path escape is resolveStdio's job, not this gate's
+    expect(isBundledServerConfig({ command: 'bundled-node', args: [] })).toBe(false)
+    expect(isBundledServerConfig({ command: 'bundled-node' })).toBe(false)
+    expect(isBundledServerConfig({ serverUrl: 'https://example.com/mcp' })).toBe(false)
+    expect(isBundledServerConfig({ url: 'https://example.com/mcp' })).toBe(false)
+    expect(isBundledServerConfig({})).toBe(false)
+  })
+
+  it('reports bundled per server through getStatus', () => {
+    const manager = new MCPManager()
+    ;(manager as any).config = {
+      git: { command: 'bundled-node', args: ['bundled:git-server/server.js'] },
+      thirdParty: { command: 'npx', args: ['some-mcp'] },
+      off: { command: 'bundled-node', args: ['bundled:x.js'], disabled: true },
+    }
+    const byName = Object.fromEntries(manager.getStatus().map((s) => [s.name, s]))
+    expect(byName.git.bundled).toBe(true)
+    expect(byName.thirdParty.bundled).toBe(false)
+    expect(byName.off.bundled).toBe(true)
+    expect(byName.off.state).toBe('disabled')
+    manager.stopAll()
   })
 })
