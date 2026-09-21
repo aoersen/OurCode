@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } fr
 import { readFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
 import { exec, execFile, spawn } from 'child_process'
-import type { ExecFileOptions } from 'child_process'
+import type { ExecFileOptions, ChildProcess } from 'child_process'
 import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { autoUpdater, UpdateInfo } from 'electron-updater'
@@ -415,6 +415,28 @@ interface TerminalSession {
   command: string
 }
 const terminals = new Map<string, TerminalSession>()
+
+/** In-flight `shell:exec` runs keyed by the renderer's requestId, so hitting
+ *  Stop can take the process down instead of only discarding its result. */
+const shellRuns = new Map<string, ChildProcess>()
+/** requestIds the user stopped — their exec callback reports 用户终止, not 超时 */
+const shellStopped = new Set<string>()
+
+/**
+ * Kill a plain child process together with everything it launched.
+ *
+ * `child.kill()` only reaches the direct child: on Windows the shell is
+ * powershell.exe, so `npm run build` leaves the real compiler holding the CPU
+ * (and often the output files) after the agent already moved on. Ask the OS
+ * for the whole tree there; SIGKILL can't be trapped on POSIX.
+ */
+function killChildTree(child: ChildProcess): void {
+  if (process.platform === 'win32' && child.pid != null) {
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+    return
+  }
+  child.kill('SIGKILL')
+}
 
 const CAPTURE_LIMIT_CHARS = 512 * 1024
 /** Finished agent runs stay readable until this many are queued up; older ones
@@ -1282,6 +1304,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('store:deleteSession', async (_event, id: string) => {
     return store.deleteSession(id)
+  })
+
+  // Sub-agent run records (durable twin of the renderer's subagentProgress)
+  ipcMain.handle('store:getSubagentRuns', async (_event, sessionIds: string[]) => {
+    if (!Array.isArray(sessionIds)) return []
+    return store.getSubagentRuns(sessionIds.filter((x) => typeof x === 'string' && !!x).slice(0, 2000))
+  })
+
+  ipcMain.handle('store:saveSubagentRun', async (_event, toolCallId: string, record: any) => {
+    if (typeof toolCallId !== 'string' || !toolCallId || !record || typeof record !== 'object') return false
+    return store.saveSubagentRun(toolCallId, record)
   })
 
   ipcMain.handle('store:getPreferences', async () => {
@@ -2197,7 +2230,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.BROWSER_CLOSE, () => browserClose())
 
   // Shell exec handler (for run_command tool)
-  ipcMain.handle('shell:exec', async (_event, command: string, cwd?: string, options?: { timeoutMs?: number }) => {
+  ipcMain.handle(IPC_CHANNELS.SHELL_EXEC, async (_event, command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => {
     return new Promise((resolve) => {
       try {
         if (cwd) assertPathAllowed(cwd)
@@ -2208,28 +2241,49 @@ function registerIpcHandlers(): void {
       // 默认 30s 超时，允许 run_command 的 timeoutMs 覆盖（构建/测试等长命令
       // 传更大值）；上限 10 分钟防失控。
       const timeoutMs = Math.max(1000, Math.min(Math.floor(options?.timeoutMs || 30000), 600_000))
-      exec(command, {
+      // requestId lets the renderer cancel THIS run via shell:kill. Without it
+      // a stop could only drop the result while the build kept burning CPU.
+      const requestId = typeof options?.requestId === 'string' && options.requestId ? options.requestId : uuidv4()
+      const child = exec(command, {
         cwd: cwd || undefined,
         timeout: timeoutMs,
         maxBuffer: 5 * 1024 * 1024,
         shell: process.platform === 'win32' ? 'powershell.exe' : 'bash',
         env: scrubbedSpawnEnv(),
       }, (error: any, stdout: string, stderr: string) => {
+        shellRuns.delete(requestId)
+        const stoppedByUser = shellStopped.delete(requestId)
         if (error) {
           // exec 超时会把子进程杀掉并置 killed=true（signal='SIGTERM'）。超时
           // 必须明确标注 [超时]——否则 agent 无法区分「命令超时」与「命令本身
           // 失败」，会把超时误判成环境/参数问题，陷入反复换姿势重试（曾见
-          // build 超时被当成构建环境坏了，多烧 6 分钟调试）。
-          const timedOut = error.killed === true || error.signal === 'SIGTERM'
-          const msg = timedOut
-            ? `[超时] 命令执行超过 ${Math.round(timeoutMs / 1000)} 秒被终止。若是构建/测试/安装等长命令，请在 run_command 的 timeoutMs 参数中加大超时（如 120000），或改用异步方式等待，不要重复执行同一命令。`
-            : (stderr || error.message)
+          // build 超时被当成构建环境坏了，多烧 6 分钟调试）。用户终止同理要单独
+          // 标注：它既不是超时也不是失败，重试反而不是用户要的。
+          const timedOut = !stoppedByUser && (error.killed === true || error.signal === 'SIGTERM')
+          const msg = stoppedByUser
+            ? '[已终止] 用户停止了任务，这条命令及其子进程已被结束。不要重试它；如需要可先向用户确认。'
+            : timedOut
+              ? `[超时] 命令执行超过 ${Math.round(timeoutMs / 1000)} 秒被终止。若是构建/测试/安装等长命令，请在 run_command 的 timeoutMs 参数中加大超时（如 120000），或改用异步方式等待，不要重复执行同一命令。`
+              : (stderr || error.message)
           resolve({ success: false, output: stdout || '', error: msg })
         } else {
           resolve({ success: true, output: stdout.trim() })
         }
       })
+      shellRuns.set(requestId, child)
     })
+  })
+
+  // Cancel an in-flight shell:exec (the user hit Stop). Returns false when the
+  // command already finished — the renderer's abort listener may fire late.
+  ipcMain.handle(IPC_CHANNELS.SHELL_KILL, (_event, requestId: string) => {
+    if (typeof requestId !== 'string' || !requestId) return false
+    const child = shellRuns.get(requestId)
+    if (!child) return false
+    shellRuns.delete(requestId)
+    shellStopped.add(requestId)
+    killChildTree(child)
+    return true
   })
 
   // Tool-output spill store — oversized tool results page through read_file

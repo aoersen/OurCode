@@ -3,6 +3,7 @@
  * These use window.electronAPI to communicate with the main process
  */
 import { loadIgnorePatterns, isIgnoredPath } from './context'
+import { v4 as uuidv4 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import type { ToolImageResult } from './types'
 import { parseImageDataUrl } from '@/utils/imageAttach'
@@ -583,14 +584,28 @@ export async function deleteFileOrDir(path: string): Promise<string> {
 
 /** Run a shell command. timeoutMs 可选（默认主进程 30s）——构建/测试等长命令
  *  传更大值（如 120000），避免被默认超时中断后误判成命令失败。 */
-export async function runCommand(command: string, cwd?: string, timeoutMs?: number): Promise<string> {
+export async function runCommand(command: string, cwd?: string, timeoutMs?: number, signal?: AbortSignal): Promise<string> {
   const rootPath = workspaceRoot()
   const workDir = cwd || rootPath
-  const result = await window.electronAPI.shellExec(command, workDir, { timeoutMs })
-  if (result.success) {
-    return result.output
+  // 主进程是等子进程退出才回话的：只让渲染层提前结算，`npm run build` 会带着
+  // 没人读的输出一路烧到底。给 shell:exec 一个可取消的 id，停止时真的杀进程树。
+  const requestId = uuidv4()
+  const onAbort = (): void => {
+    void window.electronAPI.shellKill(requestId).catch(() => { /* 命令可能已经自己结束了 */ })
   }
-  return `Error: ${result.error}${result.output ? '\n' + result.output : ''}`
+  if (signal) {
+    if (signal.aborted) return 'Error: [已终止] 任务已停止，这条命令没有执行；不要重试它。'
+    signal.addEventListener('abort', onAbort, { once: true })
+  }
+  try {
+    const result = await window.electronAPI.shellExec(command, workDir, { timeoutMs, requestId })
+    if (result.success) {
+      return result.output
+    }
+    return `Error: ${result.error}${result.output ? '\n' + result.output : ''}`
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+  }
 }
 
 /**

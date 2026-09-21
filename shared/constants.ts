@@ -110,6 +110,7 @@ export const IPC_CHANNELS = {
 
   // Shell
   SHELL_EXEC: 'shell:exec',
+  SHELL_KILL: 'shell:kill',
 
   // File preview (ourcode-file:// live preview buffers)
   PREVIEW_SET: 'preview:set',

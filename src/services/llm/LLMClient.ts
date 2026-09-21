@@ -150,7 +150,8 @@ function* replayCached(cached: CachedResponse): Generator<LLMStreamChunk> {
 export async function* sendLLMRequest(
   req: LLMRequest,
   config: ApiConfigGroup,
-  timeoutMs: number = REQUEST_TIMEOUT_MS
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+  outerSignal?: AbortSignal,
 ): AsyncGenerator<LLMStreamChunk> {
   const adapter = getAdapter(config.provider, config.apiFormat)
   // Trim stray whitespace/newlines so a pasted key can't silently break auth.
@@ -229,10 +230,23 @@ export async function* sendLLMRequest(
   const maxRetries = retryEnabled() ? Math.max(0, retryMaxRetries()) : 0
 
   for (let attempt = 0; ; attempt++) {
+    // User-initiated stop (outer signal) — settle immediately instead of
+    // opening a retry loop that would just get aborted again.
+    if (outerSignal?.aborted) {
+      throw outerSignal.reason ?? new DOMException('已取消', 'AbortError')
+    }
     const attemptStart = Date.now()
     // A FRESH controller per attempt — the finally below aborts unconditionally,
     // and an aborted signal can't be reused for the retry.
     const controller = new AbortController()
+    // Compose the enclosing run's stop signal: the user's Stop button cancels
+    // the in-flight HTTP request immediately instead of waiting for the next
+    // chunk (or the idle timeout when the provider stalls mid-stream).
+    const onOuterAbort = (): void => controller.abort(outerSignal?.reason)
+    if (outerSignal) {
+      if (outerSignal.aborted) onOuterAbort()
+      else outerSignal.addEventListener('abort', onOuterAbort)
+    }
     // IDLE timeout, not a wall-clock deadline: long reasoning streams (DeepSeek
     // reasoner etc.) legitimately run past 120s as long as chunks keep arriving.
     // The timer is re-armed on every chunk, so only a connection that goes
@@ -279,8 +293,13 @@ export async function* sendLLMRequest(
       // chat/model can see — some providers echo the key back in the error
       // body, and URL-keyed ones (Gemini) put it in the URL. Redact here, the
       // single choke point where the request's own secrets are in scope.
+      // User-initiated stop keeps its AbortError identity so the caller's
+      // abort branch (e.g. "[生成已停止]") runs instead of a timeout card.
+      const abortedExternally = !!outerSignal?.aborted
       const err = (error.name === 'AbortError' || controller.signal.aborted)
-        ? new Error('请求超时，请稍后重试')
+        ? abortedExternally
+          ? (outerSignal?.reason ?? error)
+          : new Error('请求超时，请稍后重试')
         : redactError(error, {
             apiKey: safeConfig.apiKey,
             baseUrl: safeConfig.baseUrl,
@@ -289,7 +308,8 @@ export async function* sendLLMRequest(
       // Auto-retry transient failures ONLY before the stream produced anything
       // (chunks.length === 0). Once output has started, retrying would replay
       // partial content — surface the error instead. Context-overflow is never
-      // retried: the fix is compaction, not a duplicate request.
+      // retried: the fix is compaction, not a duplicate request. A user stop is
+      // never retried either — the outer signal stays aborted.
       const info = classifyLLMError(err)
       if (traceId) {
         void emitWireLine(wireSession, {
@@ -300,10 +320,10 @@ export async function* sendLLMRequest(
           durationMs: Date.now() - attemptStart,
           ok: false,
           error: err.message,
-          retried: chunks.length === 0 && attempt < maxRetries && info.retryable,
+          retried: chunks.length === 0 && attempt < maxRetries && info.retryable && !abortedExternally,
         })
       }
-      if (chunks.length === 0 && attempt < maxRetries && info.retryable) {
+      if (chunks.length === 0 && attempt < maxRetries && info.retryable && !abortedExternally) {
         clearTimer()
         await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)))
         continue
@@ -311,6 +331,7 @@ export async function* sendLLMRequest(
       throw err
     } finally {
       clearTimer()
+      outerSignal?.removeEventListener('abort', onOuterAbort)
       // Abort the underlying HTTP request unconditionally. A consumer that
       // stops early (stop generation / abort) breaks out of the for-await —
       // without this the main-process fetch keeps downloading the rest of the

@@ -17,7 +17,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { sendLLMRequest } from '@/services/llm/LLMClient'
 import { ToolExecutor } from '@/services/tools'
-import type { ToolCall } from '@/services/tools/types'
+import type { ToolCall, ToolResult } from '@/services/tools/types'
 import { captureCheckpoint } from '@/services/checkpointService'
 import { buildSkillIndex, listSkills } from '@/services/skills/skillManager'
 import { loadAgentDefinition, SubagentGuard, resolveAllowedRoot } from '@/services/subagents/subagentDefinitions'
@@ -101,7 +101,7 @@ async function buildSubSystemPrompt(opts: SubAgentOptions, defSystemPrompt: stri
 - 自主完成任务：使用工具（读取/搜索/编辑文件、执行命令）推进，不要向用户请求确认。
 - 不要调用 submit_plan、ask_user_question、manage_todo、run_subagent 等控制类工具。
 - 修改文件时用 edit_file 尽量精确，不要破坏无关代码。
-- 任务完成后，以简洁的结构化摘要报告：完成了什么、修改了哪些文件、遗留问题。
+- 任务完成后，以简洁的结构化摘要报告：完成了什么、修改了哪些文件、遗留问题。报告不超过 8 行，只写结论与关键事实，不要复述过程。
 </subagent_rules>`
   return prompt
 }
@@ -155,6 +155,39 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
   // so its tool list matches the project-scoped skill index below.
   await executor.refreshSkillTools(opts.projectPath)
   executor.setSessionContext(opts.sessionId, opts.projectPath)
+
+  /** Execute one subagent tool with the parent run's abort signal. On abort the
+   *  call settles at once with a synthetic stopped result (the in-flight tool
+   *  may keep running in the background, but its result is discarded). */
+  const executeToolWithAbort = (tc: ToolCall): Promise<{ result: ToolResult; aborted: boolean }> => {
+    const ctx = { sessionId: opts.sessionId, projectPath: opts.projectPath, toolCallId: tc.id, abortSignal: opts.abortSignal }
+    const signal = opts.abortSignal
+    if (!signal) return executor.execute(tc, ctx).then((result) => ({ result, aborted: false }))
+    if (signal.aborted) {
+      return Promise.resolve({ result: { toolCallId: tc.id, name: tc.name, result: '[子智能体已停止]', isError: true }, aborted: true })
+    }
+    return new Promise((resolve) => {
+      const cleanup = () => signal.removeEventListener('abort', onAbort)
+      const onAbort = () => {
+        cleanup()
+        resolve({ result: { toolCallId: tc.id, name: tc.name, result: '[子智能体已停止]', isError: true }, aborted: true })
+      }
+      signal.addEventListener('abort', onAbort)
+      executor.execute(tc, ctx).then(
+        (result) => {
+          cleanup()
+          resolve({ result, aborted: false })
+        },
+        (error) => {
+          cleanup()
+          resolve({
+            result: { toolCallId: tc.id, name: tc.name, result: `Error: ${error?.message || String(error)}`, isError: true },
+            aborted: false,
+          })
+        },
+      )
+    })
+  }
 
   const recordEvent = (event: Partial<UsageEvent>, tokens = 0) => {
     const full: UsageEvent = {
@@ -270,7 +303,10 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
         // Attribute the subagent's model requests to the parent session so
         // they land in the same wire-log file as the main loop's.
         setWireContextForRun({ sessionId: opts.sessionId })
-        for await (const chunk of sendLLMRequest(req, configGroup)) {
+        // The user's Stop button aborts the request itself (outer signal), not
+        // just the chunk loop — a stalled provider can't hold the subagent run
+        // hostage until the idle timeout.
+        for await (const chunk of sendLLMRequest(req, configGroup, undefined, opts.abortSignal)) {
           if (opts.abortSignal?.aborted) break
           if (chunk.thinking) {
             roundThinking += chunk.thinking
@@ -291,6 +327,9 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           if (chunk.done) break
         }
       } catch (error: any) {
+        // User hit Stop — the parent run's signal fired; don't record it as a
+        // failure, just unwind (the final status below reads the signal).
+        if (opts.abortSignal?.aborted) break
         lastError = error.message
         break
       }
@@ -345,7 +384,13 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           steps: [...currentSteps(), { id: tc.id, name: tc.name, arguments: compactArgs(tc.arguments), status: 'running' }],
         })
 
-        const result = await executor.execute(tc)
+        // Execute with the parent run's abort signal threaded through the
+        // pipeline, and settle IMMEDIATELY when the user hits Stop — even a
+        // long run_command (build/test) that ignores the signal can't keep the
+        // run (and the whole office task) looking stuck for its full timeout.
+        const execution = await executeToolWithAbort(tc)
+        if (execution.aborted) break
+        const result = execution.result
         toolCallCount++
         pushProgress({ toolCallCount })
         if (result.isError) lastError = result.result

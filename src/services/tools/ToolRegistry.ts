@@ -258,10 +258,12 @@ export function createToolRegistry(): Tool[] {
         },
         required: ['command'],
       },
-      execute: async (args) => {
+      execute: async (args, context) => {
         const { runCommand, runCommandBackground } = await import('@/services/tools/helpers')
         if (args.background) return runCommandBackground(args.command, args.cwd)
-        return runCommand(args.command, args.cwd, args.timeoutMs)
+        // context.abortSignal 就是本轮运行的 Stop 信号（run_command 自己带超时，
+        // 执行器不再包一层 deadline）——传下去，停止时才能杀掉进程树。
+        return runCommand(args.command, args.cwd, args.timeoutMs, context?.abortSignal)
       },
       requiresApproval: true,
     },

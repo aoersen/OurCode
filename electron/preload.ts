@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSessions: (mode?: 'main' | 'office') => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_SESSIONS, mode),
   saveSession: (session: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_SESSION, session),
   deleteSession: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.STORE_DELETE_SESSION, id),
+  getSubagentRuns: (sessionIds: string[]) => ipcRenderer.invoke('store:getSubagentRuns', sessionIds),
+  saveSubagentRun: (toolCallId: string, record: any) => ipcRenderer.invoke('store:saveSubagentRun', toolCallId, record),
   getPreferences: () => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_PREFERENCES),
   savePreferences: (prefs: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_PREFERENCES, prefs),
   resetAll: () => ipcRenderer.invoke('store:resetAll'),
@@ -202,7 +204,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Shell
-  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number }) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_EXEC, command, cwd, options),
+  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_EXEC, command, cwd, options),
+  shellKill: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_KILL, requestId),
 
   // Tool-output spill store — oversized tool results page through read_file
   spillSave: (sessionId: string, text: string) => ipcRenderer.invoke('spill:save', sessionId, text),

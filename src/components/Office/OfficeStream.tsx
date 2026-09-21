@@ -181,6 +181,21 @@ function ReportCard({
   const toolCalls = useMemo(() => messages.flatMap((m) => m.toolCalls ?? []), [messages])
   const errorMsg = useMemo(() => messages.find((m) => m.error)?.error ?? null, [messages])
 
+  // 精简汇报：长回复默认折叠成一句摘要（老板视角只看结论），点「展开全文」
+  // 才看完整内容——角色回复不再一屏接一屏地刷。
+  const [finalOpen, setFinalOpen] = useState(false)
+  const COLLAPSE_AT = 240
+  const finalExcerpt = useMemo(() => {
+    const text = finalContent
+      .replace(/```[\s\S]*?```/g, '（代码块）')
+      .replace(/^[#>*|\-\s]+/gm, '')
+      .replace(/[#*>`|]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    return text.length > COLLAPSE_AT ? text.slice(0, COLLAPSE_AT) + '…' : ''
+  }, [finalContent])
+  const finalCollapsed = !finalOpen && !!finalExcerpt
+
   return (
     <div className="flex flex-col gap-1.5">
       {/* K 版：汇报轮头部只留等宽时间戳（角色身份由各消息的头像+标签表达） */}
@@ -282,8 +297,21 @@ function ReportCard({
                 )}
               </span>
               <div className="text-[13px] leading-relaxed" style={{ color: MONO.t1 }}>
-                <StreamingMarkdown content={finalContent} />
+                {finalCollapsed ? (
+                  <span>{finalExcerpt}</span>
+                ) : (
+                  <StreamingMarkdown content={finalContent} />
+                )}
               </div>
+              {finalExcerpt && (
+                <button
+                  onClick={() => setFinalOpen((v) => !v)}
+                  className="w-fit transition-colors hover:text-[#111827] mt-0.5"
+                  style={{ fontSize: 11, color: '#0058BC', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  {finalOpen ? t('office.collapseReply') : t('office.expandReply')}
+                </button>
+              )}
             </div>
           </div>
         ) : (
@@ -359,6 +387,9 @@ function ReportCard({
 
 // ── 实时状态行（监管循环流式输出）────────────────────────────────────────────
 
+/** 流式期间默认只展示正文的最后这么多个字符（与汇报卡折叠阈值同量级）。 */
+const LIVE_TAIL_CHARS = 240
+
 function LiveStatusLine({ sessionId }: { sessionId: string }) {
   const t = useI18n()
   const loading = useChatStore((s) => s.runningSessionIds.includes(sessionId))
@@ -370,6 +401,8 @@ function LiveStatusLine({ sessionId }: { sessionId: string }) {
     return run?.startedAt ?? null
   })
   const [now, setNow] = useState(() => Date.now())
+  const [liveOpen, setLiveOpen] = useState(false)
+  const lastLenRef = useRef(0)
 
   useEffect(() => {
     if (!loading) return
@@ -378,10 +411,21 @@ function LiveStatusLine({ sessionId }: { sessionId: string }) {
     return () => window.clearInterval(timer)
   }, [loading])
 
+  // 新一轮的流式正文从空开始（长度回落）——此时收回展开态，否则用户上一轮
+  // 点的「展开全文」会让这一轮整篇重刷，等于没折叠。
+  const contentLen = stream?.content?.length ?? 0
+  useEffect(() => {
+    if (contentLen < lastLenRef.current) setLiveOpen(false)
+    lastLenRef.current = contentLen
+  }, [contentLen])
+
   if (!loading) return null
 
   const elapsed = runStartedAt ? Math.max(0, Math.floor((now - runStartedAt) / 1000)) : 0
   const phaseElapsed = runPhase ? Math.max(0, Math.floor((now - runPhase.since) / 1000)) : 0
+  const content = stream?.content ?? ''
+  const liveCollapsed = content.length > LIVE_TAIL_CHARS && !liveOpen
+  const liveTail = liveCollapsed ? content.slice(-LIVE_TAIL_CHARS).replace(/^\s+/, '') : ''
 
   return (
     <div className="flex flex-col gap-1.5" style={{ minWidth: 0 }}>
@@ -403,14 +447,32 @@ function LiveStatusLine({ sessionId }: { sessionId: string }) {
           {(phaseElapsed > 0 || elapsed > 0) && ` · ${elapsed}s`}
         </span>
       </div>
-      {/* 流式正文最小化呈现；思考原文不刷屏 */}
+      {/* 流式正文只看尾巴：过长时默认只留最后一段（+「展开全文」），避免实时
+          输出把一屏刷成一屏——折叠汇报卡的意义正在于此，流式期间不该破例。 */}
       {stream?.content && (
-        <div
-          className="text-sm leading-relaxed"
-          style={{ color: MONO.t1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-        >
-          <StreamingMarkdown content={stream.content} />
-          <span className="animate-pulse-dot" style={{ color: MONO.ink }}>▋</span>
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <div
+            className="text-sm leading-relaxed"
+            style={{ color: MONO.t1, whiteSpace: liveCollapsed ? 'pre-wrap' : undefined, wordBreak: 'break-word' }}
+          >
+            {liveCollapsed ? (
+              <>…{liveTail}<span className="animate-pulse-dot" style={{ color: MONO.ink }}>▋</span></>
+            ) : (
+              <>
+                <StreamingMarkdown content={stream.content} />
+                <span className="animate-pulse-dot" style={{ color: MONO.ink }}>▋</span>
+              </>
+            )}
+          </div>
+          {stream.content.length > LIVE_TAIL_CHARS && (
+            <button
+              onClick={() => setLiveOpen((v) => !v)}
+              className="w-fit transition-colors hover:text-[#111827]"
+              style={{ fontSize: 11, color: '#0058BC', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              {liveOpen ? t('office.collapseReply') : t('office.expandReply')}
+            </button>
+          )}
         </div>
       )}
     </div>

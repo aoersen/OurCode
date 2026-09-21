@@ -3,8 +3,11 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { CryptoService } from './crypto'
-import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
+import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
 import { DEFAULT_PREFERENCES } from '../../shared/constants'
+
+/** 每个会话保留的子任务记录条数上限（一人公司任务流的回看深度）。 */
+const MAX_SUBAGENT_RUNS_PER_SESSION = 60
 
 /** Parse a JSON column safely ('' / null / invalid → fallback) */
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
@@ -323,6 +326,20 @@ export class SQLiteStore {
         PRIMARY KEY (session_id, file_path)
       );
 
+      -- Terminal record of one run_subagent dispatch, keyed by the PARENT tool
+      -- call id (the same key the live chatStore.subagentProgress table uses).
+      -- The live table is renderer-only and dies with the window, so without
+      -- this the office 任务流 / 代码变更 / 终端 tabs go blank after a restart
+      -- even though the conversation itself is intact.
+      CREATE TABLE IF NOT EXISTS subagent_runs (
+        tool_call_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER DEFAULT 0,
+        record TEXT DEFAULT '{}'
+      );
+
       CREATE TABLE IF NOT EXISTS workflows (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -365,6 +382,7 @@ export class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_sessions_config ON chat_sessions(config_group_id);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_reverted_files_session ON reverted_files(session_id, reverted_at);
+      CREATE INDEX IF NOT EXISTS idx_subagent_runs_session ON subagent_runs(session_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_usage_category_time ON usage_events(category, started_at);
       CREATE INDEX IF NOT EXISTS idx_usage_name ON usage_events(name);
       CREATE INDEX IF NOT EXISTS idx_usage_started ON usage_events(started_at);
@@ -739,6 +757,41 @@ export class SQLiteStore {
 
   deleteSession(id: string): void {
     this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM subagent_runs WHERE session_id = ?').run(id)
+  }
+
+  // Sub-agent run records — the durable twin of chatStore.subagentProgress
+  getSubagentRuns(sessionIds: string[]): Array<{ toolCallId: string; record: SubAgentProgress }> {
+    const ids = Array.from(new Set(sessionIds.filter((x) => typeof x === 'string' && !!x)))
+    const out: Array<{ toolCallId: string; record: SubAgentProgress }> = []
+    // Chunked bind: SQLite caps host parameters (999 by default), and a window
+    // with many sessions must still read its whole history. The statement is
+    // prepared per chunk because better-sqlite3 requires the bound argument
+    // count to match the placeholders exactly.
+    for (let i = 0; i < ids.length; i += 400) {
+      const chunk = ids.slice(i, i + 400)
+      const rows = this.db.prepare(
+        `SELECT tool_call_id, record FROM subagent_runs WHERE session_id IN (${chunk.map(() => '?').join(',')})`,
+      ).all(...chunk) as any[]
+      for (const row of rows) {
+        const record = parseJsonField<SubAgentProgress | null>(row.record, null)
+        if (record && Array.isArray(record.steps)) out.push({ toolCallId: row.tool_call_id, record })
+      }
+    }
+    return out
+  }
+
+  saveSubagentRun(toolCallId: string, record: SubAgentProgress): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO subagent_runs (tool_call_id, session_id, status, started_at, ended_at, record)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(toolCallId, record.sessionId, record.status, Number(record.startedAt) || 0, Date.now(), JSON.stringify(record))
+    this.db.prepare(`
+      DELETE FROM subagent_runs WHERE session_id = ? AND tool_call_id NOT IN (
+        SELECT tool_call_id FROM subagent_runs WHERE session_id = ?
+        ORDER BY started_at DESC LIMIT ?
+      )
+    `).run(record.sessionId, record.sessionId, MAX_SUBAGENT_RUNS_PER_SESSION)
   }
 
   // User Preferences

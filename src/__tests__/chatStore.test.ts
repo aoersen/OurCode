@@ -21,6 +21,8 @@ const mockApi = {
   wireLogDeleteSession: vi.fn(async () => {}),
   saveConfigGroup: vi.fn(async () => ({})),
   getConfigGroups: vi.fn(async () => []),
+  getSubagentRuns: vi.fn(async () => []),
+  saveSubagentRun: vi.fn(async () => true),
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
@@ -1522,5 +1524,84 @@ describe('vision input: attachments → request images', () => {
     await useChatStore.getState().saveSession(sessionId)
     const second = mockApi.saveSession.mock.calls[1][0]
     expect(second.messages[0].attachments).toBeUndefined()
+  })
+})
+
+describe('chatStore subagent run persistence (一人公司任务流回看)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      ...initialState,
+      sessions: [],
+      activeSessionId: null,
+      undoStack: [],
+      queuedMessagesBySession: {},
+      subagentProgress: {},
+    })
+  })
+
+  function addSession(id: string, targetMode: boolean) {
+    useChatStore.setState((s) => ({
+      sessions: [...s.sessions, { id, title: id, configGroupId: 'cfg-1', model: 'm', messages: [], targetMode } as any],
+    }))
+    return id
+  }
+
+  const finished = (sessionId: string) => ({
+    status: 'done' as const,
+    sessionId,
+    name: 'tm-developer',
+    task: '实现登录页',
+    startedAt: 1000,
+    thinking: '一大段思考原文',
+    steps: [{ id: 'st1', name: 'edit_file', arguments: { path: 'a.tsx' }, status: 'success' as const }],
+    toolCallCount: 1,
+    tokenCount: 500,
+  })
+
+  it('persists a terminal run of a target-mode session, minus the thinking blob', async () => {
+    const sid = addSession('tm-1', true)
+    useChatStore.getState().updateSubagentProgress('call-1', finished(sid))
+    await vi.waitFor(() => expect(mockApi.saveSubagentRun).toHaveBeenCalledTimes(1))
+
+    const [toolCallId, record] = mockApi.saveSubagentRun.mock.calls[0]
+    expect(toolCallId).toBe('call-1')
+    expect(record.status).toBe('done')
+    expect(record.thinking).toBe('')
+    expect(record.steps[0].arguments.path).toBe('a.tsx')
+  })
+
+  it('never persists agent-mode sessions or still-running records', async () => {
+    const plain = addSession('agent-1', false)
+    useChatStore.getState().updateSubagentProgress('call-plain', finished(plain))
+    const tm = addSession('tm-2', true)
+    useChatStore.getState().updateSubagentProgress('call-live', { ...finished(tm), status: 'running' })
+    await Promise.resolve()
+    expect(mockApi.saveSubagentRun).not.toHaveBeenCalled()
+  })
+
+  it('hydrates persisted runs on load without clobbering the live record', async () => {
+    const sid = addSession('tm-3', true)
+    useChatStore.getState().updateSubagentProgress('live', { ...finished(sid), status: 'running', tokenCount: 7 })
+    mockApi.getSubagentRuns.mockResolvedValueOnce([
+      { toolCallId: 'live', record: finished(sid) },
+      { toolCallId: 'old', record: { ...finished(sid), startedAt: 500, task: '上一轮的任务' } },
+      { toolCallId: 'junk', record: { status: 'done' } },
+      { toolCallId: 'nosteps', record: null },
+    ])
+
+    await useChatStore.getState().hydrateSubagentRuns()
+    const table = useChatStore.getState().subagentProgress
+    expect(table.live.status).toBe('running')
+    expect(table.old.task).toBe('上一轮的任务')
+    expect(table.junk).toBeUndefined()
+    expect(table.nosteps).toBeUndefined()
+  })
+
+  it('survives an older database that has no records yet', async () => {
+    addSession('tm-4', true)
+    mockApi.getSubagentRuns.mockRejectedValueOnce(new Error('no such table: subagent_runs'))
+    await expect(useChatStore.getState().hydrateSubagentRuns()).resolves.toBeUndefined()
+    expect(useChatStore.getState().subagentProgress).toEqual({})
   })
 })

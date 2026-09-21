@@ -26,12 +26,11 @@ function fmtTokens(v: number): string {
 export default function OfficeTopBar() {
   const t = useI18n()
   const activeSessionId = useChatStore((s) => s.activeSessionId)
-  // 停止按钮的状态基准：**正在运行**（含等待审批/提问期间——runAgentLoop 在
-  // 等待时 runningSessionIds 仍保留本会话）。仅 activeSessionId 不足以决定
-  // 「停止」是否可用——会话存在 ≠ 有任务在跑。
-  const running = useChatStore(
-    (s) => !!s.activeSessionId && s.runningSessionIds.includes(s.activeSessionId),
-  )
+  // 停止按钮的状态基准：**任一会话正在运行**（含等待审批/提问期间——runAgentLoop
+  // 在等待时 runningSessionIds 仍保留本会话）。公司层面的停止不能只看当前激活
+  // 会话：左侧任务行展示的运行中任务可能属于另一个会话，按钮必须可用且能止住它。
+  const runningSessionIds = useChatStore((s) => s.runningSessionIds)
+  const running = runningSessionIds.length > 0
   const targetModeStatus = useChatStore((s) => s.targetModeStatus)
   // 进度表逐次推送换引用（思考节流/工具步骤），800ms 节流避免顶栏随每次推送
   // 整块重渲染——与看板/项目栏同一节流粒度（角色分布只是「约」统计）。
@@ -102,8 +101,16 @@ export default function OfficeTopBar() {
     .join(' · ')
 
   const stop = () => {
-    if (!activeSessionId) return
-    useChatStore.getState().stopGeneration(activeSessionId)
+    const state = useChatStore.getState()
+    if (!state.runningSessionIds.length) return
+    // 优先停当前激活会话；否则把本窗口所有正在运行的任务一并终止——
+    // 公司层面的「停止任务」语义，避免「点了没反应」（此前只 abort 激活
+    // 会话的控制器，任务实际跑在别的会话时点击就是 no-op）。
+    if (activeSessionId && state.runningSessionIds.includes(activeSessionId)) {
+      state.stopGeneration(activeSessionId)
+      return
+    }
+    for (const id of [...state.runningSessionIds]) state.stopGeneration(id)
   }
 
   return (

@@ -60,6 +60,9 @@ export interface ElectronAPI {
   getSessions: (mode?: 'main' | 'office') => Promise<import('@shared/types').ChatSession[]>
   saveSession: (session: any) => Promise<import('@shared/types').ChatSession>
   deleteSession: (id: string) => Promise<void>
+  /** Durable sub-agent run records (office 任务流 / 代码变更 / 终端 回看) */
+  getSubagentRuns: (sessionIds: string[]) => Promise<Array<{ toolCallId: string; record: import('@shared/types').SubAgentProgress }>>
+  saveSubagentRun: (toolCallId: string, record: import('@shared/types').SubAgentProgress) => Promise<boolean>
   getPreferences: () => Promise<import('@shared/types').UserPreferences>
   savePreferences: (prefs: any) => Promise<void>
   resetAll: () => Promise<void>
@@ -134,7 +137,8 @@ export interface ElectronAPI {
   onBrowserEvent: (callback: (payload: import('@shared/types').BrowserEvent) => void) => () => void
 
   // Shell
-  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number }) => Promise<{ success: boolean; output: string; error?: string }>
+  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => Promise<{ success: boolean; output: string; error?: string }>
+  shellKill: (requestId: string) => Promise<boolean>
 
   // Tool-output spill store — oversized tool results page through read_file
   spillSave: (sessionId: string, text: string) => Promise<string | null>

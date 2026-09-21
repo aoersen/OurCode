@@ -765,6 +765,8 @@ interface ChatState {
   /** Merge a partial update into a sub-agent's live progress record (keyed by
    *  the parent run_subagent tool call id). Steps are capped to the newest 100. */
   updateSubagentProgress: (toolCallId: string, patch: Partial<SubAgentProgress>) => void
+  /** 从 SQLite 回填子任务终态记录（一人公司任务流的回看数据）。 */
+  hydrateSubagentRuns: () => Promise<void>
   finishAgentRun: (sessionId: string, runId: string, status: AgentRun['status'], extra?: { error?: string; tokensIn?: number; tokensOut?: number; requestCount?: number; cacheHits?: number; cacheTokensSaved?: number; cacheReadTokens?: number; cacheWriteTokens?: number }) => void
   approveBatchRun: (sessionId: string) => void
   decideBatchApproval: (decision: 'confirm' | 'all' | 'reject') => void
@@ -1221,6 +1223,32 @@ async function restoreRevertedOne(sessionId: string, path: string): Promise<bool
   }
 }
 
+/** 落盘的子任务记录瘦身：思考原文对办公室页签没用、又是这条记录里最大的字段，
+ *  丢掉；工具输出留头部一段，够终端页签回看命令结果。 */
+function toPersistedRun(p: SubAgentProgress): SubAgentProgress {
+  return {
+    ...p,
+    thinking: '',
+    steps: p.steps.slice(-60).map((st) =>
+      st.result && st.result.length > 4000 ? { ...st, result: st.result.slice(0, 4000) + '…' } : st,
+    ),
+  }
+}
+
+/**
+ * Persist one terminal sub-agent run. Only target-mode (一人公司) sessions are
+ * written: agent mode's transcript already renders from its own messages, and
+ * resurrecting progress records there would change what a re-opened chat shows.
+ */
+async function persistSubagentRun(toolCallId: string, p: SubAgentProgress): Promise<void> {
+  if (!toolCallId || !p.sessionId) return
+  const session = useChatStore.getState().sessions.find((s) => s.id === p.sessionId)
+  if (session?.targetMode !== true) return
+  try {
+    await window.electronAPI.saveSubagentRun?.(toolCallId, toPersistedRun(p))
+  } catch { /* 回看数据丢了不影响本轮任务 */ }
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -1378,6 +1406,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (next.steps.length > 100) next.steps = next.steps.slice(-100)
       return { subagentProgress: { ...s.subagentProgress, [toolCallId]: next } }
     })
+    // 终态落盘一次。subagentProgress 是纯内存表，窗口一关就没了——会话本体在
+    // SQLite 里，一人公司的「任务流 / 代码变更 / 终端」却全部回到空白。
+    const settled = get().subagentProgress[toolCallId]
+    if (settled && settled.status !== 'running') {
+      void persistSubagentRun(toolCallId, settled)
+    }
+  },
+
+  hydrateSubagentRuns: async () => {
+    const ids = get().sessions.map((s) => s.id)
+    if (ids.length === 0) return
+    try {
+      const rows = await window.electronAPI.getSubagentRuns?.(ids)
+      if (!rows?.length) return
+      set((s) => {
+        const subagentProgress = { ...s.subagentProgress }
+        let changed = false
+        for (const row of rows) {
+          // 内存里的实时记录优先（正在跑的那次不能被历史副本盖掉）
+          if (!row?.toolCallId || subagentProgress[row.toolCallId]) continue
+          const record = row.record
+          if (!record || typeof record !== 'object' || !Array.isArray(record.steps)) continue
+          subagentProgress[row.toolCallId] = { ...record, thinking: record.thinking ?? '' }
+          changed = true
+        }
+        return changed ? { subagentProgress } : {}
+      })
+    } catch { /* 老库里还没这张表 = 没有可回看的记录，不是错误 */ }
   },
 
   finishAgentRun: (sessionId, runId, status, extra) => {
@@ -1686,6 +1742,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // （删除全部消息必须跨重启生效）。
       for (const s of normalized) _persistedSessionIds.add(s.id)
       set({ sessions: normalized })
+      // 回填子任务的终态记录：一人公司的「任务流 / 代码变更 / 终端」读的是这张
+      // 内存表，不回填的话重启后打开老对话就是一片空白。
+      void get().hydrateSubagentRuns()
       // Restore the last active session across restarts (only on the first load).
       // 一人公司窗口不自动恢复上次会话：开公司 = 开一家新公司（白纸），旧对话
       // 仍在左侧项目/任务列表里可手动点开，避免「开公司把之前的对话带过来」。
@@ -2814,6 +2873,9 @@ async function runAgentLoop(
   let disposeCheckpointHook: () => void = () => {}
   let disposeRunCmdCheckpointHook: () => void = () => {}
   let disposeSupervisorGuard: () => void = () => {}
+  // 用户停止标记是否已由 catch 分支写入（AbortError 路径追加 [生成已停止]）——
+  // 循环体在轮次边界干净退出时不会抛错，需要循环后补一条停止标记，但不能重复。
+  let stopMarked = false
 
   // 目标模式监管 guard（见 TARGET_MODE_SUPERVISOR_DENIED 注释）：工具清单里
   // 已隐藏禁用工具，这里兜底拦截幻觉调用，并给 write/create/delete 加
@@ -3387,7 +3449,10 @@ async function runAgentLoop(
 
       try {
         try {
-          for await (const chunk of sendLLMRequest(req, configGroup)) {
+          // The user's Stop button aborts the in-flight request itself (the
+          // outer signal), not just the chunk loop — a stalled provider can't
+          // hold the run hostage until the idle timeout.
+          for await (const chunk of sendLLMRequest(req, configGroup, undefined, abortController.signal)) {
             if (abortController.signal.aborted) break
             // Accumulate first; any data keeps the idle clock reset, batched
             // into the same set as the content below (no set per token).
@@ -4099,14 +4164,35 @@ async function runAgentLoop(
         setTimeout(() => { useChatStore.getState().continueGeneration(sessionId) }, 150)
       }
     }
+
+    // 用户点击停止：循环在轮次边界（工具批执行中 / 轮间）干净退出时不抛
+    // AbortError，catch 分支的 [生成已停止] 不会触发——这里补一条明确的
+    // 停止标记，保证「点击停止」始终有可见反馈。流式期间被停止的轮次由
+    // catch 追加标记（stopMarked），此处不再重复。
+    if (abortController.signal.aborted && !stopMarked && !loopGuardStopped) {
+      chatStore.addMessage(sessionId, {
+        role: 'assistant',
+        content: '[已停止] 任务已按用户要求终止，已完成的工作与进度均已保留。',
+        runId,
+      })
+      clearStream()
+    }
   } catch (error: any) {
     const stream = useChatStore.getState().streamingBySession[sessionId]
     if (error.name === 'AbortError') {
+      stopMarked = true
       if (stream?.content) {
         chatStore.addMessage(sessionId, {
           role: 'assistant',
           content: stream.content + '\n\n[生成已停止]',
           thinking: stream.thinking || undefined,
+          runId,
+        })
+      } else {
+        // 停止发生在纯思考/首 token 前——没有正文可拼接，同样留下可见标记。
+        chatStore.addMessage(sessionId, {
+          role: 'assistant',
+          content: '[已停止] 任务已按用户要求终止，已完成的工作与进度均已保留。',
           runId,
         })
       }
