@@ -12,6 +12,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { MONO } from './officeTheme'
 import { IS_OFFICE } from '@/utils/windowMode'
+import { isComposingEvent } from '@/utils/composition'
 
 /** 目标模式 4 角色 chips（与 mapping.ROLE_LABELS 的 tm- 标签一致）。 */
 const ROLE_CHIPS = ['需求分析', '研发', 'UI 开发', '测试']
@@ -153,7 +154,7 @@ export default function OfficeChatBar() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') send()
+            if (e.key === 'Enter' && !isComposingEvent(e)) send()
           }}
           placeholder={placeholder}
           className="flex-1"

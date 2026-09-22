@@ -519,6 +519,8 @@ export const zhCN = {
   'chat.dropHint': '松开以添加文件/文件夹路径',
   'chat.removeFile': '移除附件',
   'chat.dropPathUnavailable': '无法读取拖入文件的位置，请改为直接粘贴文件路径',
+  'chat.fileTrustDenied': '已取消：未允许读取「{name}」，附件未添加',
+  'chat.fullAccessReadDenied': '已取消：完全访问需要先允许 AI 读取工作区外的文件（只读）',
   'chat.referenceFile': '引用文件',
   'chat.voiceInput': '语音输入',
   'chat.modelSettings': '模型设置',

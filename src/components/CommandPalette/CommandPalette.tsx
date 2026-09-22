@@ -8,6 +8,7 @@ import { useShortcutStore } from '@/stores/shortcutStore'
 import { getCommands, executeCommand } from '@/services/commands/commandRegistry'
 import { useI18n } from '@/i18n/useI18n'
 import type { TranslationKey } from '@/i18n'
+import { isComposingEvent } from '@/utils/composition'
 
 interface PaletteItem {
   id: string
@@ -110,7 +111,7 @@ export default function CommandPalette() {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelectedIndex((i) => Math.max(i - 1, 0))
-    } else if (e.key === 'Enter') {
+    } else if (e.key === 'Enter' && !isComposingEvent(e)) {
       e.preventDefault()
       const cmd = filteredCommands[selectedIndex]
       if (cmd) cmd.action()

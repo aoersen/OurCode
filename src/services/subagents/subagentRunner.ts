@@ -160,7 +160,15 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
    *  call settles at once with a synthetic stopped result (the in-flight tool
    *  may keep running in the background, but its result is discarded). */
   const executeToolWithAbort = (tc: ToolCall): Promise<{ result: ToolResult; aborted: boolean }> => {
-    const ctx = { sessionId: opts.sessionId, projectPath: opts.projectPath, toolCallId: tc.id, abortSignal: opts.abortSignal }
+    const ctx = {
+      sessionId: opts.sessionId,
+      projectPath: opts.projectPath,
+      toolCallId: tc.id,
+      abortSignal: opts.abortSignal,
+      // Subagents inherit the parent session's edit mode for read-permission
+      // dialogs (advisory — only native dialogs can grant).
+      projectEditMode: session?.projectEditMode,
+    }
     const signal = opts.abortSignal
     if (!signal) return executor.execute(tc, ctx).then((result) => ({ result, aborted: false }))
     if (signal.aborted) {

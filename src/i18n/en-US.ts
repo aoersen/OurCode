@@ -522,6 +522,8 @@ export const enUS: Record<TranslationKey, string> = {
   'chat.dropHint': 'Release to attach file/folder path',
   'chat.removeFile': 'Remove attachment',
   'chat.dropPathUnavailable': "Couldn't read the dropped file's location — paste the path instead",
+  'chat.fileTrustDenied': 'Cancelled: reading "{name}" was not allowed, so it was not attached',
+  'chat.fullAccessReadDenied': 'Cancelled: full access requires allowing the AI to read files outside the workspace (read-only)',
   'chat.referenceFile': 'Reference file',
   'chat.voiceInput': 'Voice input',
   'chat.modelSettings': 'Model settings',

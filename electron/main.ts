@@ -110,11 +110,43 @@ function authorizeRendererPath(p: string): boolean {
   return true
 }
 
+/**
+ * Exact file paths the user allowed the chat AI to read. Populated only by
+ * `trust:requestFile`, which answers through a NATIVE dialog — never on the
+ * renderer's word alone (same rule as workspace trust). Grants are session
+ * scoped: unlike a trusted folder they are not persisted, so the next run
+ * asks again. Read-only by construction — write handlers below check
+ * `isPathWritable`, which never consults this set.
+ */
+const readOnlyAllowed: Set<string> = new Set()
+
+/** Directories granted read-only for the session via the "允许该文件夹" choice
+ *  on the per-file dialog — everything under them becomes readable, still
+ *  never writable. Session scoped, never persisted. */
+const readOnlyDirs: Set<string> = new Set()
+
+/**
+ * Session-wide read policy: the user natively agreed that reads outside the
+ * workspace no longer ask (armed by the full-access confirmation or the
+ * "全部允许" choice on the read-permission dialog). ONLY those two native
+ * dialogs may set this — the renderer's edit-mode value alone never can.
+ */
+let readPolicyArmed = false
+
+/** Files whose read permission was refused this session. Remembering the
+ *  answer keeps a compromised renderer (or a stuck agent) from re-spamming
+ *  the same dialog for a path the user already said no to. */
+const readDenied: Set<string> = new Set()
+
+/** Marker prefix on allowlist errors so the renderer can recognize this exact
+ *  failure and offer the one-time read-permission dialog before surfacing it. */
+const UNTRUSTED_PATH_MARKER = 'EUNTRUSTED'
+
 /** Check whether a path is inside any registered root.
  *  Falls back to the persistent trust store so that a renderer that restores a
  *  previously-trusted session isn't rejected before its fs:authorize call has
  *  had a chance to populate the runtime allowedRoots cache. */
-function isPathAllowed(p: string): boolean {
+function isPathWritable(p: string): boolean {
   // normalizePath already folds case on Windows, where the same folder has
   // many spellings (OS dialog vs stored session string).
   const probe = normalizePath(p)
@@ -125,10 +157,35 @@ function isPathAllowed(p: string): boolean {
   return !!(trust && trust.isTrusted(p))
 }
 
+/** Read access is write access plus what the user granted for chat: the armed
+ *  session-wide read policy, exact files, or anything under a granted folder. */
+function isPathReadable(p: string): boolean {
+  if (isPathWritable(p)) return true
+  if (readPolicyArmed) return true
+  const probe = normalizePath(p)
+  if (!probe) return false
+  if (readOnlyAllowed.has(probe)) return true
+  for (const dir of readOnlyDirs) {
+    if (isWithinDir(dir, probe)) return true
+  }
+  return false
+}
+
+function untrustedPathError(p: string): Error {
+  return new Error(`${UNTRUSTED_PATH_MARKER}: 路径不在允许范围内: ${p}`)
+}
+
 /** Throw if the path is outside every registered root */
-function assertPathAllowed(p: string): void {
-  if (!isPathAllowed(p)) {
-    throw new Error(`路径不在允许范围内: ${p}`)
+function assertPathWritable(p: string): void {
+  if (!isPathWritable(p)) {
+    throw untrustedPathError(p)
+  }
+}
+
+/** Throw if the path is neither writable nor granted read-only */
+function assertPathReadable(p: string): void {
+  if (!isPathReadable(p)) {
+    throw untrustedPathError(p)
   }
 }
 
@@ -187,7 +244,7 @@ const PREVIEW_HTML_CSP = "default-src * data: blob: 'unsafe-inline' 'unsafe-eval
 function registerPreviewProtocol(): void {
   protocol.handle(PREVIEW_SCHEME, async (request) => {
     const filePath = previewUrlToPath(request.url)
-    if (!filePath || !isPathAllowed(filePath)) {
+    if (!filePath || !isPathReadable(filePath)) {
       return new Response('Not found', { status: 404 })
     }
     const headers: Record<string, string> = {
@@ -992,12 +1049,12 @@ async function nodeWalkSearchFiles(dirPath: string, query: string): Promise<stri
 function registerIpcHandlers(): void {
   // File System handlers
   ipcMain.handle('fs:readFile', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     return fileSystem.readFile(path)
   })
 
   ipcMain.handle('fs:writeFile', async (_event, path: string, content: string, encoding: string, hasBom?: boolean) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     await fileSystem.writeFile(path, content, encoding, hasBom)
     // A successful write moves the file past its reverted state — any stale
     // 「已回退 → 恢复」forward snapshot for this path is now outdated and must
@@ -1006,7 +1063,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:openStream', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     return fileSystem.openStream(path)
   })
 
@@ -1023,7 +1080,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:openWriteStream', async (_event, path: string, encoding: string, hasBom?: boolean) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     return fileSystem.openWriteStream(path, encoding, hasBom)
   })
 
@@ -1048,38 +1105,38 @@ function registerIpcHandlers(): void {
   // writing to disk. Unauthorized paths are silently ignored (the protocol
   // handler refuses to serve them anyway) rather than throwing to the renderer.
   ipcMain.handle(IPC_CHANNELS.PREVIEW_SET, (_event, path: string, content: string) => {
-    if (!isPathAllowed(path)) return
+    if (!isPathReadable(path)) return
     previewBuffers.set(path, content)
   })
 
   ipcMain.handle(IPC_CHANNELS.PREVIEW_CLEAR, (_event, path: string) => {
-    if (!isPathAllowed(path)) return
+    if (!isPathReadable(path)) return
     previewBuffers.delete(path)
   })
 
   ipcMain.handle('fs:listDir', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     return fileSystem.listDir(path)
   })
 
   ipcMain.handle('fs:createFile', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     return fileSystem.createFile(path)
   })
 
   ipcMain.handle('fs:createDir', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     return fileSystem.createDir(path)
   })
 
   ipcMain.handle('fs:rename', async (_event, oldPath: string, newPath: string) => {
-    assertPathAllowed(oldPath)
-    assertPathAllowed(newPath)
+    assertPathWritable(oldPath)
+    assertPathWritable(newPath)
     return fileSystem.rename(oldPath, newPath)
   })
 
   ipcMain.handle('fs:delete', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     await fileSystem.delete(path)
     // Deleting the file supersedes any pending restore of it (same reasoning
     // as fs:writeFile above).
@@ -1087,7 +1144,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:stat', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     try {
       return await fileSystem.stat(path)
     } catch (error) {
@@ -1157,16 +1214,10 @@ function registerIpcHandlers(): void {
   // Ask the user to trust a workspace. The confirmation is a NATIVE dialog that
   // only the main process opens — a renderer that got past the fs allowlist
   // must not also be able to answer the trust prompt on the user's behalf.
-  ipcMain.handle('trust:request', async (event, path: string) => {
-    if (!path || !isAbsolute(path)) return false
+  // `path` must be an existing directory (trust:requestFile routes directories
+  // here too); files go through the read-only grant below.
+  const promptDirTrust = async (event: IpcMainInvokeEvent, path: string): Promise<boolean> => {
     if (authorizeRendererPath(path)) return true
-    let isDir = false
-    try {
-      isDir = statSync(path).isDirectory()
-    } catch {
-      return false
-    }
-    if (!isDir) return false
     // A prompt the user can't read isn't a consent. The renderer's i18n lives
     // behind the allowlist we are about to open, so the wording comes from the
     // OS locale here.
@@ -1200,6 +1251,156 @@ function registerIpcHandlers(): void {
     trust?.grant(path)
     registerRoot(path)
     return true
+  }
+
+  ipcMain.handle('trust:request', async (event, path: string) => {
+    if (!path || !isAbsolute(path)) return false
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      return false
+    }
+    if (!isDir) return false
+    return promptDirTrust(event, path)
+  })
+
+  // One-time READ permission for a file the user attached to a chat message
+  // (drag-drop / pasted path) that lives outside the trusted workspace. Same
+  // trust anchor as trust:request — a native dialog the user answers — but the
+  // grant only lets fs:readFile / fs:stat / fs:listDir touch that file (or its
+  // folder, or everything, depending on the choice below); every fs:* write
+  // keeps requiring full workspace trust.
+  //
+  // `mode` is the session's project edit mode. It is advisory only: it picks
+  // which dialog shape to show (per-file vs. with a session-wide option), and
+  // a compromised renderer forging it still lands on a native dialog whose
+  // buttons are the real consent. Only a native "全部允许" / full-access
+  // confirmation may arm the session-wide read policy.
+  ipcMain.handle('trust:requestFile', async (event, path: string, mode?: string) => {
+    if (!path || !isAbsolute(path)) return false
+    // Already readable (in-workspace, granted earlier, or policy armed) — no prompt.
+    if (isPathReadable(path)) return true
+    const canonical = normalizePath(path)
+    if (!canonical || readDenied.has(canonical)) return false
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      return false
+    }
+    // A dropped directory goes through the full workspace-trust flow (it can
+    // start MCP servers); only files get the lightweight read-only grant.
+    if (isDir) {
+      const granted = await promptDirTrust(event, path)
+      if (!granted) readDenied.add(canonical)
+      return granted
+    }
+    // 手动确认 keeps the minimal per-file dialog; the other edit modes offer
+    // the session-wide read option up front (the plan phase / auto-editing
+    // reads a lot, and full-access users expect no per-file friction).
+    const offerSessionWide = mode === 'auto_edit' || mode === 'plan' || mode === 'full_access'
+    const zh = app.getLocale().toLowerCase().startsWith('zh')
+    const options: MessageBoxOptions = zh
+      ? {
+          type: 'question',
+          title: '允许读取该文件？',
+          message: `是否允许聊天中的 AI 读取「${basename(path)}」？`,
+          detail:
+            `${path}\n\n` +
+            '该文件位于工作区之外。允许后 AI 可以读取（只读，不会修改它），本次会话有效。' +
+            '「允许该文件夹」则同目录下的文件都不再询问。只允许来源可靠的文件。',
+          buttons: offerSessionWide
+            ? ['全部允许（本次会话）', '允许该文件夹', '仅此文件', '拒绝']
+            : ['允许读取', '允许该文件夹（本次会话）', '拒绝'],
+        }
+      : {
+          type: 'question',
+          title: 'Allow reading this file?',
+          message: `Allow the chat AI to read "${basename(path)}"?`,
+          detail:
+            `${path}\n\n` +
+            'This file is outside your workspace. After you allow it, the AI can read ' +
+            '(read-only \u2014 the file is never modified) for this session. "Allow folder" ' +
+            'stops asking for other files in the same folder. Only allow files you trust.',
+          buttons: offerSessionWide
+            ? ['Allow all (this session)', 'Allow folder', 'This file only', 'Deny']
+            : ['Allow', 'Allow folder (this session)', 'Deny'],
+        }
+    // Deny is always the default: pressing Enter must never grant anything.
+    Object.assign(options, { defaultId: options.buttons!.length - 1, cancelId: options.buttons!.length - 1, noLink: true })
+    const win = windowFromEvent(event) ?? mainWindow
+    const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+    if (offerSessionWide) {
+      if (response === 0) {
+        readPolicyArmed = true
+        readOnlyAllowed.add(canonical)
+        return true
+      }
+      if (response === 1) {
+        readOnlyDirs.add(normalizePath(dirname(path)))
+        return true
+      }
+      if (response === 2) {
+        readOnlyAllowed.add(canonical)
+        return true
+      }
+    } else {
+      if (response === 0) {
+        readOnlyAllowed.add(canonical)
+        return true
+      }
+      if (response === 1) {
+        readOnlyDirs.add(normalizePath(dirname(path)))
+        return true
+      }
+    }
+    readDenied.add(canonical)
+    return false
+  })
+
+  // Session-wide read policy, armed only through this native confirmation —
+  // called when the user switches a session to 完全访问. Renderer state alone
+  // can never arm it: the answer comes from the dialog below.
+  ipcMain.handle('trust:armReadPolicy', async (event) => {
+    if (readPolicyArmed) return true
+    const zh = app.getLocale().toLowerCase().startsWith('zh')
+    const options: MessageBoxOptions = zh
+      ? {
+          type: 'warning',
+          title: '完全访问：允许读取工作区外的文件？',
+          message: '完全访问模式下，AI 将可读取工作区外的文件',
+          detail:
+            '允许后，本次会话中 AI 读取工作区外的文件时不再逐个询问（仅读取，' +
+            '不会修改工作区外的文件；修改仍然只发生在工作区内）。只对可信项目启用。',
+          buttons: ['启用完全访问', '取消'],
+        }
+      : {
+          type: 'warning',
+          title: 'Full access: allow reading files outside the workspace?',
+          message: 'In full-access mode the AI may read files outside your workspace',
+          detail:
+            'After you allow this, the AI no longer asks before reading files outside the ' +
+            'workspace for this session (read-only \u2014 files outside the workspace are ' +
+            'never modified; edits still happen inside the workspace only). Enable for ' +
+            'trusted projects only.',
+          buttons: ['Enable full access', 'Cancel'],
+        }
+    Object.assign(options, { defaultId: 1, cancelId: 1, noLink: true })
+    const win = windowFromEvent(event) ?? mainWindow
+    const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+    if (response !== 0) return false
+    readPolicyArmed = true
+    return true
+  })
+
+  // Switching the session OUT of full access withdraws the session-wide read
+  // policy so 手动确认 truly asks again. Disarming is always the safe
+  // direction — no dialog, and a compromised renderer can only make itself
+  // MORE restricted by calling it.
+  ipcMain.handle('trust:disarmReadPolicy', async () => {
+    readPolicyArmed = false
+    return true
   })
 
   ipcMain.handle('trust:status', async (_event, path: string) => {
@@ -1223,7 +1424,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:openInFinder', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     shell.showItemInFolder(path)
   })
 
@@ -1232,14 +1433,14 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:copy', async (_event, src: string, dest: string) => {
-    assertPathAllowed(src)
-    assertPathAllowed(dest)
+    assertPathWritable(src)
+    assertPathWritable(dest)
     return fileSystem.copy(src, dest)
   })
 
   ipcMain.handle('fs:move', async (_event, src: string, dest: string) => {
-    assertPathAllowed(src)
-    assertPathAllowed(dest)
+    assertPathWritable(src)
+    assertPathWritable(dest)
     return fileSystem.move(src, dest)
   })
 
@@ -1267,7 +1468,7 @@ function registerIpcHandlers(): void {
   // LSP: start a language server for a document, push diagnostics back
   ipcMain.handle('lsp:start', async (_event, uri: string, command: string, args: string[], cwd: string, languageId: string, text: string) => {
     await lspStop(uri)
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     const server = new LspServer()
     server.onDiagnostics = (params) => {
       broadcast('lsp:diagnostics', { uri: params.uri, diagnostics: params.diagnostics })
@@ -1297,7 +1498,7 @@ function registerIpcHandlers(): void {
   // DAP: single debug session
   ipcMain.handle('debug:start', async (_event, command: string, args: string[], cwd: string, launchConfig: Record<string, unknown>, breakpoints: Array<{ path: string; line: number }>) => {
     await stopDebugSession()
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     const client = new DebugAdapterClient()
     client.onStopped = (body) => emitDebugEvent('stopped', body)
     client.onOutput = (body) => emitDebugEvent('output', body)
@@ -1527,7 +1728,7 @@ function registerIpcHandlers(): void {
 
   // Terminal handlers (each terminal belongs to the window that created it)
   ipcMain.handle('term:create', (event, id: string, cwd?: string) => {
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     const wc = event.sender
     const shellName = process.platform === 'win32' ? 'powershell.exe' : 'bash'
     const term = pty.spawn(shellName, [], {
@@ -1588,7 +1789,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('term:runAgent', (event, id: string, command: string, cwd?: string) => {
     if (!id || typeof command !== 'string' || !command.trim()) throw new Error('终端运行参数不完整')
     if (terminals.has(id)) throw new Error(`终端会话 ${id} 已存在`)
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     pruneAgentRuns()
     let live = 0
     for (const session of terminals.values()) {
@@ -1687,7 +1888,7 @@ function registerIpcHandlers(): void {
   // Search in files handler — 三级链路：内存索引（毫秒级）→ ripgrep（10-100x 快）
   // → Node 遍历（兜底）。后两级保持原有语义：跳过 hidden / 排除目录、按行匹配。
   ipcMain.handle('search:inFiles', async (_event, dirPath: string, query: string, options?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; filePattern?: string; excludeFolders?: string }) => {
-    assertPathAllowed(dirPath)
+    assertPathReadable(dirPath)
     // 1) 内存代码库索引：watched 根 + 内容就绪 + 简单子串查询 → 毫秒级
     try {
       const fromIndex = await fileIndex.searchContent(dirPath, query, options ?? {})
@@ -1702,7 +1903,7 @@ function registerIpcHandlers(): void {
 
   // Search files by name (used by @-references in the chat input)
   ipcMain.handle('search:files', async (_event, dirPath: string, query: string) => {
-    assertPathAllowed(dirPath)
+    assertPathReadable(dirPath)
     try {
       const fromIndex = await fileIndex.searchFiles(dirPath, query, 50)
       // 空数组不能短路：索引返回空可能只是它答不上（如部分 glob 语义），仍要
@@ -1966,7 +2167,7 @@ function registerIpcHandlers(): void {
     // to persist paths the renderer isn't allowed to touch, so a compromised
     // renderer can't stage an arbitrary-path revert.
     for (const f of checkpoint.files || []) {
-      if (f?.path) assertPathAllowed(f.path)
+      if (f?.path) assertPathWritable(f.path)
     }
     return store.addCheckpoint(checkpoint)
   })
@@ -2005,7 +2206,7 @@ function registerIpcHandlers(): void {
         // Defense in depth: re-validate each path at revert time (the snapshot
         // may predate an allowlist change, or be from an older version).
         if (!file?.path) continue
-        assertPathAllowed(file.path)
+        assertPathWritable(file.path)
         // Capture the current (AI-written) state BEFORE the revert writes the
         // pre-edit snapshot back — this is what checkpoint:restore replays.
         let current: { content: string; existed: boolean }
@@ -2057,7 +2258,7 @@ function registerIpcHandlers(): void {
     let restored = 0
     for (const rec of records) {
       try {
-        assertPathAllowed(rec.path)
+        assertPathWritable(rec.path)
         // Legacy rows (reverted before forward snapshots existed) have no
         // content to restore — refuse instead of writing an empty file over
         // whatever is on disk now.
@@ -2127,7 +2328,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('mcp:reload', async (_event, rootPath: string) => {
     try {
-      if (rootPath) assertPathAllowed(rootPath)
+      if (rootPath) assertPathWritable(rootPath)
       await mcp.loadConfig(rootPath)
       return { ok: true }
     } catch (error: any) {
@@ -2139,7 +2340,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('mcp:getConfig', (_event, rootPath: string) => {
     try {
       if (!rootPath) return { ok: true, config: { mcpServers: {} }, file: null }
-      assertPathAllowed(rootPath)
+      assertPathWritable(rootPath)
       const candidates = [join(rootPath, 'mcp_config.json'), join(rootPath, '.mcp.json')]
       let raw = ''
       let file: string | null = null
@@ -2169,7 +2370,7 @@ function registerIpcHandlers(): void {
       if (!rootPath) throw new Error('未打开项目，无法保存 MCP 配置')
       // Only write inside the workspace — resolve the target and verify it
       // doesn't escape the project root (blocks ../ traversal and arbitrary paths).
-      assertPathAllowed(rootPath)
+      assertPathWritable(rootPath)
       const target = file ? resolve(rootPath, file) : join(rootPath, 'mcp_config.json')
       const rootResolved = resolve(rootPath)
       const rel = relative(rootResolved, target)
@@ -2259,7 +2460,7 @@ function registerIpcHandlers(): void {
     const checked = checkVcsArgs('git', args)
     if (!checked.ok) return { success: false, output: '', error: checked.error }
     try {
-      if (cwd) assertPathAllowed(cwd)
+      if (cwd) assertPathWritable(cwd)
       const result = raw
         ? await gitExecRaw(cwd, checked.args, input)
         : await gitExec(cwd, checked.args, input)
@@ -2281,7 +2482,7 @@ function registerIpcHandlers(): void {
     const checked = checkVcsArgs('gh', args)
     if (!checked.ok) return { success: false, output: '', error: checked.error }
     try {
-      if (cwd) assertPathAllowed(cwd)
+      if (cwd) assertPathWritable(cwd)
       return { success: true, output: await runGh(cwd, checked.args) }
     } catch (error: any) {
       return { success: false, output: '', error: error.message }
@@ -2292,7 +2493,7 @@ function registerIpcHandlers(): void {
   // the renderer) because both answers come from process exit codes + stderr.
   ipcMain.handle('gh:status', async (_event, cwd: string) => {
     try {
-      if (cwd) assertPathAllowed(cwd)
+      if (cwd) assertPathWritable(cwd)
     } catch (error: any) {
       return { installed: false, authed: false, error: error.message }
     }
@@ -2337,7 +2538,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SHELL_EXEC, async (_event, command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => {
     return new Promise((resolve) => {
       try {
-        if (cwd) assertPathAllowed(cwd)
+        if (cwd) assertPathWritable(cwd)
       } catch (error: any) {
         resolve({ success: false, output: '', error: error.message })
         return

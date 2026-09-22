@@ -18,6 +18,7 @@ import type { ChatSession } from '@/types'
 import { resolveThinkingLevel } from '@/types'
 import MSIcon from '@/components/Common/icons/MSIcon'
 import Button from '@/components/Common/Button'
+import { isComposingEvent } from '@/utils/composition'
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -70,7 +71,7 @@ function SessionTitleEditor({ session }: { session: ChatSession }) {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') commit()
+          if (e.key === 'Enter' && !isComposingEvent(e)) commit()
           else if (e.key === 'Escape') setEditing(false)
         }}
         className="w-[180px] text-[11px] px-1.5 py-0.5 rounded border border-nova-accent/50 bg-nova-input-bg text-nova-text-primary outline-none"
@@ -140,6 +141,30 @@ export default function ChatPanel() {
     } else {
       openSettings()
     }
+  }
+
+  // Mode switch is where the session-wide READ policy follows the edit mode:
+  // entering 完全访问 arms it behind one native confirmation; leaving it
+  // disarms (a safe direction, no dialog), so 手动确认 really asks again.
+  const handleEditModeChange = async (mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access') => {
+    if (!activeSession) return
+    if (mode === 'full_access') {
+      let armed = false
+      try {
+        armed = await window.electronAPI.armReadPolicy()
+      } catch {
+        armed = false
+      }
+      if (!armed) {
+        useUIStore.getState().showNotification(t('chat.fullAccessReadDenied'), 'warning')
+        return
+      }
+    } else {
+      try {
+        await window.electronAPI.disarmReadPolicy()
+      } catch { /* disarming is best-effort — a missed call just means fewer dialogs */ }
+    }
+    setProjectEditMode(activeSession.id, mode)
   }
 
   return (
@@ -344,7 +369,7 @@ export default function ChatPanel() {
                 </select>
                 <select
                   value={projectEditMode}
-                  onChange={(e) => setProjectEditMode(activeSession.id, e.target.value as 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access')}
+                  onChange={(e) => void handleEditModeChange(e.target.value as 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access')}
                   className={`text-xs rounded-md px-2 py-1 border outline-none cursor-pointer transition-colors ${
                     projectEditMode === 'full_access'
                       ? 'border-orange-500/50 bg-orange-500/10 text-orange-400'

@@ -202,8 +202,13 @@ body {
 
 /* 键盘可达性 —— 全站有 60+ 处 `outline-none` 把浏览器默认焦点环抹掉了，而组件里
    没有任何 focus-visible 样式，Tab 键走一遍完全看不见焦点在哪。这里统一补一条
-   只在键盘聚焦时出现的 accent 环（鼠标点击不触发 :focus-visible，不会到处画框）。 */
-:focus-visible {
+   只在键盘聚焦时出现的 accent 环（鼠标点击不触发 :focus-visible，不会到处画框）。
+
+   但文本类输入（textarea / 文本 input / contenteditable）必须排除：按规范它们
+   即使鼠标点击也会命中 :focus-visible，点上输入框就在输入区上下各画出一条全宽
+   蓝线（聊天输入框「两条横线」问题的根源）；而闪烁的输入光标本身就是焦点指示，
+   且输入框容器一般还有 :focus-within 光圈，无需再叠加轮廓。 */
+:focus-visible:not(textarea, input:not([type]), input[type='text'], input[type='search'], input[type='email'], input[type='number'], input[type='password'], input[type='url'], input[type='tel'], [contenteditable='true']) {
   outline: 2px solid var(--accent, #0058bc);
   outline-offset: 2px;
 }

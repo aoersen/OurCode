@@ -9,7 +9,8 @@ import { useI18n } from '@/i18n/useI18n'
 import type { TranslationKey } from '@/i18n'
 import { dragSource } from '../Sidebar/FileTreeNode'
 import FileChip from './FileChip'
-import { isPathInside, makeFileLink, extractPathsFromUriList } from '@/utils/fileRefs'
+import { isPathInside, makeFileLink, extractPathsFromUriList, basename } from '@/utils/fileRefs'
+import { isComposingEvent } from '@/utils/composition'
 import { fileToImageAttachment, imageAttachmentDataUrl, isImageFile, MAX_IMAGES_PER_MESSAGE } from '@/utils/imageAttach'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -192,10 +193,17 @@ export default function ChatInput({
 
   // Auto-resize textarea
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px'
+    const resize = () => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+        textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px'
+      }
     }
+    resize()
+    // 面板宽度变化会改变换行数 —— 不重算的话，变窄时内容被裁进滚动条，
+    // 变宽时盒子里留下多余空行。
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
   }, [input])
 
   // Listen for "run skill" actions from the usage panel: inject the skill
@@ -295,12 +303,35 @@ export default function ChatInput({
   )
 
   /** Attach files as chips. Folder-ness is resolved lazily via fs:stat so
-   *  chips can show a folder icon and links get a trailing slash. */
-  const addContextFiles = useCallback((paths: string[]) => {
+   *  chips can show a folder icon and links get a trailing slash. Files
+   *  outside the workspace first need a one-time read permission (native
+   *  dialog) — refused files never become chips, so the AI never gets an
+   *  attachment it is not allowed to read. */
+  const addContextFiles = useCallback(async (paths: string[]) => {
     const unique = [...new Set(paths)]
-    setContextFiles((prev) => [...new Set([...prev, ...unique])])
     const root = effectiveRoot()
-    for (const p of unique) {
+    // The session's project edit mode shapes the native permission dialog
+    // (per-file vs. with a session-wide option); it never grants anything.
+    const editMode = useChatStore.getState().getActiveSession()?.projectEditMode || 'confirm_before_change'
+    const external = unique.filter((p) => p && !isPathInside(p, root))
+    const granted = new Set<string>()
+    for (const p of external) {
+      let ok = false
+      try {
+        ok = await window.electronAPI.requestFileTrust(p, editMode)
+      } catch {
+        ok = false
+      }
+      if (!ok) {
+        useUIStore.getState().showNotification(t('chat.fileTrustDenied', { name: basename(p) }), 'warning')
+        continue
+      }
+      granted.add(p)
+    }
+    const keep = unique.filter((p) => isPathInside(p, root) || granted.has(p))
+    if (keep.length === 0) return
+    setContextFiles((prev) => [...new Set([...prev, ...keep])])
+    for (const p of keep) {
       if (!isPathInside(p, root)) continue
       window.electronAPI
         .stat(p)
@@ -310,7 +341,7 @@ export default function ChatInput({
         })
         .catch(() => { /* unreadable — stays a file chip */ })
     }
-  }, [effectiveRoot])
+  }, [effectiveRoot, t])
 
   /** Read image files (button / paste / drop) into `images`. Oversized or
    *  undecodable files are reported instead of silently vanishing; the count is
@@ -369,7 +400,7 @@ export default function ChatInput({
     const atMatch = textBeforeCursor.match(/@(\S*)$/)
     const atIndex = atMatch ? cursorPos - atMatch[1].length - 1 : cursorPos
     setInput(input.slice(0, atIndex) + input.slice(cursorPos))
-    addContextFiles([filePath])
+    void addContextFiles([filePath])
     setShowFileSearch(false)
     requestAnimationFrame(() => {
       textarea?.focus()
@@ -445,7 +476,7 @@ export default function ChatInput({
     }
 
     // Attach every dropped path as a chip — nothing goes into the textarea.
-    addContextFiles([...new Set(paths)])
+    void addContextFiles([...new Set(paths)])
     // Clear a dangling "@" (in-progress query) the user typed before the drop.
     const textarea = textareaRef.current
     const cursorPos = textarea?.selectionStart ?? input.length
@@ -496,7 +527,7 @@ export default function ChatInput({
           }
           return
         }
-        addContextFiles([...new Set(paths)])
+        void addContextFiles([...new Set(paths)])
       })
     }
     document.addEventListener('dragover', onDragOver, true)
@@ -565,6 +596,10 @@ export default function ChatInput({
   }, [input])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME 组合期间（拼音候选词未确认）的按键属于输入法 —— 尤其是 Enter 确认
+    // 候选词，绝不能当作发送/菜单选择。提前放行，让浏览器正常提交组合文本。
+    if (isComposingEvent(e)) return
+
     // Markdown shortcuts (Ctrl+B, Ctrl+I, Ctrl+`)
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       if (e.key === 'b') {
@@ -650,7 +685,7 @@ export default function ChatInput({
     try {
       const filePath = await window.electronAPI.openFile()
       if (filePath) {
-        addContextFiles([filePath])
+        void addContextFiles([filePath])
       }
     } catch (error) {
       console.error('打开文件失败:', error)

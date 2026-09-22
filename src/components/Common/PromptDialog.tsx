@@ -3,6 +3,7 @@ import ModalPortal from './ModalPortal'
 import Button from './Button'
 import Input from './Input'
 import { useI18n } from '@/i18n/useI18n'
+import { isComposingEvent } from '@/utils/composition'
 
 export interface PromptOptions {
   title: string
@@ -137,7 +138,8 @@ export default function PromptDialogHost() {
                 placeholder={options.placeholder}
                 onChange={(e) => setValue(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  // IME 组合期间的回车是确认候选词，不提交
+                  if (e.key === 'Enter' && !isComposingEvent(e)) {
                     e.preventDefault()
                     submit()
                   }

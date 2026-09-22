@@ -53,6 +53,9 @@ export const IPC_CHANNELS = {
   // Workspace trust — answered by a native dialog the main process opens, so a
   // compromised renderer can neither grant itself access nor forge the answer.
   TRUST_REQUEST: 'trust:request',
+  TRUST_REQUEST_FILE: 'trust:requestFile',
+  TRUST_ARM_READ_POLICY: 'trust:armReadPolicy',
+  TRUST_DISARM_READ_POLICY: 'trust:disarmReadPolicy',
   TRUST_STATUS: 'trust:status',
   TRUST_REVOKE: 'trust:revoke',
 

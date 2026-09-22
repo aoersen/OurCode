@@ -202,7 +202,8 @@ test('聊天区视觉截图（极简纯净版）', async () => {
     console.log('CHAT_VISUAL_STYLES', JSON.stringify(styles, null, 2))
     // 断言核心样式
     expect(styles.hasChatAccentScope).toBe(true)
-    expect(styles.chatAccent).toBe('#3b82f6')
+    // 浅色模式不再把 accent 硬编码成蓝色：面板继承 --primary-color（默认 #0058bc）
+    expect(styles.chatAccent).toBe('#0058bc')
     expect(styles.hasPlanCard).toBe(true)
     expect(styles.planBg).toBe('rgb(255, 255, 255)')
     expect(styles.planBorder).toBe('rgba(15, 23, 42, 0.08)')
@@ -211,8 +212,8 @@ test('聊天区视觉截图（极简纯净版）', async () => {
     expect(styles.thinkingNotInPanel).toBe(true)
     expect(styles.bubbleBg).toBe('rgb(241, 245, 249)')
     expect(styles.bubbleBorder).toBe('rgba(0, 0, 0, 0)')
-    expect(styles.planBtnBg).toBe('rgb(59, 130, 246)')
-    expect(styles.planLeftBar).toBe('rgb(59, 130, 246)')
+    expect(styles.planBtnBg).toBe('rgb(0, 88, 188)')
+    expect(styles.planLeftBar).toBe('rgb(0, 88, 188)')
     expect(styles.inputRadius).toBe('12px')
     expect(styles.panelBg).toBe('rgb(255, 255, 255)')
     expect(styles.msgPadX).toBe('24px')
@@ -220,6 +221,26 @@ test('聊天区视觉截图（极简纯净版）', async () => {
     expect(styles.messageAvatarRemoved).toBe(true)
 
     await win.screenshot({ path: 'test-results/chat-visual-1-default.png' })
+
+    // 焦点轮廓回归：全局 :focus-visible accent 环不能落在文本输入上 —— 文本输入
+    // 即使鼠标点击也会命中 :focus-visible，曾导致输入框选中时在文本区上下各画出
+    // 一条全宽蓝线（「两条横线」问题）。点击聚焦后 outline 必须是透明的。
+    await win.locator('textarea[data-ai-input]').click()
+    await win.waitForTimeout(300)
+    const focusOutline = await win.evaluate(() => {
+      const ta = document.querySelector('textarea[data-ai-input]') as HTMLElement | null
+      if (!ta) return null
+      const cs = getComputedStyle(ta)
+      return { color: cs.outlineColor, width: cs.outlineWidth }
+    })
+    expect(focusOutline).not.toBeNull()
+    expect(focusOutline!.color).toBe('rgba(0, 0, 0, 0)')
+    // 焦点指示并未丢失：容器边框转 accent（原设计保留）
+    const focusBoxBorder = await win.evaluate(() => {
+      const box = document.querySelector('.chat-input-box') as HTMLElement | null
+      return box ? getComputedStyle(box).borderTopColor : null
+    })
+    expect(focusBoxBorder).toBe('rgb(0, 88, 188)')
 
     // 展开「思考与执行过程」块再截一张 + 验证工具 chip 样式
     const toggle = win.getByText('思考与执行过程').first()

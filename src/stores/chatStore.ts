@@ -4206,6 +4206,9 @@ async function runAgentLoop(
           // parent tool call id) and react to the user's Stop button.
           toolCallId: tc.id,
           abortSignal: abortController.signal,
+          // Tool helpers use this to shape out-of-workspace read-permission
+          // dialogs per mode (advisory — only native dialogs can grant).
+          projectEditMode: useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE,
         }
         const runTool = (tc: ToolCall) => () => toolExecutor.execute(tc, runContext).catch((error: any) => ({
           toolCallId: tc.id,

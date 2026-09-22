@@ -30,6 +30,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Workspace trust. authorize() now reports whether the path was accepted;
   // trustRequest() is what raises the native confirmation.
   trustRequest: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REQUEST, path),
+  // One-time READ permission for a chat attachment outside the workspace —
+  // same native-dialog consent as trustRequest, but scoped to one file/folder
+  // (or the session, via the dialog's own choices). `mode` is the session's
+  // project edit mode and only shapes which dialog is shown.
+  requestFileTrust: (path: string, mode?: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REQUEST_FILE, path, mode),
+  // Session-wide read policy for 完全访问 — armed ONLY by a native confirmation.
+  armReadPolicy: () => ipcRenderer.invoke(IPC_CHANNELS.TRUST_ARM_READ_POLICY),
+  // Withdraw the session-wide read policy when the session leaves full access.
+  disarmReadPolicy: () => ipcRenderer.invoke(IPC_CHANNELS.TRUST_DISARM_READ_POLICY),
   trustStatus: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_STATUS, path),
   trustRevoke: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REVOKE, path),
   openInFinder: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_OPEN_IN_FINDER, path),

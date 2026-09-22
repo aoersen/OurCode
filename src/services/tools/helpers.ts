@@ -3,6 +3,8 @@
  * These use window.electronAPI to communicate with the main process
  */
 import { loadIgnorePatterns, isIgnoredPath } from './context'
+import { readFileWithTrust } from '@/utils/fileTrust'
+import { getActiveToolContext } from './ToolExecutor'
 import { v4 as uuidv4 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import type { ToolImageResult } from './types'
@@ -48,9 +50,19 @@ async function ensureIgnoreLoaded(): Promise<void> {
 const READ_FILE_MAX_LINES = 2000
 const READ_FILE_MAX_BYTES = 50 * 1024
 
+/** The current run's project edit mode (defaults to 手动确认). Resolved from
+ *  the executor's in-flight context (set per tool call), so each parallel
+ *  agent loop reads its own session's mode; outside a run the per-file dialog
+ *  applies. The mode only shapes the native permission dialog — it never
+ *  grants anything itself. */
+function sessionEditMode(): string {
+  const mode = getActiveToolContext()?.projectEditMode
+  return mode === 'auto_edit' || mode === 'plan' || mode === 'full_access' ? mode : 'confirm_before_change'
+}
+
 /** Read a file with line numbers */
 export async function readFile(path: string, startLine?: number, endLine?: number): Promise<string> {
-  const { content } = await window.electronAPI.readFile(path)
+  const content = await readFileWithTrust(path, sessionEditMode())
   const lines = content.split('\n')
   // Apply the tool's advertised cap when the caller didn't pick an explicit
   // window: start at 1, cap the end at 2000 lines and ~50KB of text.
@@ -84,7 +96,7 @@ export async function readMultipleFiles(paths: string[]): Promise<string> {
     const header = `===== ${p} =====`
     let body = ''
     try {
-      const { content } = await window.electronAPI.readFile(p)
+      const content = await readFileWithTrust(p, sessionEditMode())
       const lines = content.split('\n')
       const end = Math.min(lines.length, READ_FILE_MAX_LINES)
       body = lines.slice(0, end).map((line, i) => `${i + 1}: ${line}`).join('\n')

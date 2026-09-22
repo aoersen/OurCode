@@ -26,6 +26,12 @@ export interface ElectronAPI {
   watch: (path: string) => Promise<{ ok: boolean; untrusted?: boolean } | undefined>
   unwatch: (path: string) => Promise<void>
   trustRequest: (path: string) => Promise<boolean>
+  /** One-time READ permission for a chat attachment outside the workspace (native dialog; `mode` is the session's project edit mode and shapes the dialog) */
+  requestFileTrust: (path: string, mode?: string) => Promise<boolean>
+  /** Session-wide read policy for full-access mode — armed only by a native confirmation */
+  armReadPolicy: () => Promise<boolean>
+  /** Withdraw the session-wide read policy (safe direction; no dialog) */
+  disarmReadPolicy: () => Promise<boolean>
   trustStatus: (path: string) => Promise<{ trusted: boolean }>
   trustRevoke: (path: string) => Promise<boolean>
   openInFinder: (path: string) => Promise<void>

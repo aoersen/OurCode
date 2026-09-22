@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n/useI18n'
 import { useBrowserStore, syncBrowserStore } from '@/stores/browserStore'
 import type { BrowserConsoleEntry } from '@shared/types'
+import { isComposingEvent } from '@/utils/composition'
 
 const LEVEL_STYLE: Record<BrowserConsoleEntry['level'], string> = {
   verbose: 'text-nova-text-muted',
@@ -70,7 +71,7 @@ export default function BrowserPanel() {
           data-browser-address="true"
           onChange={(e) => setAddress(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && address.trim()) void navigate(address.trim())
+            if (e.key === 'Enter' && !isComposingEvent(e) && address.trim()) void navigate(address.trim())
           }}
           placeholder={t('browser.addressPlaceholder')}
           className="flex-1 min-w-0 bg-white/60 dark:bg-white/10 border border-glass-border rounded-md px-2 py-1 text-[11px] font-mono text-nova-text-primary outline-none focus:border-nova-accent"

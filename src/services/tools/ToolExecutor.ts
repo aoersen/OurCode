@@ -21,6 +21,10 @@ export interface ToolExecuteContext {
   /** Abort signal of the enclosing agent run — forwarded into the tool's own
    *  context so long-running tools can be cancelled by the user's Stop button. */
   abortSignal?: AbortSignal
+  /** The session's project edit mode (手动确认 / 自动编辑 / 计划模式 / 完全访问),
+   *  forwarded by the agent loop so tool helpers can shape permission dialogs.
+   *  Advisory only — it never grants anything by itself. */
+  projectEditMode?: string
 }
 
 // Tool-output truncation limits (wired from chatStore so every executor
@@ -81,6 +85,16 @@ const NATIVE_GIT_TOOLS = new Set([
  *  in case and slash direction, and the model may not spell them identically. */
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase()
+}
+
+/** The tool call currently executing (set for the duration of execute()) —
+ *  lets tool helpers resolve the session's edit mode without importing the
+ *  heavy chat store. Null outside a run. */
+let activeToolContext: ToolExecuteContext | null = null
+
+/** Read the in-flight tool call's context (null outside execute()). */
+export function getActiveToolContext(): ToolExecuteContext | null {
+  return activeToolContext
 }
 
 export class ToolExecutor {
@@ -384,6 +398,21 @@ export class ToolExecutor {
    *  context explicitly. */
   async execute(toolCall: ToolCall, context?: ToolExecuteContext): Promise<ToolResult> {
     const ctx = context || this.sessionContext || {}
+    // Expose the in-flight call's context to tool helpers (session edit mode
+    // etc.) without them importing the heavy chat store. Nesting (a subagent
+    // tool spawned from a parent tool) restores the outer context on exit.
+    const previous = activeToolContext
+    activeToolContext = ctx
+    try {
+      return await this.executeStages(toolCall, ctx)
+    } finally {
+      activeToolContext = previous
+    }
+  }
+
+  /** Stages 1–5 of a tool call (see execute) — split out so the active-tool
+   *  context can wrap the whole pipeline in one try/finally. */
+  private async executeStages(toolCall: ToolCall, ctx: ToolExecuteContext): Promise<ToolResult> {
     this.startedAtByCall.set(toolCall.id, Date.now())
 
     // Stage 1 — guards (deny-only, monotonic). First denial is terminal; no
