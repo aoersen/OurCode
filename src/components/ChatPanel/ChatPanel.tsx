@@ -215,7 +215,7 @@ export default function ChatPanel() {
                 <div className="relative">
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
-                    className="pill-btn flex items-center gap-1 max-w-[150px] text-[11px] border border-nova-border bg-nova-hover/50"
+                    className="pill-btn flex items-center gap-1 max-w-[200px] text-[11px] border border-nova-border bg-nova-hover/50"
                     title={t('chat.selectModel')}
                   >
                     <span className="truncate">

@@ -1070,21 +1070,9 @@ textarea[data-ai-input] {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-/* ── 聊天区强调色作用域（浅色 → mockup 亮蓝 #3b82f6；深色保留暗色方案）──
-   挂在 ChatPanel 根容器上，只影响聊天面板子树（含头部/输入框）。 */
-:root:not(.dark) .chat-accent {
-  --accent: #3b82f6;
-  --primary-color: #3b82f6;
-  --primary-color-10: rgba(59, 130, 246, 0.1);
-  --primary-color-20: rgba(59, 130, 246, 0.2);
-  --primary-color-30: rgba(59, 130, 246, 0.3);
-  --ai-accent: #3b82f6;
-  --ai-glow: #3b82f6;
-  --link: #3b82f6;
-  --selection: #3b82f6;
-  --bg-selected: rgba(59, 130, 246, 0.12);
-  --primary-container: #eff6ff;
-}
+/* chat-accent scope removed: light mode no longer overrides the user's accent
+   color to a hardcoded blue — the panel inherits --accent from :root as dark
+   mode already does. */
 
 /* ── 聊天输入框容器（mockup「极简纯净版」输入面板）──
    surface 底 + hairline 边框 + 轻阴影；聚焦时边框转 accent（浅色为亮蓝
@@ -1343,4 +1331,24 @@ textarea[data-ai-input] {
 }
 .oc-ring-fail {
   border: 2px solid #dc2626;
+}
+
+/* Accessibility: respect prefers-reduced-motion — disable animations and
+   reduce backdrop blur for users who opt out of motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .glass-panel,
+  .glass-chrome,
+  .glass-flat,
+  .glass-modal {
+    backdrop-filter: blur(4px) saturate(120%);
+    -webkit-backdrop-filter: blur(4px) saturate(120%);
+  }
 }

@@ -122,7 +122,7 @@ export default function CommandPalette() {
   return (
     <div role="dialog" aria-modal="true" aria-label={t('palette.dialog')} className="fixed inset-0 bg-black/60 flex items-start justify-center pt-[15%] z-[100] backdrop-blur-sm" onClick={closeCommandPalette}>
       <div
-        className="w-[550px] glass-modal rounded-2xl overflow-hidden" style={{ boxShadow: 'var(--shadow-xl)' }}
+        className="w-[550px] max-w-[90vw] glass-modal rounded-2xl overflow-hidden" style={{ boxShadow: 'var(--shadow-xl)' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Input — design: search icon + electric-blue underline */}
@@ -167,7 +167,7 @@ export default function CommandPalette() {
                   )}
                 </div>
                 {cmd.shortcut && (
-                  <kbd className="px-2 py-0.5 bg-nova-hover rounded-md text-[10px] text-nova-text-muted shrink-0 ml-2">
+                  <kbd className="px-2 py-0.5 bg-nova-hover rounded-md text-[11px] text-nova-text-muted shrink-0 ml-2">
                     {cmd.shortcut}
                   </kbd>
                 )}

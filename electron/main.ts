@@ -110,7 +110,10 @@ function authorizeRendererPath(p: string): boolean {
   return true
 }
 
-/** Check whether a path is inside any registered root */
+/** Check whether a path is inside any registered root.
+ *  Falls back to the persistent trust store so that a renderer that restores a
+ *  previously-trusted session isn't rejected before its fs:authorize call has
+ *  had a chance to populate the runtime allowedRoots cache. */
 function isPathAllowed(p: string): boolean {
   // normalizePath already folds case on Windows, where the same folder has
   // many spellings (OS dialog vs stored session string).
@@ -119,7 +122,7 @@ function isPathAllowed(p: string): boolean {
   for (const root of allowedRoots) {
     if (isWithinDir(root, probe)) return true
   }
-  return false
+  return !!(trust && trust.isTrusted(p))
 }
 
 /** Throw if the path is outside every registered root */

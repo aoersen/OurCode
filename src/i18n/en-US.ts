@@ -1221,6 +1221,7 @@ export const enUS: Record<TranslationKey, string> = {
   'mcpCenter.promptGet': 'Get',
   'mcpCenter.copyName': 'Copy name',
   'mcpCenter.copied': 'Copied',
+  'mcpCenter.pathNotAllowed': 'Current project path is not in the allowed workspace. Please reopen the project via File → Open Folder.',
 
   // ── Skill registry ─────────────────────────────────────────────────────
   'skillRegistry.dialog': 'Skills',

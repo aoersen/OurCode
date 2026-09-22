@@ -143,7 +143,7 @@ export default function TabBar({ panelId }: TabBarProps) {
                 rounded-full
                 group relative select-none transition-all
                 ${isActive
-                  ? 'bg-white/85 text-[var(--text-primary)] shadow-sm border border-nova-border'
+                  ? 'bg-nova-surface/90 text-[var(--text-primary)] shadow-sm border border-nova-border'
                   : 'bg-transparent text-nova-text-secondary hover:bg-nova-hover border border-transparent'
                 }
                 ${dropIndex === index ? 'ring-2 ring-accent-blue' : ''}
@@ -175,7 +175,7 @@ export default function TabBar({ panelId }: TabBarProps) {
               <button
                 onClick={(e) => handleClose(e, file.path)}
                 className={`
-                  w-4 h-4 flex items-center justify-center rounded-full shrink-0
+                  w-5 h-5 flex items-center justify-center rounded-full shrink-0
                   ${file.isDirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
                   hover:bg-nova-border transition-opacity
                 `}

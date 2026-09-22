@@ -97,7 +97,12 @@ export default function McpPanel() {
         setServers([])
         return
       }
-      setError(cfgRes.error || '加载配置失败')
+      // Raw "路径不在允许范围内" from the main process — show a user-friendly
+      // message instead of the internal path-validation string.
+      const friendly = cfgRes.error?.includes('路径不在允许范围内')
+        ? t('mcpCenter.pathNotAllowed')
+        : (cfgRes.error || '加载配置失败')
+      setError(friendly)
       return
     }
     const statusMap = new Map((statusRes || []).map((s) => [s.name, s]))
@@ -153,15 +158,16 @@ export default function McpPanel() {
   }, [activeTab])
 
   // Live status polling while the panel is open — lets a reconnected server
-  // show up without manual refreshes
+  // show up without manual refreshes. Paused when an error is showing so the
+  // banner doesn't reappear immediately after the user dismisses it.
   useEffect(() => {
-    if (activeTab !== 'servers') return
+    if (activeTab !== 'servers' || error) return
     const timer = setInterval(() => {
       if (document.hidden) return // 窗口隐藏时暂停轮询
       void refreshServers()
     }, 3000)
     return () => clearInterval(timer)
-  }, [activeTab, refreshServers])
+  }, [activeTab, refreshServers, error])
 
   const refreshAll = async () => {
     setLoading(true)
@@ -182,7 +188,10 @@ export default function McpPanel() {
     setError(null)
     const cfgRes = await window.electronAPI.mcpGetConfig(currentProjectPath)
     if (!cfgRes.ok) {
-      setError(cfgRes.error || '读取配置失败')
+      const friendly = cfgRes.error?.includes('路径不在允许范围内')
+        ? t('mcpCenter.pathNotAllowed')
+        : (cfgRes.error || '读取配置失败')
+      setError(friendly)
       return
     }
     const mcpServers = { ...(cfgRes.config.mcpServers || {}) }
@@ -283,6 +292,7 @@ export default function McpPanel() {
             onToggle={toggleServer}
             onEditConfig={() => setActiveTab('config')}
             onReload={() => refreshServers()}
+            hasError={!!error}
           />
         )}
 
@@ -396,12 +406,14 @@ function ServersTab({
   onToggle,
   onEditConfig,
   onReload,
+  hasError,
 }: {
   servers: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; file: string | null }>
   rootPath: string | null
   onToggle: (name: string, enabled: boolean) => void
   onEditConfig: () => void
   onReload: () => void
+  hasError: boolean
 }) {
   const t = useI18n()
 
@@ -419,8 +431,8 @@ function ServersTab({
 
   return (
     <div className="flex flex-col gap-2">
-      {!rootPath && <EmptyState text={t('mcpCenter.noProject')} />}
-      {rootPath && servers.length === 0 && (
+      {!rootPath && !hasError && <EmptyState text={t('mcpCenter.noProject')} />}
+      {rootPath && servers.length === 0 && !hasError && (
         <EmptyState text={t('mcpCenter.noServers')} />
       )}
       {servers.map(({ name, entry, status }) => {

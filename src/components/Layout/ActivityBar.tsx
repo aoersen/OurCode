@@ -179,8 +179,8 @@ export default function ActivityBar() {
               onClick={() => handleClick(item.key)}
               className="relative flex items-center justify-center rounded-full transition-all"
               style={{
-                width: 38,
-                height: 38,
+                width: 42,
+                height: 42,
                 color: isActive ? 'var(--accent)' : 'var(--text-muted)',
                 background: isActive ? 'var(--bg-selected)' : 'transparent',
                 margin: '1px 0',
@@ -226,8 +226,8 @@ export default function ActivityBar() {
             aria-label={t(item.titleKey)} title={t(item.titleKey)}
             onClick={item.action}
             style={{
-              width: 38,
-              height: 38,
+              width: 42,
+              height: 42,
               color: 'var(--text-muted)',
               display: 'flex',
               alignItems: 'center',

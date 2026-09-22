@@ -870,7 +870,7 @@ export default function ChatInput({
             rows={1}
             disabled={!activeConfigGroupId}
             data-ai-input
-            className="w-full bg-transparent resize-none text-nova-text-primary text-sm outline-none max-h-[150px] placeholder:text-nova-text-muted disabled:opacity-50 px-3 pt-2 pb-1"
+            className="w-full bg-transparent resize-none text-nova-text-primary text-sm outline-none max-h-[200px] placeholder:text-nova-text-muted disabled:opacity-50 px-3 pt-2 pb-1"
           />
 
           {/* Footer: hints left, voice + send/stop right */}

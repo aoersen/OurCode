@@ -1218,6 +1218,7 @@ export const zhCN = {
   'mcpCenter.promptGet': '获取',
   'mcpCenter.copyName': '复制名称',
   'mcpCenter.copied': '已复制',
+  'mcpCenter.pathNotAllowed': '当前项目路径不在允许范围内，请通过「文件 → 打开文件夹」重新打开项目',
 
   // ── 技能注册中心 ───────────────────────────────────────────────────────
   'skillRegistry.dialog': '技能管理',

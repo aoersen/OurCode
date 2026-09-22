@@ -587,7 +587,7 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     <div className="h-full flex flex-col">
       {/* Drag handle */}
       <div
-        className="h-1 cursor-ns-resize hover:bg-nova-accent/40 transition-colors flex-shrink-0"
+        className="h-1.5 cursor-ns-resize hover:bg-nova-accent/40 transition-colors flex-shrink-0"
         onMouseDown={handleDragStart}
       />
 
