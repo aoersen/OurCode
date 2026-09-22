@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   quality:
     name: Typecheck · Lint · Unit
@@ -57,19 +61,21 @@ jobs:
       - name: E2E tests
         run: xvfb-run -a npm run test:e2e
 
-  # ---- Packaging ----------------------------------------------------------
-  # Release jobs run on manual dispatch or on v* tag pushes only.
-  # electron-builder cannot cross-compile macOS packages on Windows/Linux,
-  # so the macOS builds run on macOS runners (one native job per arch).
+  # ---- Packaging & release ------------------------------------------------
+  # Packaging jobs run on manual dispatch or v* tag pushes, and upload the
+  # installers together with the electron-updater metadata (latest*.yml and
+  # the NSIS blockmap) — auto-update needs those files attached to the
+  # release, not just the binaries.
+  #
+  # The `publish` job (tags only) runs after quality, e2e and all four
+  # platform packages succeed, then attaches every artifact to a GitHub
+  # Release for the tag via softprops/action-gh-release.
   #
   # CSC_IDENTITY_AUTO_DISCOVERY=false lets the build succeed without a
   # signing certificate (CI runners have no keychain identity). When the
-  # CSC_LINK secrets are set, electron-builder still signs with those certs.
-  #
-  # --publish never: artifacts are collected via upload-artifact. Without a
-  # GH_TOKEN (electron-builder does not read GITHUB_TOKEN) the default
-  # publish policy would try to create a GitHub Publisher and fail the
-  # build. Add GH_TOKEN + drop the flag when release publishing is wanted.
+  # CSC_LINK secrets are set, electron-builder signs with those certs. Note
+  # an unsigned macOS zip/dmg cannot be auto-updated by electron-updater,
+  # only installed manually.
 
   release-windows:
     name: Package Windows (NSIS + Portable)
@@ -105,6 +111,8 @@ jobs:
           name: ourcode-ide-windows-x64
           path: |
             release/*.exe
+            release/*.blockmap
+            release/*.yml
           if-no-files-found: error
 
   release-macos-arm64:
@@ -145,6 +153,7 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
+            release/*.yml
           if-no-files-found: error
 
   release-macos-x64:
@@ -187,4 +196,61 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
+            release/*.yml
           if-no-files-found: error
+
+  release-linux:
+    name: Package Linux (AppImage + deb)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Rebuild native modules for Electron ABI
+        run: npx electron-builder install-app-deps
+      - name: Build (electron-vite)
+        run: npm run build
+      - name: Package Linux (AppImage + deb)
+        run: npm run dist:linux -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ourcode-ide-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.yml
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - quality
+      - e2e
+      - release-windows
+      - release-macos-arm64
+      - release-macos-x64
+      - release-linux
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-artifacts/*/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

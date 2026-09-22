@@ -126,7 +126,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "16fengzhiyong",
+      "owner": "aoersen",
       "repo": "OurCode"
     }
   }
