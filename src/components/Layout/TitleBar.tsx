@@ -318,7 +318,7 @@ export default function TitleBar() {
           style={{ background: 'linear-gradient(135deg, #0EA5E9 0%, #6366F1 55%, #A855F7 100%)', boxShadow: '0 0 8px rgba(99,102,241,0.45)' }}
         />
         <span className="text-xs font-bold text-nova-text-primary tracking-tight">
-          OurCode&nbsp;<span className="font-extrabold bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent">AI</span>
+          OurCode&nbsp;<span className="font-extrabold bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent">一人公司</span>
         </span>
       </div>
 

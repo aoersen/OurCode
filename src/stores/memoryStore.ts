@@ -25,9 +25,11 @@ interface MemoryState {
    *  (project-scoped). Throws on failure so the UI can surface the error.
    *  `model` is an optional hint — prefer the model the user is actually
    *  chatting with, falling back to the config group's default.
+   *  `configGroupId` 应与 model 同源（会话自己的组）——用活动组会把会话组 B
+   *  的模型名发到活动组 A 的端点 → 400 "Unsupported model"。
    *  Returns the condensed text WITHOUT writing it — the UI shows the result
    *  to the user for review/editing before `addMemory` is called. */
-  condenseMemory: (conversation: string, projectPath: string, model?: string) => Promise<string>
+  condenseMemory: (conversation: string, projectPath: string, model?: string, configGroupId?: string) => Promise<string>
 }
 
 /** System prompt for the memory-condensation helper request */
@@ -90,8 +92,9 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     return Array.from(paths).sort()
   },
 
-  condenseMemory: async (conversation, projectPath, model) => {
-    const group = useConfigStore.getState().getActiveConfigGroup()
+  condenseMemory: async (conversation, projectPath, model, configGroupId) => {
+    // 组与模型同源（会话自己的配置组优先），避免跨组错配 400。
+    const group = useConfigStore.getState().getConfigGroupFor(configGroupId)
     if (!group) {
       throw new Error('尚未配置 API，无法浓缩记忆。请先在设置中添加 API 配置。')
     }

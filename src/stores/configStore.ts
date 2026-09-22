@@ -38,7 +38,7 @@ const TEST_TIMEOUT_MS = 15_000
 /** localStorage keys for cross-restart state restoration */
 const LAST_GROUP_KEY = 'lastActiveConfigGroupId'
 const LAST_MODEL_KEY = 'lastModelByGroup'
-const MODELS_CACHE_KEY = 'modelsCache_v1'
+const MODELS_CACHE_KEY = 'modelsCache_v2'
 
 /** Last model selected for a config group (restored when creating a new session). */
 export function getLastModelForGroup(groupId: string): string {
@@ -125,6 +125,13 @@ export interface ConfigState {
   deleteConfigGroup: (id: string) => Promise<void>
   setActiveConfigGroup: (id: string) => void
   getActiveConfigGroup: () => ApiConfigGroup | undefined
+  /**
+   * 取「会话所属」的配置组：session 绑定的配置组优先（它的 baseUrl/key 才与会话
+   * 里的模型名匹配）；会话没有绑定组（旧会话/与会话无关的界面操作）时回退到
+   * 当前活动组。辅助调用（标题生成/记忆浓缩/read_url 等）一律走这里，直接用
+   * getActiveConfigGroup() 会把 A 组的模型名发到 B 组的端点 → 400。
+   */
+  getConfigGroupFor: (id?: string | null) => ApiConfigGroup | undefined
 
   fetchModels: (configGroupId?: string) => Promise<void>
   /** Fetch models for an arbitrary (possibly unsaved) config — used by the settings editor. */
@@ -271,6 +278,15 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   getActiveConfigGroup: () => {
     const { configGroups, activeConfigGroupId } = get()
     return configGroups.find((g) => g.id === activeConfigGroupId)
+  },
+
+  getConfigGroupFor: (id) => {
+    const { configGroups } = get()
+    if (id) {
+      const hit = configGroups.find((g) => g.id === id)
+      if (hit) return hit
+    }
+    return get().getActiveConfigGroup()
   },
 
   fetchModels: async (configGroupId) => {

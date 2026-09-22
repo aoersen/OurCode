@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
 import { useChatStore, estimateContextTokens } from '@/stores/chatStore'
-import { useConfigStore } from '@/stores/configStore'
+import { useConfigStore, setLastModelForGroup } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useProblemsStore } from '@/stores/problemsStore'
 import { useI18n } from '@/i18n/useI18n'
@@ -27,6 +27,9 @@ export default function StatusBar() {
   const activeConfigGroupId = useConfigStore((s) => s.activeConfigGroupId)
   const setActiveConfigGroup = useConfigStore((s) => s.setActiveConfigGroup)
   const activeConfigGroup = useConfigStore((s) => s.configGroups.find((g) => g.id === s.activeConfigGroupId))
+  const isLoadingModels = useConfigStore((s) => s.isLoadingModels)
+  const modelsError = useConfigStore((s) => s.modelsError)
+  const fetchModels = useConfigStore((s) => s.fetchModels)
   const storeRootPath = useUIStore((s) => s.rootPath)
   // Git state follows the CURRENT project (the active session's bound project)
   // — the browsed folder only counts while no session exists yet.
@@ -40,8 +43,10 @@ export default function StatusBar() {
 
   const [showEncodingMenu, setShowEncodingMenu] = useState(false)
   const [showConfigMenu, setShowConfigMenu] = useState(false)
+  const [showModelPicker, setShowModelPicker] = useState(false)
   const encodingMenuRef = useRef<HTMLDivElement>(null)
   const configMenuRef = useRef<HTMLDivElement>(null)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
 
   // Update state
   const [appVersion, setAppVersion] = useState('')
@@ -125,6 +130,20 @@ export default function StatusBar() {
     window.electronAPI.installUpdate()
   }, [])
 
+  // 打开模型弹窗时若列表为空则自动拉取 —— 启动流程只 loadConfigGroups 不拉模型，
+  // 从未手动切换过提供商时 models 恒为空，弹窗此前只会一直显示「未配置」。
+  // fetchModels 命中 1 小时缓存时瞬时返回；失败时保留错误态由用户手动重试。
+  const toggleModelPicker = () => {
+    const opening = !showModelPicker
+    setShowModelPicker(opening)
+    if (opening) {
+      const cfg = useConfigStore.getState()
+      if (cfg.models.length === 0 && !cfg.isLoadingModels && !cfg.modelsError) {
+        cfg.fetchModels()
+      }
+    }
+  }
+
   const fetchBranches = async () => {
     try {
       if (!gitRoot) return
@@ -158,6 +177,9 @@ export default function StatusBar() {
       if (branchMenuRef.current && !branchMenuRef.current.contains(e.target as Node)) {
         setShowBranchMenu(false)
       }
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setShowModelPicker(false)
+      }
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
@@ -186,7 +208,7 @@ export default function StatusBar() {
   const encodings = ['UTF-8', 'GBK', 'GB2312', 'GB18030', 'ASCII', 'ISO-8859-1', 'UTF-16']
 
   return (
-    <div className="h-[24px] text-nova-text-muted text-[11px] flex items-center px-3 select-none shrink-0 rounded-xl glass-flat">
+    <div className="h-[28px] text-nova-text-muted text-[12px] flex items-center px-3 select-none shrink-0 rounded-xl glass-flat">
       {/* Left side */}
       <div className="flex items-center gap-3">
         {/* Git branch — or an explicit "no git" indicator when the current
@@ -353,12 +375,114 @@ export default function StatusBar() {
           </div>
         )}
 
-        {/* AI model indicator */}
-        {model && (
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400"></span>
-            <span className="opacity-90">{modelInfo?.alias || model.split('/').pop() || model}</span>
-          </span>
+        {/* AI model indicator — clickable to switch model. Rendered whenever a
+            provider exists, even before any model is resolved: previously the
+            whole control vanished (`model && …`) for providers without a
+            defaultModel, leaving the user nothing to click in the bottom-right. */}
+        {(model || configGroups.length > 0) && (
+          <div className="relative" ref={modelMenuRef}>
+            <button
+              className="flex items-center gap-1 opacity-90 hover:opacity-100 cursor-pointer px-1 rounded hover:bg-nova-hover"
+              onClick={toggleModelPicker}
+              title={t('chat.selectModel')}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ background: model ? '#4ade80' : 'rgba(148,163,184,0.5)' }}
+              />
+              <span className="truncate max-w-[140px]">
+                {modelInfo?.alias || model.split('/').pop() || t('chat.selectModel')}
+              </span>
+              <span className="text-[11px] opacity-50">▾</span>
+            </button>
+            {showModelPicker && (
+              <div className="absolute bottom-full right-0 mb-1 glass-panel rounded-lg py-1 min-w-[240px] max-w-[340px] z-50 max-h-[300px] overflow-y-auto">
+                {/* 列表归属的提供商上下文 —— 会话绑定的组可能与全局激活组不一致 */}
+                {activeConfigGroup && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 mb-1 border-b" style={{ borderColor: 'var(--border)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: activeConfigGroup.color || '#3b82f6' }} />
+                    <span className="text-[10px] font-semibold text-nova-text-secondary truncate flex-1">{activeConfigGroup.name}</span>
+                    {models.length > 0 && (
+                      <span className="text-[11px] text-nova-text-muted shrink-0">
+                        {t('statusBar.modelsCount', { count: models.length })}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* 拉取中 —— fetchModels 重试时不清空旧列表，列表与 spinner 可并存 */}
+                {isLoadingModels && (
+                  <div className="flex items-center gap-2 px-3 py-2.5 text-[11px] text-nova-text-muted">
+                    <span
+                      className="w-3 h-3 rounded-full animate-spin shrink-0"
+                      style={{ border: '2px solid rgba(59,130,246,0.25)', borderTopColor: '#3b82f6' }}
+                    />
+                    {t('statusBar.fetchingModels')}
+                  </div>
+                )}
+
+                {/* 拉取失败 —— 显示错误并允许重试，而不是只留一句「未配置」 */}
+                {!isLoadingModels && modelsError && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-[11px]" style={{ color: '#ef4444' }}>
+                    <span className="flex-1 min-w-0 truncate">{t('statusBar.fetchModelsFailed')}: {modelsError}</span>
+                    <button
+                      className="shrink-0 px-2 py-0.5 rounded cursor-pointer hover:opacity-80 transition-opacity"
+                      style={{ background: 'rgba(239,68,68,0.15)' }}
+                      onClick={() => fetchModels()}
+                    >
+                      {t('statusBar.retry')}
+                    </button>
+                  </div>
+                )}
+
+                {/* 空列表兜底 —— 提供商返回了空列表（无错误）时可手动重新获取 */}
+                {!isLoadingModels && !modelsError && models.length === 0 && (
+                  <>
+                    <div className="px-3 pt-1 pb-1 text-[10px] text-nova-text-muted">{t('statusBar.notConfigured')}</div>
+                    <button
+                      className="w-full text-left px-3 py-2 text-[11px] text-nova-accent hover:bg-nova-hover cursor-pointer transition-colors"
+                      onClick={() => fetchModels()}
+                    >
+                      ↻ {t('statusBar.refetchModels')}
+                    </button>
+                  </>
+                )}
+
+                {models.length > 0 &&
+                  models
+                    .slice()
+                    .sort((a, b) => {
+                      if (a.isFavorite && !b.isFavorite) return -1
+                      if (!a.isFavorite && b.isFavorite) return 1
+                      return a.id.localeCompare(b.id)
+                    })
+                    .map((m) => (
+                      <button
+                        key={m.id}
+                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-nova-accent/15 flex items-center gap-2 ${
+                          m.id === model ? 'text-nova-accent font-semibold' : 'text-nova-text-secondary'
+                        }`}
+                        onClick={() => {
+                          const sid = useChatStore.getState().activeSessionId
+                          // 弹窗展示的是「当前激活提供商」的模型列表：选中时把会话一并
+                          // 绑定到该提供商。此前用 session.configGroupId 会导致把 A 家的
+                          // 模型 ID 留在 B 家会话上（仍用旧 key 请求 → 401）。
+                          const gid = activeConfigGroupId || activeSession?.configGroupId
+                          if (gid) {
+                            setLastModelForGroup(gid, m.id)
+                            if (sid) useChatStore.getState().updateSessionModel(sid, m.id, gid)
+                          }
+                          setShowModelPicker(false)
+                        }}
+                      >
+                        {m.id === model && <span className="text-[10px]">✓</span>}
+                        {m.isFavorite && <span className="text-[10px]">⭐</span>}
+                        <span className="truncate">{m.alias || m.id.split('/').pop() || m.id}</span>
+                      </button>
+                    ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Total tokens in active session */}

@@ -240,21 +240,211 @@ export function createToolRegistry(): Tool[] {
         'Execute a shell command in the given directory. Returns stdout/stderr. ' +
         '注意：① 有专用工具时不要用它——文件/搜索用 read_file/search_in_files，git 用 git_status/git_diff/git_log/git_add/git_commit/git_split_commit（本工具需要审批，会打断流程）；' +
         '② Windows 环境是 PowerShell（没有 grep/&& 等 Unix 命令），赋值用 $env:NAME=... 而不是 set NAME=...，需要搜索用 search_in_files，需要连续执行分多次调用；' +
-        '③ 命令默认 30 秒超时会被中断——构建/测试/安装等长命令必须设置 timeoutMs（如 120000），若仍超时说明它确实需要更长时间，不要重复执行同一命令。',
+        '③ 命令默认 30 秒超时会被中断——构建/测试/安装等长命令必须设置 timeoutMs（如 120000），若仍超时说明它确实需要更长时间，不要重复执行同一命令；' +
+        '④ dev server / watch / 需要交互输入这类不会自己退出的命令，必须用 background=true（它在集成终端里跑，随后用 read_terminal_output 读、stop_terminal 停），' +
+        '用前台调用只会被超时杀掉。',
       parameters: {
         type: 'object',
         properties: {
           command: { type: 'string', description: 'The shell command to execute' },
           cwd: { type: 'string', description: 'Working directory (optional, defaults to project root)' },
           timeoutMs: { type: 'number', description: 'Timeout in milliseconds (optional, default 30000; build/test commands should set e.g. 120000)' },
+          background: {
+            type: 'boolean',
+            description:
+              'Run it in the integrated terminal and return immediately with a terminalId instead of waiting for it to exit. ' +
+              'Required for long-running/interactive processes: dev servers, watchers, `npm install` that may prompt.',
+          },
         },
         required: ['command'],
       },
-      execute: async (args) => {
-        const { runCommand } = await import('@/services/tools/helpers')
-        return runCommand(args.command, args.cwd, args.timeoutMs)
+      execute: async (args, context) => {
+        const { runCommand, runCommandBackground } = await import('@/services/tools/helpers')
+        if (args.background) return runCommandBackground(args.command, args.cwd)
+        // context.abortSignal 就是本轮运行的 Stop 信号（run_command 自己带超时，
+        // 执行器不再包一层 deadline）——传下去，停止时才能杀掉进程树。
+        return runCommand(args.command, args.cwd, args.timeoutMs, context?.abortSignal)
       },
       requiresApproval: true,
+    },
+    {
+      name: 'read_terminal_output',
+      description:
+        'Read the latest output of a process the assistant started with run_command(background=true). ' +
+        'Use it for dev servers / watchers / long builds: start once, read, and if it is not ready yet wait before reading again — do not poll in a tight loop. ' +
+        'The result says whether the process is still running and, once finished, its exit code.',
+      parameters: {
+        type: 'object',
+        properties: {
+          terminalId: { type: 'string', description: 'Session to read; defaults to the most recently started one' },
+          maxLines: { type: 'number', description: 'Maximum trailing lines to return (default 200)' },
+        },
+        required: [],
+      },
+      execute: async (args) => {
+        const { readTerminalOutput } = await import('@/services/tools/helpers')
+        return readTerminalOutput(args.terminalId, args.maxLines)
+      },
+      requiresApproval: false,
+    },
+    {
+      name: 'stop_terminal',
+      description:
+        'Stop a background terminal process started by the assistant (it cannot touch terminals the user opened). ' +
+        'Call it when a dev server/watcher is no longer needed instead of leaving it running.',
+      parameters: {
+        type: 'object',
+        properties: {
+          terminalId: { type: 'string', description: 'Session to stop; defaults to the most recently started one' },
+        },
+        required: [],
+      },
+      execute: async (args) => {
+        const { stopTerminal } = await import('@/services/tools/helpers')
+        return stopTerminal(args.terminalId)
+      },
+      requiresApproval: false,
+    },
+
+    // ──────────────── Browser session (integrated-browser parity) ────────────────
+    // What the terminal can't prove: that the page actually renders. These drive
+    // the same hidden window the Browser panel shows the user.
+    {
+      name: 'browser_navigate',
+      description:
+        'Open a URL in the app\'s browser session (http/https only — localhost dev servers are the main use). ' +
+        'Waits for the load and reports the final URL and title. Use it after changing frontend code, then ' +
+        'browser_read_console to see whether it broke.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to open, e.g. http://localhost:5173' },
+        },
+        required: ['url'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserNavigateTool } = await import('@/services/tools/helpers')
+        return browserNavigateTool(args.url)
+      },
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'browser_read_console',
+      description:
+        'Read console output and page errors captured from the browser session (newest last), optionally the ' +
+        'visible page text too. This is how you see a runtime JS error or failed request after a frontend change.',
+      parameters: {
+        type: 'object',
+        properties: {
+          includePageText: { type: 'boolean', description: 'Also append the page\'s visible text' },
+          clear: { type: 'boolean', description: 'Clear the buffer after reading (default false)' },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserReadConsoleTool } = await import('@/services/tools/helpers')
+        return browserReadConsoleTool({ includePageText: args.includePageText, clear: args.clear })
+      },
+      timeoutMs: 30_000,
+    },
+    {
+      name: 'browser_screenshot',
+      description:
+        'Screenshot the current page and attach the image to this result, so you can see layout/visual state. ' +
+        'Needs a vision-capable model; the result says if the image could not be delivered.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async () => {
+        const { browserScreenshotTool } = await import('@/services/tools/helpers')
+        return browserScreenshotTool()
+      },
+      timeoutMs: 30_000,
+    },
+    {
+      name: 'browser_act',
+      description:
+        'Interact with the page: click / type / press / scroll / wait. `type` sets the value through the native ' +
+        'setter so React/Vue controlled inputs update. Approval is required because clicking can change remote state.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['click', 'type', 'press', 'scroll', 'wait'], description: 'What to do' },
+          selector: { type: 'string', description: 'CSS selector (required for click/type; empty for press means the focused element)' },
+          text: { type: 'string', description: 'Text to type (action=type)' },
+          key: { type: 'string', description: 'Key name (action=press), e.g. Enter' },
+          ms: { type: 'number', description: 'Delay in ms (action=wait, max 10000)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserActTool } = await import('@/services/tools/helpers')
+        return browserActTool(args.action, {
+          selector: args.selector,
+          text: args.text,
+          key: args.key,
+          ms: args.ms,
+        })
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+
+    // ──────────────── Pull requests (local `gh` CLI) ────────────────
+    {
+      name: 'read_pull_request',
+      description:
+        'Read the repository\'s pull requests through the user\'s own gh CLI: action="list" for open PRs, ' +
+        'action="view" for one PR (or the current branch\'s) including CI checks and review comments. ' +
+        'Use "view" before claiming a PR is ready, and to get reviewer feedback back into the conversation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'view'], description: 'list | view' },
+          number: { type: 'number', description: 'PR number (view; omit for the current branch)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { githubPrTool } = await import('@/services/tools/helpers')
+        return githubPrTool(args.action, { number: args.number })
+      },
+      requiresApproval: false,
+      timeoutMs: 90_000,
+    },
+    {
+      name: 'create_pull_request',
+      description:
+        'Open a pull request (action="create", needs title; the branch must already be pushed with git_push) or ' +
+        'reply on one (action="comment", needs number + comment). Requires the user\'s gh CLI to be installed and ' +
+        'signed in; the result names that as the reason if it is not.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['create', 'comment'], description: 'create | comment' },
+          title: { type: 'string', description: 'PR title (create)' },
+          body: { type: 'string', description: 'PR description (create; defaults to the branch\'s commit subjects)' },
+          base: { type: 'string', description: 'Target branch (create, default main)' },
+          draft: { type: 'boolean', description: 'Open as draft (create)' },
+          number: { type: 'number', description: 'PR number (comment)' },
+          comment: { type: 'string', description: 'Comment body (comment)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { githubPrTool } = await import('@/services/tools/helpers')
+        return githubPrTool(args.action, args)
+      },
+      requiresApproval: true,
+      timeoutMs: 90_000,
     },
 
     // ──────────────── Agent-control tools (handled by the chat store) ────────────────
@@ -291,7 +481,9 @@ export function createToolRegistry(): Tool[] {
       name: 'submit_plan',
       description:
         'In plan mode: submit a step-by-step plan for the user to approve before any file changes are made. ' +
-        'The plan should break the task into ordered, concrete steps. Do not use this tool in execute mode.',
+        'The plan should break the task into ordered, concrete steps. Do not use this tool in execute mode. ' +
+        'Declare every file the plan will create or modify in "files" (absolute or project-relative paths) — ' +
+        'after approval, ONLY those files may be written; writes to any other path are blocked.',
       parameters: {
         type: 'object',
         properties: {
@@ -307,6 +499,11 @@ export function createToolRegistry(): Tool[] {
               },
               required: ['summary'],
             },
+          },
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Final deliverable files the plan will create or modify (absolute or project-relative paths). Required so writes stay scoped after approval.',
           },
         },
         required: ['title', 'steps'],
@@ -518,6 +715,66 @@ export function createToolRegistry(): Tool[] {
       },
     },
 
+    // ──────────────── Cross-session knowledge (read/search) ────────────────
+    {
+      name: 'read_session',
+      description:
+        'Read the most recent messages of another chat session (by id or title). ' +
+        'Use it to pick up where another conversation left off, or to check a decision ' +
+        'made there. Returns a bounded transcript (oldest of the tail first). ' +
+        'List candidates with list_agents or find them with search_sessions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          targetSessionId: { type: 'string', description: '目标会话 ID（来自 list_agents / search_sessions，支持唯一前缀）' },
+          targetTitle: { type: 'string', description: '或按标题匹配目标会话（targetSessionId 优先）' },
+          maxMessages: { type: 'number', description: '最多读取的最近消息条数（默认 20，最大 50）' },
+        },
+        required: [],
+      },
+      execute: async (args, context) => {
+        const { useChatStore } = await import('@/stores/chatStore')
+        const { findSessionByIdOrTitle, formatSessionTranscript } = await import('@/services/sessionKnowledge')
+        const { sessions } = useChatStore.getState()
+        const maxMessages = Math.min(Math.max(Number(args.maxMessages) || 20, 1), 50)
+        const target = findSessionByIdOrTitle(
+          sessions,
+          String(args.targetSessionId || '').trim(),
+          String(args.targetTitle || '').trim(),
+        )
+        if (!target) {
+          return 'Error: 找不到目标会话。请先调用 list_agents 查看会话列表，或调用 search_sessions 按内容查找。'
+        }
+        const selfNote = target.id === context?.sessionId ? '（这是当前会话）' : ''
+        return formatSessionTranscript(target, maxMessages) + selfNote
+      },
+    },
+    {
+      name: 'search_sessions',
+      description:
+        'Search the message history of ALL chat sessions for a keyword (case-insensitive) ' +
+        'and return the matching sessions with a context snippet around the first hit. ' +
+        'Use it to find where something was decided/discussed before opening it with read_session.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '要搜索的关键词（消息内容）' },
+          limit: { type: 'number', description: '最多返回的会话数（默认 5，最大 10）' },
+        },
+        required: ['query'],
+      },
+      execute: async (args) => {
+        const { useChatStore } = await import('@/stores/chatStore')
+        const { searchSessionsForQuery } = await import('@/services/sessionKnowledge')
+        const { sessions } = useChatStore.getState()
+        const hits = searchSessionsForQuery(sessions, String(args.query || ''), Number(args.limit) || 5)
+        if (hits.length === 0) return `没有会话包含 "${String(args.query || '').trim()}"`
+        return hits
+          .map((h) => `- 「${h.title}」(${h.sessionId})\n  [${h.role}] ${h.snippet}`)
+          .join('\n\n')
+      },
+    },
+
     // ──────────────── Web tools (read-only network access) ────────────────
     {
       name: 'web_search',
@@ -552,9 +809,10 @@ export function createToolRegistry(): Tool[] {
         },
         required: ['url'],
       },
-      execute: async (args) => {
+      execute: async (args, context) => {
         const { readUrl } = await import('@/services/tools/helpers')
-        return readUrl(args.url, typeof args.prompt === 'string' && args.prompt.trim() ? args.prompt : undefined)
+        // context.sessionId → 提取走会话自己的配置组/模型，避免跨组错配 400
+        return readUrl(args.url, typeof args.prompt === 'string' && args.prompt.trim() ? args.prompt : undefined, context?.sessionId)
       },
       timeoutMs: 45_000,
     },

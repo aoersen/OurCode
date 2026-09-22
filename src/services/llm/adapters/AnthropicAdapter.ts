@@ -195,6 +195,17 @@ export class AnthropicAdapter implements LLMAdapter {
             }
             return { role: 'assistant' as const, content }
           }
+          // Vision: Anthropic takes image blocks before the text so the text
+          // block stays last — addHistoryBreakpoint only places cache_control on
+          // a trailing text/tool_use block, and images can't carry one.
+          if (m.role === 'user' && m.images?.length) {
+            const content: any[] = m.images.map((img) => ({
+              type: 'image',
+              source: { type: 'base64', media_type: img.mimeType, data: img.dataBase64 },
+            }))
+            if (m.content) content.push({ type: 'text', text: m.content })
+            return { role: 'user' as const, content }
+          }
           return {
             role: m.role as 'user' | 'assistant',
             content: m.content,

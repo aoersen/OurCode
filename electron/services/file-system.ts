@@ -222,10 +222,12 @@ export class FileSystemService {
     if (buf && buf.length > 0) await s.fd.write(buf)
   }
 
-  /** Flush, close and atomically rename the temp file into place. */
-  async closeWriteStream(id: number): Promise<void> {
+  /** Flush, close and atomically rename the temp file into place. Resolves the
+   *  final path so callers (e.g. the IPC handler) can react to the completed
+   *  write — such as invalidating stale reverted-file records. */
+  async closeWriteStream(id: number): Promise<string | undefined> {
     const s = this.writeStreams.get(id)
-    if (!s) return
+    if (!s) return undefined
     this.writeStreams.delete(id)
     if (s.pendingHigh) {
       const buf = s.encoder.write(s.pendingHigh)
@@ -235,6 +237,7 @@ export class FileSystemService {
     if (tail && tail.length > 0) await s.fd.write(tail)
     await s.fd.close()
     await fsRename(s.tmpPath, s.finalPath)
+    return s.finalPath
   }
 
   /** Abort an in-progress write, removing the temp file. */

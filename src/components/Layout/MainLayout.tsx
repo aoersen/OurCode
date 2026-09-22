@@ -27,6 +27,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useShortcutStore, matchesShortcut } from '@/stores/shortcutStore'
 import { executeCommand } from '@/services/commands/commandRegistry'
+import { IS_OFFICE } from '@/utils/windowMode'
 
 const COMPACT_BREAKPOINT = 1024
 const NARROW_BREAKPOINT = 768
@@ -57,7 +58,11 @@ export default function MainLayout() {
   const hasOpenTabs = useEditorStore((s) =>
     s.panelOrder.some((pid) => (s.panels[pid]?.tabOrder?.length ?? 0) > 0),
   )
-  const editorShown = isEditorVisible && hasOpenTabs
+  // A diff ("Open Changes" / source-control diff) is shown INSTEAD of a tab's
+  // content, so the editor area has to mount for it even when nothing is open —
+  // otherwise 查看变更 from the 文件变更历史 panel silently does nothing.
+  const hasActiveDiff = useEditorStore((s) => !!s.activeDiff)
+  const editorShown = isEditorVisible && (hasOpenTabs || hasActiveDiff)
   const splitDirection = useEditorStore((s) => s.splitDirection)
   const splitRatios = useEditorStore((s) => s.splitRatios)
   const isProblemsOpen = useProblemsStore((s) => s.isOpen)
@@ -109,10 +114,12 @@ export default function MainLayout() {
   const isCompact = windowWidth < COMPACT_BREAKPOINT
   const isNarrow = windowWidth < NARROW_BREAKPOINT
 
-  // 3D 办公室：整窗展示。注意这里**不卸载**常规工作区（编辑器/聊天/终端），
+  // 「一人公司」：整窗展示。注意这里**不卸载**常规工作区（编辑器/聊天/终端），
   // 而是把工作区隐藏、在其上方盖一层办公室视图 —— 否则切回对话时整个工作区
   // 会重建：长对话全文 markdown 重渲染 + Monaco 实例重建会卡死主线程数秒。
-  const isOfficeShown = activeSidebarTab === 'office' && isSidebarVisible
+  // 主窗口不再有 office 标签页（入口改为打开独立办公室窗口），因此覆盖逻辑
+  // 只在办公室窗口（IS_OFFICE）内启用；办公室视图展示与侧栏折叠无关。
+  const isOfficeShown = IS_OFFICE && activeSidebarTab === 'office'
 
   // Keyboard shortcuts — resolved live from the shortcutStore so the presets /
   // custom bindings configured in Settings actually take effect.
@@ -301,7 +308,7 @@ export default function MainLayout() {
                     )}
                   </>
                 )}
-                {isChatVisible && (
+                {isChatVisible && !IS_OFFICE && (
                   <div
                     style={isNarrow || !editorShown ? undefined : { width: Math.min(chatWidth, Math.max(360, windowWidth - 100)) + 'px' }}
                     className={`h-full rounded-xl overflow-hidden glass-chrome ${editorShown && !isNarrow ? 'shrink-0' : 'flex-1 min-w-0'} ${isNarrow ? 'flex-1 min-w-0' : ''}`}
@@ -320,7 +327,7 @@ export default function MainLayout() {
             </div>
           </div>
 
-          {/* 3D 办公室整窗覆盖层：盖在工作区上方，工作区保持挂载 */}
+          {/* 「一人公司」整窗覆盖层：盖在工作区上方，工作区保持挂载 */}
           {isOfficeShown && (
             <div className="absolute inset-0 rounded-xl overflow-hidden glass-chrome z-10">
               <OfficeView />

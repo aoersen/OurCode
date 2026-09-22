@@ -285,18 +285,18 @@ export default function ModelSelector() {
                     {/* Meta tags */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       {meta?.contextWindow && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nova-hover text-nova-text-muted">
+                        <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-hover text-nova-text-muted">
                           {meta.contextWindow >= 1048576 ? `${Math.round(meta.contextWindow / 1048576)}M` : `${Math.round(meta.contextWindow / 1000)}K`}
                         </span>
                       )}
                       {meta?.vision && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nova-accent/10 text-nova-accent">👁 视觉</span>
+                        <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-accent/10 text-nova-accent">👁 视觉</span>
                       )}
                       {meta?.functionCall && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nova-accent/10 text-nova-accent">⚡ 函数调用</span>
+                        <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-accent/10 text-nova-accent">⚡ 函数调用</span>
                       )}
                       {model.isFree && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400">免费</span>
+                        <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400">免费</span>
                       )}
                     </div>
                   </div>
@@ -338,7 +338,7 @@ export default function ModelSelector() {
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: PROVIDER_COLORS[provider] || '#2563eb' }} />
                 <span className="text-[11px] font-medium text-nova-text-primary">{m.alias || m.id}</span>
                 {meta?.contextWindow && (
-                  <span className="text-[9px] text-nova-text-muted">{Math.round(meta.contextWindow / 1000)}K</span>
+                  <span className="text-[11px] text-nova-text-muted">{Math.round(meta.contextWindow / 1000)}K</span>
                 )}
                 <span className="text-[10px] text-yellow-400">★</span>
               </button>

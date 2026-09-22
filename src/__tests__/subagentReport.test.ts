@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel } from '@/services/subagents/subagentReport'
+import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel, sanitizeModelName } from '@/services/subagents/subagentReport'
 import { SubagentGuard } from '@/services/subagents/subagentDefinitions'
 
 describe('subagentStatusLabel (v2 §11.3 — report first line from the runner state machine)', () => {
@@ -53,7 +53,7 @@ describe('mergeWriteScopes (v2 §11.2 — envelope files_to_modify → run write
 
 describe('resolveSubagentModel (v2 §10.5 — override > session > default)', () => {
   it('prefers the envelope override, then session, then default', () => {
-    expect(resolveSubagentModel('gpt-4o', 'claude', 'gemini')).toBe('gpt-4o')
+    expect(resolveSubagentModel('gpt-4o', 'claude', 'gemini', ['gpt-4o', 'claude', 'gemini'])).toBe('gpt-4o')
     expect(resolveSubagentModel(undefined, 'claude', 'gemini')).toBe('claude')
     expect(resolveSubagentModel(undefined, undefined, 'gemini')).toBe('gemini')
     expect(resolveSubagentModel(undefined, undefined, undefined)).toBe('')
@@ -61,6 +61,57 @@ describe('resolveSubagentModel (v2 §10.5 — override > session > default)', ()
 
   it('plain runs pass no override → resolution is unchanged', () => {
     expect(resolveSubagentModel(undefined, 'session-model', undefined)).toBe('session-model')
+  })
+
+  it('drops junk override values (template placeholder / undefined / none / blank)', () => {
+    // 监管 LLM 常照抄信封模板或写占位值——这些绝不能被当作模型名发给 API。
+    expect(resolveSubagentModel('<可选，该角色使用的模型>', 'session-model', undefined)).toBe('session-model')
+    expect(resolveSubagentModel('undefined', 'session-model', undefined)).toBe('session-model')
+    expect(resolveSubagentModel('none', undefined, 'default-model')).toBe('default-model')
+    expect(resolveSubagentModel('  ', undefined, undefined)).toBe('')
+    expect(resolveSubagentModel('deepseek-chat', undefined, undefined, ['deepseek-chat'])).toBe('deepseek-chat')
+    // session/default 同样清洗：junk 不参与回退
+    expect(resolveSubagentModel(undefined, 'null', undefined)).toBe('')
+  })
+
+  it('strips trailing YAML comments and rejects default', () => {
+    expect(resolveSubagentModel('deepseek-chat  # 用这个', undefined, undefined, ['deepseek-chat'])).toBe('deepseek-chat')
+    expect(resolveSubagentModel('default', 'session-model', undefined)).toBe('session-model')
+  })
+
+  it('skips candidates not in the known-models list (wrong envelope model falls back)', () => {
+    const known = ['deepseek-chat', 'gpt-4o']
+    // 信封写错 → 回退会话模型
+    expect(resolveSubagentModel('gpt-4', 'deepseek-chat', undefined, known)).toBe('deepseek-chat')
+    // 信封正确 → 优先信封
+    expect(resolveSubagentModel('gpt-4o', 'deepseek-chat', undefined, known)).toBe('gpt-4o')
+    // 全都不在列表 → ''
+    expect(resolveSubagentModel('claude', undefined, undefined, known)).toBe('')
+    // 列表为空 → 信封覆盖无法验证、一律忽略（监管 LLM 编的模型名不能直达 API，
+    // 否则正是 400 "Unsupported model" 的主要来源），只用会话/默认模型
+    expect(resolveSubagentModel('anything', 'session-model', undefined, [])).toBe('session-model')
+    expect(resolveSubagentModel('anything', undefined, 'default-model', [])).toBe('default-model')
+    expect(resolveSubagentModel('anything', undefined, undefined, [])).toBe('')
+    expect(resolveSubagentModel(undefined, undefined, undefined, [])).toBe('')
+  })
+
+  it('strips surrounding quotes from model names', () => {
+    // 监管在信封里写 model: "deepseek-chat" 时引号是 YAML 装饰，不是名字的一部分
+    expect(sanitizeModelName('"deepseek-chat"')).toBe('deepseek-chat')
+    expect(sanitizeModelName("'gpt-4o'")).toBe('gpt-4o')
+    expect(sanitizeModelName('`deepseek-chat`')).toBe('deepseek-chat')
+    // 剥完引号后照常参与已知列表校验
+    expect(resolveSubagentModel('"deepseek-chat"', undefined, undefined, ['deepseek-chat'])).toBe('deepseek-chat')
+    expect(resolveSubagentModel('"gpt-4"', 'session-model', undefined, ['deepseek-chat', 'session-model'])).toBe('session-model')
+    // 无已知列表时即使清洗后是合法 id，覆盖也不可信 → 回退会话/默认模型
+    expect(resolveSubagentModel('"deepseek-chat"', 'session-model', undefined)).toBe('session-model')
+  })
+
+  it('rejects names with whitespace / non-ASCII / junk words (never a real model id)', () => {
+    expect(resolveSubagentModel('gpt 4o', 'session-model', undefined)).toBe('session-model')
+    expect(resolveSubagentModel('深度求索', 'session-model', undefined)).toBe('session-model')
+    expect(resolveSubagentModel('optional', 'session-model', undefined)).toBe('session-model')
+    expect(resolveSubagentModel('auto', 'session-model', undefined)).toBe('session-model')
   })
 })
 

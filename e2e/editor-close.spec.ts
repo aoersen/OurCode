@@ -1,38 +1,8 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, dropUserData, launchApp } from './helpers'
 import { mkdtemp, writeFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
-/** Dismiss the first-run onboarding modal. It mounts only AFTER the app's
- *  async boot completes (which can take several seconds), so wait until the
- *  splash is gone and no dialog shows for a moment before giving up. */
-async function dismissOnboarding(win: Page): Promise<void> {
-  let readyStreak = 0
-  for (let i = 0; i < 60; i++) {
-    const dialog = win.locator('[role="dialog"][aria-label="欢迎使用"]').first()
-    const visible = await dialog.isVisible({ timeout: 300 }).catch(() => false)
-    if (visible) {
-      readyStreak = 0
-      const skip = dialog.locator('button', { hasText: '跳过' }).first()
-      if (await skip.isVisible().catch(() => false)) {
-        await skip.click()
-        await win.waitForTimeout(400)
-        continue
-      }
-      await win.waitForTimeout(300)
-      continue
-    }
-    const splashGone = !(await win.locator('#splash-screen').isVisible().catch(() => false))
-    if (splashGone) {
-      readyStreak += 1
-      if (readyStreak >= 4) return
-    } else {
-      readyStreak = 0
-    }
-    await win.waitForTimeout(400)
-  }
-}
 
 /** Robustly find the main app window (not DevTools), dismissing the first-run
  *  onboarding modal if it shows. */
@@ -88,9 +58,12 @@ test.describe('Editor area close', () => {
     await writeFile(join(dir, 'a.ts'), 'aaa', 'utf-8')
     await writeFile(join(dir, 'b.ts'), 'bbb', 'utf-8')
 
+    let userData: string | undefined
     try {
       // ── Launch #1: open a.ts + b.ts, then close the editor area ──
-      const app1 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+      const first = await launchApp()
+      userData = first.userData
+      const app1 = first.app
       const win1 = await mainWindow(app1)
       if (await win1.locator('text=恢复未保存的更改').first().isVisible().catch(() => false)) {
         await win1.mouse.click(10, 10)
@@ -127,8 +100,8 @@ test.describe('Editor area close', () => {
       expect(bTabVisible).toBe(false)
       await app1.close()
 
-      // ── Launch #2: only a.ts may come back from the session, never b.ts ──
-      const app2 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+      // ── Launch #2: same profile — only a.ts may come back, never b.ts ──
+      const { app: app2 } = await launchApp({ userData: userData! })
       const win2 = await mainWindow(app2)
       if (await win2.locator('text=恢复未保存的更改').first().isVisible().catch(() => false)) {
         await win2.mouse.click(10, 10)
@@ -141,6 +114,7 @@ test.describe('Editor area close', () => {
       await app2.close()
     } finally {
       await rm(dir, { recursive: true, force: true })
+      if (userData) dropUserData(userData)
     }
   })
 })

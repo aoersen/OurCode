@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores/chatStore'
 import type { TodoItem } from '@/types'
 import { useI18n } from '@/i18n/useI18n'
 import type { TranslationKey } from '@/i18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * Agent status panel: shows the agent's todo list (manage_todo) and the plan
@@ -21,22 +22,22 @@ const STATUS_LABEL_KEY: Record<TodoItem['status'], TranslationKey> = {
 function TodoStatusIcon({ status }: { status: TodoItem['status'] }) {
   if (status === 'completed') {
     return (
-      <span className="material-symbols-outlined text-[16px] leading-none text-nova-text-muted shrink-0" aria-hidden>check</span>
+      <MSIcon name="check" className="text-[16px] leading-none text-nova-text-muted shrink-0" />
     )
   }
   if (status === 'failed') {
     return (
-      <span className="material-symbols-outlined text-[16px] leading-none text-[var(--red,#dc2626)] shrink-0" aria-hidden>close</span>
+      <MSIcon name="close" className="text-[16px] leading-none text-[var(--red,#dc2626)] shrink-0" />
     )
   }
   if (status === 'in_progress') {
     return (
-      <span className="material-symbols-outlined text-[16px] leading-none animate-spin-slow text-nova-accent shrink-0" aria-hidden>progress_activity</span>
+      <MSIcon name="progress_activity" className="text-[16px] leading-none animate-spin-slow text-nova-accent shrink-0" />
     )
   }
   // pending
   return (
-    <span className="material-symbols-outlined text-[16px] leading-none text-nova-text-muted opacity-60 shrink-0" aria-hidden>radio_button_unchecked</span>
+    <MSIcon name="radio_button_unchecked" className="text-[16px] leading-none text-nova-text-muted opacity-60 shrink-0" />
   )
 }
 
@@ -52,7 +53,7 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
     <div className="minimal-panel relative">
       <div className="p-4">
         <div className="flex items-center gap-2 mb-3 text-nova-text-primary">
-          <span className="material-symbols-outlined text-[18px] leading-none" aria-hidden>checklist</span>
+          <MSIcon name="checklist" className="text-[18px] leading-none" />
           <h3 className="text-sm font-semibold">{t('agent.todoList')}</h3>
           <span className="ml-auto text-[10px] font-medium text-nova-text-muted shrink-0">
             {t('agent.doneCount', { done: todos.filter((x) => x.status === 'completed').length, total: todos.length })}
@@ -147,7 +148,7 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
         style={{ borderLeftColor: 'var(--success, #16a34a)' }}
       >
         <div className="px-4 py-3 flex items-center gap-2 border-b border-nova-border bg-nova-hover/50">
-          <span className="material-symbols-outlined text-[18px] leading-none text-success shrink-0" aria-hidden>check_circle</span>
+          <MSIcon name="check_circle" className="text-[18px] leading-none text-success shrink-0" />
           <span className="text-[13px] font-semibold text-nova-text-primary">{title}</span>
           <span className="ml-auto text-[11px] px-2 py-0.5 rounded bg-success-10 text-success border border-success-20">
             {t('agent.planApproved')}
@@ -167,7 +168,7 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
         className="shrink-0 animate-fade-in bg-nova-surface border border-nova-border rounded-xl overflow-hidden shadow-sm opacity-90"
       >
         <div className="px-4 py-3 flex items-center gap-2 border-b border-nova-border bg-nova-hover/50">
-          <span className="material-symbols-outlined text-[18px] leading-none text-nova-text-muted shrink-0" aria-hidden>cancel</span>
+          <MSIcon name="cancel" className="text-[18px] leading-none text-nova-text-muted shrink-0" />
           <span className="text-[13px] font-semibold text-nova-text-muted">{title}</span>
           <span className="ml-auto text-[11px] text-nova-text-muted">{t('agent.planCanceled')}</span>
         </div>
@@ -199,7 +200,7 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
       style={{ borderLeftColor: 'var(--accent)' }}
     >
       <div className="px-4 py-3 flex items-center gap-2 border-b border-nova-border bg-nova-hover/50">
-        <span className="material-symbols-outlined text-[18px] leading-none text-nova-accent shrink-0" aria-hidden>assignment</span>
+        <MSIcon name="assignment" className="text-[18px] leading-none text-nova-accent shrink-0" />
         <span className="text-[13px] font-semibold text-nova-text-primary">{title}</span>
         <span className="ml-auto text-[11px] px-2 py-0.5 rounded bg-nova-accent/5 text-nova-accent border border-nova-accent/10">
           {t('agent.awaitingApproval')}
@@ -207,6 +208,23 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
       </div>
       <div className="px-4 py-3 flex flex-col gap-2.5">
         {renderSteps()}
+        {/* 最终产物（批准后唯一可写范围）——未声明则提示 fail closed */}
+        <div className="bg-[#f8fafc] dark:bg-white/5 rounded-lg p-2.5 border border-nova-border flex flex-col gap-1">
+          <span className="text-[10px] font-semibold tracking-wider text-nova-text-muted">
+            {t('agent.planDeliverables')}
+          </span>
+          {(session.planDeliverables || []).length > 0 ? (
+            (session.planDeliverables || []).map((p, i) => (
+              <span key={i} className="font-mono text-[11px] text-nova-text-secondary">• {p}</span>
+            ))
+          ) : (
+            <span className="text-[11px] text-nova-text-muted">{t('agent.planNoDeliverables')}</span>
+          )}
+          <span className="flex items-center gap-1 text-[10px] text-nova-text-muted">
+            <MSIcon name="sync" className="text-[11px] leading-none" />
+            {t('agent.planDeliverablesLockHint')}
+          </span>
+        </div>
         <label className="flex items-center gap-1.5 text-[12px] text-nova-text-muted cursor-pointer select-none">
           <input
             type="checkbox"

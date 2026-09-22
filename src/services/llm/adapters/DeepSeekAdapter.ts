@@ -3,6 +3,7 @@ import { LLMAdapter } from '../types'
 import { mapOpenAiUsage } from '../usage'
 import { llmFetch } from '../http'
 import { buildChatUrl, buildModelsUrl } from '../endpoints'
+import { openAiVisionContent } from './vision'
 
 /**
  * DeepSeek adapter — uses OpenAI-compatible API with DeepSeek-specific features
@@ -20,7 +21,7 @@ export class DeepSeekAdapter implements LLMAdapter {
 
     const body: Record<string, any> = {
       model: req.model,
-      messages: req.messages.map((m: { role: string; content: string; toolCalls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>; toolCallId?: string }) => {
+      messages: req.messages.map((m) => {
         const msg: Record<string, any> = { role: m.role, content: m.content }
         if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
           msg.tool_calls = m.toolCalls.map((tc) => ({
@@ -32,6 +33,8 @@ export class DeepSeekAdapter implements LLMAdapter {
         if (m.role === 'tool' && m.toolCallId) {
           msg.tool_call_id = m.toolCallId
         }
+        const vision = openAiVisionContent(m)
+        if (vision) msg.content = vision
         return msg
       }),
       temperature: req.temperature,
@@ -157,30 +160,22 @@ export class DeepSeekAdapter implements LLMAdapter {
   }
 
   async fetchModels(config: ApiConfigGroup, signal?: AbortSignal): Promise<string[]> {
-    try {
-      const url = buildModelsUrl(config.baseUrl, 'openai')
-      if (!url) return ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner']
-      const response = await llmFetch(url, {
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          ...config.customHeaders,
-        },
-        signal,
-      }, { skipTlsVerify: !!config.skipTlsVerify })
+    const url = buildModelsUrl(config.baseUrl, 'openai')
+    if (!url) return []
+    const response = await llmFetch(url, {
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        ...config.customHeaders,
+      },
+      signal,
+    }, { skipTlsVerify: !!config.skipTlsVerify })
 
-      if (response.ok) {
-        const data = await response.json()
-        return data.data?.map((m: { id: string }) => m.id) || []
-      }
-    } catch {
-      // Fall through to hardcoded list
+    if (!response.ok) {
+      throw new Error(`获取模型列表失败 (${response.status}): ${response.statusText}`)
     }
 
-    return [
-      'deepseek-chat',
-      'deepseek-coder',
-      'deepseek-reasoner',
-    ]
+    const data = await response.json()
+    return data.data?.map((m: { id: string }) => m.id) || []
   }
 }
 

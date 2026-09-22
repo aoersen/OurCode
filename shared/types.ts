@@ -101,6 +101,9 @@ export interface ChatSession {
   // Plan awaiting approval (set by submit_plan)
   planContent?: string
   planStatus?: 'none' | 'pending_approval' | 'approved' | 'canceled'
+  /** 计划声明的最终产物文件（绝对或相对 projectPath 的路径）。计划模式批准后
+   *  仅允许写入这些路径；缺省 = 未声明（fail closed，所有写入被拦截）。 */
+  planDeliverables?: string[]
   // Project workspace path this session belongs to (captured at creation time)
   projectPath?: string
   // Real context size (input + cache + output tokens) reported by the last API
@@ -121,6 +124,9 @@ export interface ChatSession {
    *  Persisted to SQLite so a crash mid-compaction is detected and cleared on
    *  the next load (the pre-crash summary stays valid). Not user-visible. */
   compactionInProgress?: boolean
+  /** 会话所属窗口模式：'main' = 对话窗口（默认），'office' = 一人公司独立
+   *  窗口。两个模式的会话完全隔离（SQLite 按 mode 过滤），互不显示。 */
+  mode?: 'main' | 'office'
 }
 
 // Agent todo list item (managed via the manage_todo tool)
@@ -235,6 +241,21 @@ export interface Checkpoint {
   files: CheckpointFile[]
 }
 
+// A reverted file's forward snapshot — captured at revert time so the revert
+// can be undone (恢复). `content`/`existed` describe the AI-written state that
+// was on disk right before the revert, and `messageId` points back at the
+// assistant message whose checkpoint was reverted (used to rebuild a re-
+// revertable checkpoint on restore). `hasSnapshot` is false for legacy rows
+// created before forward snapshots existed — those must never be restored.
+export interface RevertedFileRecord {
+  path: string
+  content: string
+  existed: boolean
+  revertedAt: number
+  messageId?: string
+  hasSnapshot: boolean
+}
+
 // Persistent user memory (injected into the system prompt)
 export interface Memory {
   id: string
@@ -280,6 +301,16 @@ export interface ChatError {
 }
 
 // Chat Message
+/** An image the user attached to a message. `dataBase64` is the raw payload
+ *  without the `data:` URL prefix; it travels to vision-capable models and is
+ *  persisted with the message so a rebuilt history keeps its attachments. */
+export interface MessageAttachment {
+  id: string
+  name: string
+  mimeType: string
+  dataBase64: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -287,6 +318,7 @@ export interface ChatMessage {
   sortOrder: number
   contextFiles: string[]
   tokenCount: number
+  attachments?: MessageAttachment[]
   thinking?: string
   editedAt?: number
   createdAt: number
@@ -386,7 +418,6 @@ export interface UserPreferences {
   chatPosition: 'right' | 'bottom'
   /** 'system' follows the OS locale (zh-* → zh-CN, otherwise en-US) */
   language: 'zh-CN' | 'en-US' | 'system'
-  encryptChatData: boolean
   /** When enabled the chat history becomes editable: edit messages, drag to
    *  reorder, and batch-delete. Off by default so history can't be mangled
    *  by an accidental drag. */
@@ -406,6 +437,9 @@ export interface UserPreferences {
    *  agent runs keep their prefix cached across slow tool rounds. Only models
    *  with 1h ephemeral cache support accept the ttl field. */
   anthropicPromptCache1h?: boolean
+  /** Model wire log: replayable redacted request/response lines under
+   *  <userData>/wire-logs/<session>.jsonl (defaults ON). */
+  wireLogEnabled?: boolean
   /** LSP servers by Monaco language id, e.g. { python: "pylsp", go: "gopls -mode stdio" } */
   lspServers?: Record<string, string>
   /** How this app treats inbound cross-session messages (send_message tool):
@@ -434,6 +468,10 @@ export interface UserPreferences {
   contextCompactionRatio?: number
   /** 压缩摘要使用的模型 ID；留空则跟随会话模型。 */
   contextCompactionModel?: string
+  /** 提问自动继续（ZCode 风格）：Agent 的 ask_user_question 默认带 5 分钟
+   *  倒计时，超时未回答时 Agent 按自己的判断继续并打标。关闭后提问一直
+   *  等待。权限审批与计划审批不受此开关影响（永远等待）。 */
+  questionAutoContinue?: boolean
 }
 
 // Model Info
@@ -455,6 +493,9 @@ export interface LLMMessage {
   thinking?: string
   toolCalls?: LLMToolCall[]
   toolCallId?: string
+  /** Images sent alongside `content` on this turn (user role only). Each
+   *  adapter maps these to its own multimodal part type. */
+  images?: Array<{ mimeType: string; dataBase64: string }>
 }
 
 // Tool definition for LLM function calling
@@ -677,3 +718,74 @@ export interface OfficeAgentState {
   progress: number // 0-100
   logs: OfficeLog[]
 }
+
+/** One agent-owned pty run, as the main process reports it through `term:list`. */
+export interface AgentTerminalRun {
+  id: string
+  command: string
+  running: boolean
+  exitCode: number | null
+}
+
+/** What the main process knows about one pty run — an integrated-terminal tab
+ *  or a command the assistant started. `output` is the raw pty stream (ANSI
+ *  sequences included); stripping is the reader's job. */
+export interface TerminalRunSnapshot {
+  output: string
+  /** True when the stream was cut to the requested tail */
+  truncated: boolean
+  running: boolean
+  exitCode: number | null
+  command: string
+}
+
+// ── Agent browser session ───────────────────────────────────────────────────
+// One shared, hidden webContents that both the UI and the assistant drive, so
+// "the agent looked at the page" and "what the user sees in the Browser panel"
+// are the same thing. See electron/services/browser-session.ts.
+
+/** One captured console/error line from the browsed page. */
+export interface BrowserConsoleEntry {
+  level: 'verbose' | 'info' | 'warning' | 'error'
+  text: string
+  /** Source URL + line, when the page reported one. */
+  source?: string
+  at: number
+}
+
+/** Observable state of the browser session, pushed to the renderer on change. */
+export interface BrowserSessionState {
+  url: string
+  title: string
+  loading: boolean
+  /** Whether the session is surfaced as a visible window (user chose "显示"). */
+  visible: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  /** Last main-frame load failure (`did-fail-load`), cleared on next navigation. */
+  lastError?: string
+}
+
+export type BrowserAction = 'click' | 'type' | 'press' | 'scroll' | 'wait'
+
+/** Arguments for one in-page interaction. `selector` is a CSS selector; an
+ *  empty one means "the focused element" (press) or is rejected (click/type). */
+export interface BrowserActOptions {
+  selector?: string
+  text?: string
+  key?: string
+  ms?: number
+}
+
+export interface BrowserActResult {
+  ok: boolean
+  error?: string
+  /** What the page looked like after the action (title + url), when known. */
+  detail?: string
+}
+
+/** Pushed from the main process whenever the session changes (navigation, title,
+ *  or one new console line). */
+export type BrowserEvent =
+  | { type: 'state'; state: BrowserSessionState }
+  | { type: 'console'; entry: BrowserConsoleEntry }

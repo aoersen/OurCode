@@ -3,8 +3,11 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { CryptoService } from './crypto'
-import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, TodoItem, Workflow, AgentRun, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
+import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
 import { DEFAULT_PREFERENCES } from '../../shared/constants'
+
+/** 每个会话保留的子任务记录条数上限（一人公司任务流的回看深度）。 */
+const MAX_SUBAGENT_RUNS_PER_SESSION = 60
 
 /** Parse a JSON column safely ('' / null / invalid → fallback) */
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
@@ -19,7 +22,6 @@ function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
 export class SQLiteStore {
   private db: Database.Database
   private crypto: CryptoService
-  private encryptChat: boolean = false
 
   constructor(userDataPath: string) {
     const dbDir = join(userDataPath, 'data')
@@ -37,20 +39,6 @@ export class SQLiteStore {
 
     this.initTables()
     this.migrateTables()
-    this.loadEncryptFlag()
-  }
-
-  private loadEncryptFlag(): void {
-    const row = this.db.prepare("SELECT value FROM user_preferences WHERE key = 'encryptChatData'").get() as any
-    if (row) {
-      try {
-        this.encryptChat = JSON.parse(row.value) === true
-      } catch { this.encryptChat = false }
-    }
-  }
-
-  setEncryptChat(value: boolean): void {
-    this.encryptChat = value
   }
 
   getCrypto(): CryptoService {
@@ -107,6 +95,32 @@ export class SQLiteStore {
     }
     if (!msgColumns.some((c: any) => c.name === 'ttft_ms')) {
       this.db.exec("ALTER TABLE chat_messages ADD COLUMN ttft_ms INTEGER DEFAULT 0")
+    }
+    // Image attachments (base64) on user messages. Stored on the message rather
+    // than as a side table so a session load picks them up with the rows they
+    // belong to; the renderer only ships the payload once (see
+    // stripDurableAttachments in chatStore) and the UPSERT below keeps the
+    // stored copy when a later save arrives without it.
+    if (!msgColumns.some((c: any) => c.name === 'attachments')) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+    }
+    // Reverted files carry the AI-written forward snapshot (restore_content /
+    // restore_existed) and the source message id so a revert can be undone
+    // (恢复) and the re-created checkpoint re-attaches to its message.
+    // Legacy rows (reverted before this feature) get has_snapshot = 0 and are
+    // never restored — there is no content to restore.
+    const revertedColumns = this.db.prepare("PRAGMA table_info(reverted_files)").all() as any[]
+    if (!revertedColumns.some((c: any) => c.name === 'restore_content')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN restore_content TEXT DEFAULT ''")
+    }
+    if (!revertedColumns.some((c: any) => c.name === 'restore_existed')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN restore_existed INTEGER DEFAULT 1")
+    }
+    if (!revertedColumns.some((c: any) => c.name === 'message_id')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN message_id TEXT DEFAULT ''")
+    }
+    if (!revertedColumns.some((c: any) => c.name === 'has_snapshot')) {
+      this.db.exec("ALTER TABLE reverted_files ADD COLUMN has_snapshot INTEGER DEFAULT 0")
     }
     // Add branch/pin/archive columns to chat_sessions if missing
     const sessColumns = this.db.prepare("PRAGMA table_info(chat_sessions)").all() as any[]
@@ -172,6 +186,20 @@ export class SQLiteStore {
     if (!sessColumns.some((c: any) => c.name === 'compaction_in_progress')) {
       this.db.exec("ALTER TABLE chat_sessions ADD COLUMN compaction_in_progress INTEGER DEFAULT 0")
     }
+    // Add the session window "mode" column if missing. 'main' = 对话窗口（默认），
+    // 'office' = 一人公司独立窗口 —— 两个窗口的会话完全隔离，互不显示。
+    if (!sessColumns.some((c: any) => c.name === 'mode')) {
+      this.db.exec("ALTER TABLE chat_sessions ADD COLUMN mode TEXT DEFAULT 'main'")
+    }
+    // Persist the per-session target-mode flag（一人公司会话跨重启保持目标模式）。
+    // 此前 targetMode 只在内存里，重启后所有办公室会话回退成普通 agent 对话——
+    // 在办公室切到项目看到的又是「普通 agent 模式的对话」。
+    if (!sessColumns.some((c: any) => c.name === 'target_mode')) {
+      this.db.exec("ALTER TABLE chat_sessions ADD COLUMN target_mode INTEGER DEFAULT 0")
+      // 一次性回填：既有 office 会话本来就是目标模式跑出来的（监管+子 Agent 派发），
+      // 升级后应保持公司形态，而不是退化成普通对话。
+      this.db.exec("UPDATE chat_sessions SET target_mode = 1 WHERE mode = 'office'")
+    }
     // Add project_path column to memories if missing (project-scoped memories)
     const memColumns = this.db.prepare("PRAGMA table_info(memories)").all() as any[]
     if (!memColumns.some((c: any) => c.name === 'project_path')) {
@@ -229,6 +257,7 @@ export class SQLiteStore {
         thinking TEXT DEFAULT '',
         tool_calls TEXT DEFAULT '[]',
         tool_results TEXT DEFAULT '[]',
+        attachments TEXT DEFAULT '[]',
         created_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
       );
@@ -259,11 +288,35 @@ export class SQLiteStore {
       -- Lightweight record of files whose changes were reverted, so the file-
       -- changes summary can still show them as「已回退」after the checkpoint
       -- snapshot itself is deleted (and after restart / session re-entry).
+      -- restore_content / restore_existed keep the AI-written state captured at
+      -- revert time so the revert can be undone (恢复), and message_id points
+      -- back at the source assistant message to rebuild a re-revertable
+      -- checkpoint on restore. has_snapshot marks records that really carry a
+      -- forward snapshot — legacy rows (reverted before this feature) don't,
+      -- and restoring them must be refused instead of writing empty content.
       CREATE TABLE IF NOT EXISTS reverted_files (
         session_id TEXT NOT NULL,
         file_path TEXT NOT NULL,
         reverted_at INTEGER NOT NULL,
+        restore_content TEXT DEFAULT '',
+        restore_existed INTEGER DEFAULT 1,
+        message_id TEXT DEFAULT '',
+        has_snapshot INTEGER DEFAULT 0,
         PRIMARY KEY (session_id, file_path)
+      );
+
+      -- Terminal record of one run_subagent dispatch, keyed by the PARENT tool
+      -- call id (the same key the live chatStore.subagentProgress table uses).
+      -- The live table is renderer-only and dies with the window, so without
+      -- this the office 任务流 / 代码变更 / 终端 tabs go blank after a restart
+      -- even though the conversation itself is intact.
+      CREATE TABLE IF NOT EXISTS subagent_runs (
+        tool_call_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER DEFAULT 0,
+        record TEXT DEFAULT '{}'
       );
 
       CREATE TABLE IF NOT EXISTS workflows (
@@ -304,10 +357,16 @@ export class SQLiteStore {
         hits INTEGER DEFAULT 1
       );
 
+      CREATE TABLE IF NOT EXISTS workspace_trust (
+        path TEXT PRIMARY KEY,
+        trusted_at INTEGER NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id, sort_order);
       CREATE INDEX IF NOT EXISTS idx_sessions_config ON chat_sessions(config_group_id);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_reverted_files_session ON reverted_files(session_id, reverted_at);
+      CREATE INDEX IF NOT EXISTS idx_subagent_runs_session ON subagent_runs(session_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_usage_category_time ON usage_events(category, started_at);
       CREATE INDEX IF NOT EXISTS idx_usage_name ON usage_events(name);
       CREATE INDEX IF NOT EXISTS idx_usage_started ON usage_events(started_at);
@@ -399,8 +458,23 @@ export class SQLiteStore {
   }
 
   // Chat Sessions
-  getSessions(): ChatSession[] {
-    const sessions = this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC').all() as any[]
+  getSessions(mode?: 'main' | 'office'): ChatSession[] {
+    // 一人公司与对话模式完全隔离:office 窗口只看到 mode='office' 的会话,
+    // main 窗口只看到 mode='main' / 无模式(升级前的旧会话)的会话。
+    // 开公司不会把普通 agent 模式的对话带过来;反之 main 窗口也看不到公司会话。
+    const sessions = !mode
+      ? (this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC').all() as any[])
+      : mode === 'office'
+        ? (this.db.prepare(
+            `SELECT * FROM chat_sessions
+               WHERE mode = 'office'
+               ORDER BY updated_at DESC`
+          ).all() as any[])
+        : (this.db.prepare(
+            `SELECT * FROM chat_sessions
+               WHERE mode = 'main' OR mode IS NULL OR mode = ''
+               ORDER BY updated_at DESC`
+          ).all() as any[])
 
     // Load all messages in one query and bucket by session, instead of one
     // query per session (N+1) — opening the sidebar with many sessions used to
@@ -428,11 +502,11 @@ export class SQLiteStore {
           messages: (b.messages || []).map((msg: any) => ({
             id: msg.id,
             role: msg.role,
-            content: this.maybeDecrypt(msg.content),
+            content: msg.content,
             sortOrder: msg.sortOrder,
             contextFiles: msg.contextFiles || [],
             tokenCount: msg.tokenCount || 0,
-            thinking: msg.thinking ? this.maybeDecrypt(msg.thinking) : undefined,
+            thinking: msg.thinking ? msg.thinking : undefined,
             editedAt: msg.editedAt || undefined,
             toolCalls: msg.toolCalls?.length ? msg.toolCalls : undefined,
             toolResults: msg.toolResults?.length ? msg.toolResults : undefined,
@@ -460,14 +534,18 @@ export class SQLiteStore {
       compactionInProgress: false,
         messages: messages.map(msg => {
           const toolResults = parseJsonField<ChatMessage['toolResults']>(msg.tool_results, undefined)
+          const attachments = parseJsonField<ChatMessage['attachments']>(
+            msg.attachments ? msg.attachments : '', undefined
+          )
           return {
             id: msg.id,
             role: msg.role,
-            content: this.maybeDecrypt(msg.content),
+            content: msg.content,
             sortOrder: msg.sort_order,
             contextFiles: parseJsonField<string[]>(msg.context_files, []),
             tokenCount: msg.token_count,
-            thinking: msg.thinking ? this.maybeDecrypt(msg.thinking) : undefined,
+            attachments: attachments?.length ? attachments : undefined,
+            thinking: msg.thinking ? msg.thinking : undefined,
             editedAt: msg.edited_at || undefined,
             toolCalls: parseJsonField<ChatMessage['toolCalls']>(msg.tool_calls, undefined)?.length
               ? parseJsonField<ChatMessage['toolCalls']>(msg.tool_calls, undefined)
@@ -507,6 +585,8 @@ export class SQLiteStore {
           : undefined,
         summary: session.summary || undefined,
         summaryMessageCount: session.summary_message_count || undefined,
+        mode: (session.mode === 'office' ? 'office' : 'main') as 'main' | 'office',
+        targetMode: session.target_mode ? true : undefined,
       }
     })
   }
@@ -524,7 +604,7 @@ export class SQLiteStore {
             active_branch_id = ?, branches = ?, pinned_at = ?, archived_at = ?,
             agent_mode = ?, todos = ?, plan_content = ?, plan_status = ?, agent_runs = ?, project_path = ?,
             summary = ?, summary_message_count = ?, project_edit_mode = ?, last_user_message_at = ?,
-            compaction_in_progress = ?
+            compaction_in_progress = ?, mode = ?, target_mode = ?
         WHERE id = ?
       `).run(
         session.title,
@@ -547,14 +627,16 @@ export class SQLiteStore {
         (session as any).projectEditMode || 'confirm_before_change',
         (session as any).lastUserMessageAt || 0,
         (session as any).compactionInProgress ? 1 : 0,
+        (session as any).mode === 'office' ? 'office' : 'main',
+        (session as any).targetMode ? 1 : 0,
         id
       )
     } else {
       this.db.prepare(`
         INSERT INTO chat_sessions (id, title, config_group_id, model, model_params, created_at, updated_at,
           active_branch_id, branches, pinned_at, archived_at, agent_mode, todos, plan_content, plan_status, agent_runs, project_path,
-          summary, summary_message_count, project_edit_mode, last_user_message_at, compaction_in_progress)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          summary, summary_message_count, project_edit_mode, last_user_message_at, compaction_in_progress, mode, target_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         session.title,
@@ -577,7 +659,9 @@ export class SQLiteStore {
         (session as any).summaryMessageCount || 0,
         (session as any).projectEditMode || 'confirm_before_change',
         (session as any).lastUserMessageAt || 0,
-        (session as any).compactionInProgress ? 1 : 0
+        (session as any).compactionInProgress ? 1 : 0,
+        (session as any).mode === 'office' ? 'office' : 'main',
+        (session as any).targetMode ? 1 : 0
       )
     }
 
@@ -588,8 +672,8 @@ export class SQLiteStore {
     // save. Upserting keeps unchanged rows intact and only deletes rows that
     // disappeared from the incoming list (message deleted / history edited).
     const upsertMsg = this.db.prepare(`
-      INSERT INTO chat_messages (id, session_id, role, content, sort_order, context_files, token_count, thinking, tool_calls, tool_results, edited_at, request_started_at, request_duration_ms, request_tokens_in, request_tokens_out, ttft_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chat_messages (id, session_id, role, content, sort_order, context_files, token_count, thinking, tool_calls, tool_results, attachments, edited_at, request_started_at, request_duration_ms, request_tokens_in, request_tokens_out, ttft_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         session_id = excluded.session_id,
         role = excluded.role,
@@ -600,6 +684,9 @@ export class SQLiteStore {
         thinking = excluded.thinking,
         tool_calls = excluded.tool_calls,
         tool_results = excluded.tool_results,
+        -- NULL means "this save carries no attachment payload" (the renderer
+        -- strips base64 once it is durable) — keep the stored copy then.
+        attachments = COALESCE(excluded.attachments, attachments),
         edited_at = excluded.edited_at,
         request_started_at = excluded.request_started_at,
         request_duration_ms = excluded.request_duration_ms,
@@ -614,13 +701,14 @@ export class SQLiteStore {
           msg.id,
           id,
           msg.role,
-          this.maybeEncrypt(msg.content),
+          msg.content,
           msg.sortOrder,
           JSON.stringify(msg.contextFiles),
           msg.tokenCount,
-          msg.thinking ? this.maybeEncrypt(msg.thinking) : '',
+          msg.thinking ? msg.thinking : '',
           JSON.stringify(msg.toolCalls || []),
           JSON.stringify(msg.toolResults || []),
+          msg.attachments?.length ? JSON.stringify(msg.attachments) : null,
           msg.editedAt || 0,
           msg.requestStartedAt || 0,
           msg.requestDurationMs || 0,
@@ -653,6 +741,41 @@ export class SQLiteStore {
 
   deleteSession(id: string): void {
     this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM subagent_runs WHERE session_id = ?').run(id)
+  }
+
+  // Sub-agent run records — the durable twin of chatStore.subagentProgress
+  getSubagentRuns(sessionIds: string[]): Array<{ toolCallId: string; record: SubAgentProgress }> {
+    const ids = Array.from(new Set(sessionIds.filter((x) => typeof x === 'string' && !!x)))
+    const out: Array<{ toolCallId: string; record: SubAgentProgress }> = []
+    // Chunked bind: SQLite caps host parameters (999 by default), and a window
+    // with many sessions must still read its whole history. The statement is
+    // prepared per chunk because better-sqlite3 requires the bound argument
+    // count to match the placeholders exactly.
+    for (let i = 0; i < ids.length; i += 400) {
+      const chunk = ids.slice(i, i + 400)
+      const rows = this.db.prepare(
+        `SELECT tool_call_id, record FROM subagent_runs WHERE session_id IN (${chunk.map(() => '?').join(',')})`,
+      ).all(...chunk) as any[]
+      for (const row of rows) {
+        const record = parseJsonField<SubAgentProgress | null>(row.record, null)
+        if (record && Array.isArray(record.steps)) out.push({ toolCallId: row.tool_call_id, record })
+      }
+    }
+    return out
+  }
+
+  saveSubagentRun(toolCallId: string, record: SubAgentProgress): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO subagent_runs (tool_call_id, session_id, status, started_at, ended_at, record)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(toolCallId, record.sessionId, record.status, Number(record.startedAt) || 0, Date.now(), JSON.stringify(record))
+    this.db.prepare(`
+      DELETE FROM subagent_runs WHERE session_id = ? AND tool_call_id NOT IN (
+        SELECT tool_call_id FROM subagent_runs WHERE session_id = ?
+        ORDER BY started_at DESC LIMIT ?
+      )
+    `).run(record.sessionId, record.sessionId, MAX_SUBAGENT_RUNS_PER_SESSION)
   }
 
   // User Preferences
@@ -685,22 +808,23 @@ export class SQLiteStore {
     saveMany(Object.entries(prefs))
   }
 
-  // Encrypt/Decrypt helpers for chat content
-  private maybeEncrypt(text: string): string {
-    if (!this.encryptChat || !this.crypto.hasChatKey()) return text
-    return this.crypto.encryptChat(text).toString('base64')
+  // ── Workspace trust ──────────────────────────────────────────────────────
+  // Deliberately NOT exposed through any generic preferences IPC: the renderer
+  // must not be able to write its own allowlist. Only the main process reads or
+  // extends this table, and only after the user answered a native dialog.
+  listTrustedWorkspaces(): string[] {
+    const rows = this.db.prepare('SELECT path FROM workspace_trust ORDER BY trusted_at ASC').all() as Array<{ path: string }>
+    return rows.map((r) => r.path)
   }
 
-  private maybeDecrypt(text: string): string {
-    if (!this.encryptChat || !this.crypto.hasChatKey()) return text
-    try {
-      const buf = Buffer.from(text, 'base64')
-      // Only attempt decrypt if buffer is large enough for IV+TAG+data
-      if (buf.length > 32) return this.crypto.decryptChat(buf)
-    } catch {
-      // Not encrypted (plaintext from before encryption was enabled)
-    }
-    return text
+  trustWorkspace(path: string): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO workspace_trust (path, trusted_at) VALUES (?, ?)')
+      .run(path, Date.now())
+  }
+
+  untrustWorkspace(path: string): void {
+    this.db.prepare('DELETE FROM workspace_trust WHERE path = ?').run(path)
   }
 
   // ───────────────────── Memories (persistent user context) ─────────────────────
@@ -708,7 +832,7 @@ export class SQLiteStore {
     const rows = this.db.prepare('SELECT * FROM memories ORDER BY updated_at DESC').all() as any[]
     return rows.map((row) => ({
       id: row.id,
-      content: this.maybeDecrypt(row.content),
+      content: row.content,
       scope: (row.scope || 'global') as Memory['scope'],
       projectPath: row.project_path || undefined,
       createdAt: row.created_at,
@@ -720,7 +844,7 @@ export class SQLiteStore {
     const id = uuidv4()
     const now = Date.now()
     this.db.prepare('INSERT INTO memories (id, content, scope, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, this.maybeEncrypt(content), scope || 'global', projectPath || '', now, now)
+      .run(id, content), scope || 'global', projectPath || '', now, now
     return { id, content, scope: scope || 'global', projectPath, createdAt: now, updatedAt: now }
   }
 
@@ -769,21 +893,50 @@ export class SQLiteStore {
 
   // ─────────────── Reverted files (display-only, survives checkpoint delete) ─
   getRevertedFiles(sessionId: string): string[] {
-    const rows = this.db.prepare(
-      'SELECT file_path FROM reverted_files WHERE session_id = ? ORDER BY reverted_at ASC'
-    ).all(sessionId) as any[]
-    return rows.map((r) => r.file_path)
+    return this.getRevertedFileRecords(sessionId).map((r) => r.path)
   }
 
-  addRevertedFiles(sessionId: string, filePaths: string[]): void {
+  /** Full forward-snapshot records of a session's reverted files — used to
+   *  restore (undo a revert) and to show the AI-written content in diffs. */
+  getRevertedFileRecords(sessionId: string): RevertedFileRecord[] {
+    const rows = this.db.prepare(
+      'SELECT file_path, restore_content, restore_existed, reverted_at, message_id, has_snapshot FROM reverted_files WHERE session_id = ? ORDER BY reverted_at ASC'
+    ).all(sessionId) as any[]
+    return rows.map((r) => ({
+      path: r.file_path,
+      content: r.restore_content || '',
+      existed: r.restore_existed !== 0,
+      revertedAt: r.reverted_at,
+      messageId: r.message_id || undefined,
+      hasSnapshot: r.has_snapshot !== 0,
+    }))
+  }
+
+  addRevertedFiles(
+    sessionId: string,
+    records: Array<{ path: string; content?: string; existed?: boolean; messageId?: string }>,
+  ): void {
     const now = Date.now()
-    const insert = this.db.prepare(
-      'INSERT OR REPLACE INTO reverted_files (session_id, file_path, reverted_at) VALUES (?, ?, ?)'
-    )
-    for (const p of filePaths) {
-      if (!p) continue
-      insert.run(sessionId, p, now)
+    const insert = this.db.prepare(`
+      INSERT OR REPLACE INTO reverted_files
+        (session_id, file_path, reverted_at, restore_content, restore_existed, message_id, has_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `)
+    for (const r of records) {
+      if (!r?.path) continue
+      insert.run(sessionId, r.path, now, r.content || '', r.existed === false ? 0 : 1, r.messageId || '')
     }
+  }
+
+  deleteRevertedFile(sessionId: string, filePath: string): void {
+    this.db.prepare('DELETE FROM reverted_files WHERE session_id = ? AND file_path = ?').run(sessionId, filePath)
+  }
+
+  /** Drop every reverted record for a path (any session) — called after a
+   *  successful write/delete so a stale forward snapshot can't restore outdated
+   *  AI content over the file's newer state. */
+  deleteRevertedFileByPath(filePath: string): void {
+    this.db.prepare('DELETE FROM reverted_files WHERE file_path = ?').run(filePath)
   }
 
   deleteRevertedFiles(sessionId: string): void {
@@ -797,7 +950,7 @@ export class SQLiteStore {
       id: row.id,
       name: row.name,
       description: row.description || '',
-      prompt: this.maybeDecrypt(row.prompt),
+      prompt: row.prompt,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }))
@@ -807,7 +960,7 @@ export class SQLiteStore {
     const id = uuidv4()
     const now = Date.now()
     this.db.prepare('INSERT INTO workflows (id, name, description, prompt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, input.name || '未命名工作流', input.description || '', this.maybeEncrypt(input.prompt), now, now)
+      .run(id, input.name || '未命名工作流', input.description || '', input.prompt), now, now
     return { id, name: input.name || '未命名工作流', description: input.description || '', prompt: input.prompt, createdAt: now, updatedAt: now }
   }
 
@@ -989,6 +1142,8 @@ export class SQLiteStore {
     this.db.exec('DELETE FROM reverted_files')
     this.db.exec('DELETE FROM workflows')
     this.db.exec('DELETE FROM usage_events')
+    // A reset means "start over" — every workspace has to be re-trusted.
+    this.db.exec('DELETE FROM workspace_trust')
   }
 
   private closed = false

@@ -3,6 +3,7 @@ import { LLMAdapter } from '../types'
 import { mapOpenAiUsage, ParsedUsage } from '../usage'
 import { llmFetch } from '../http'
 import { buildChatUrl, buildModelsUrl, EndpointFormat } from '../endpoints'
+import { openAiVisionContent } from './vision'
 
 /**
  * OpenAI Chat Completions adapter.
@@ -41,6 +42,9 @@ export class OpenAIAdapter implements LLMAdapter {
       if (m.role === 'tool' && m.toolCallId) {
         msg.tool_call_id = m.toolCallId
       }
+      // Vision: content switches to the multi-part form.
+      const vision = openAiVisionContent(m)
+      if (vision) msg.content = vision
       return msg
     })
 

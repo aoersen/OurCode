@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 interface FileChangesSummaryProps {
   sessionId: string
@@ -24,6 +25,8 @@ interface FileChangesSummaryProps {
 export default function FileChangesSummary({ sessionId, checkpoints }: FileChangesSummaryProps) {
   const t = useI18n()
   const revertPathInSession = useChatStore((s) => s.revertPathInSession)
+  const restoreRevertedPath = useChatStore((s) => s.restoreRevertedPath)
+  const restoreRevertedPaths = useChatStore((s) => s.restoreRevertedPaths)
   const requestRevertAllConfirm = useChatStore((s) => s.requestRevertAllConfirm)
   const revertedFiles = useChatStore((s) => s.revertedFiles)
   const [expanded, setExpanded] = useState(false)
@@ -102,6 +105,39 @@ export default function FileChangesSummary({ sessionId, checkpoints }: FileChang
     }
   }
 
+  /** 恢复单个文件（撤销回退，找回 AI 写的版本）。 */
+  const handleRestoreFile = async (path: string) => {
+    if (busy || pendingPaths.has(path)) return
+    setBusy(true)
+    try {
+      if (await restoreRevertedPath(sessionId, path)) {
+        useUIStore.getState().showNotification(t('chat.filesChangedRestored', { count: 1 }), 'success')
+      } else {
+        useUIStore.getState().showNotification(t('chat.filesChangedRestoreFailed', { count: 1 }), 'error')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 恢复全部已回退的文件。 */
+  const handleRestoreAll = async () => {
+    if (busy) return
+    const reverted = allPaths.filter((p) => !pendingPaths.has(p))
+    if (reverted.length === 0) return
+    setBusy(true)
+    try {
+      const { ok, failed } = await restoreRevertedPaths(sessionId, reverted)
+      if (failed > 0) {
+        useUIStore.getState().showNotification(t('chat.filesChangedRestoreFailed', { count: failed }), 'error')
+      } else if (ok > 0) {
+        useUIStore.getState().showNotification(t('chat.filesChangedRestored', { count: ok }), 'success')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (allPaths.length === 0) return null
 
   const pendingCount = allPaths.filter((p) => pendingPaths.has(p)).length
@@ -117,16 +153,11 @@ export default function FileChangesSummary({ sessionId, checkpoints }: FileChang
             expanded ? '' : 'hover:bg-slate-100/50 dark:hover:bg-white/5'
           }`}
         >
-          <span className="material-symbols-outlined text-[15px] leading-none text-slate-500 dark:text-nova-text-muted shrink-0" aria-hidden>description</span>
+          <MSIcon name="description" className="text-[15px] leading-none text-slate-500 dark:text-nova-text-muted shrink-0" />
           <span className="text-sm font-medium text-slate-800 dark:text-nova-text-primary truncate">
             {t('chat.filesChangedTitle', { count: allPaths.length })}
           </span>
-          <span
-            className={`material-symbols-outlined text-[18px] leading-none text-slate-400 dark:text-nova-text-muted shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
-            aria-hidden
-          >
-            expand_more
-          </span>
+          <MSIcon name="expand_more" className={`text-[18px] leading-none text-slate-400 dark:text-nova-text-muted shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
         </button>
         {pendingCount > 0 && (
           <button
@@ -138,9 +169,24 @@ export default function FileChangesSummary({ sessionId, checkpoints }: FileChang
             {busy ? (
               <span className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-600 dark:border-nova-text-muted/30 dark:border-t-nova-text-muted rounded-full animate-spin inline-block" />
             ) : (
-              <span className="material-symbols-outlined text-[15px] leading-none" aria-hidden>undo</span>
+              <MSIcon name="undo" className="text-[15px] leading-none" />
             )}
             {t('chat.filesChangedRevertAll')}
+          </button>
+        )}
+        {/* 全部回退完后出现「恢复全部改动」—— 撤销回退、找回 AI 写的版本。 */}
+        {pendingCount === 0 && revertedFiles.length > 0 && (
+          <button
+            onClick={() => void handleRestoreAll()}
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-1.5 text-slate-500 hover:text-emerald-600 dark:text-nova-text-muted dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 border border-transparent hover:border-emerald-200 dark:hover:border-emerald-500/30 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors shrink-0 disabled:opacity-50"
+          >
+            {busy ? (
+              <span className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-600 dark:border-nova-text-muted/30 dark:border-t-nova-text-muted rounded-full animate-spin inline-block" />
+            ) : (
+              <MSIcon name="settings_backup_restore" className="text-[15px] leading-none" />
+            )}
+            {t('chat.filesChangedRestoreAll')}
           </button>
         )}
       </div>
@@ -167,22 +213,32 @@ export default function FileChangesSummary({ sessionId, checkpoints }: FileChang
                   title={p}
                 >
                   <span className="flex items-center gap-2 min-w-0 flex-1">
-                    <span
-                      className={`material-symbols-outlined text-[15px] leading-none shrink-0 transition-colors ${
+                    <MSIcon name="description" className={`text-[15px] leading-none shrink-0 transition-colors ${
                         isReverted
                           ? 'text-slate-300 dark:text-nova-text-muted/50'
                           : 'text-slate-400 dark:text-nova-text-muted group-hover:text-blue-500'
-                      }`}
-                      aria-hidden
-                    >
-                      description
-                    </span>
+                      }`} />
                     <span className="font-mono text-[13px] truncate">{p}</span>
                   </span>
                   {isReverted ? (
-                    <span className="shrink-0 flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-                      <span className="material-symbols-outlined text-[14px] leading-none" aria-hidden>check</span>
-                      {t('chat.filesChangedRevertedTag')}
+                    <span className="shrink-0 flex items-center gap-1.5">
+                      <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+                        <MSIcon name="check" className="text-[14px] leading-none" />
+                        {t('chat.filesChangedRevertedTag')}
+                      </span>
+                      {/* 恢复 —— 撤销回退、找回 AI 写的版本（行内常显，方便发现） */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleRestoreFile(p)
+                        }}
+                        disabled={busy}
+                        title={t('chat.filesChangedRestoreFile')}
+                        className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-slate-500 hover:text-emerald-600 dark:text-nova-text-muted dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors disabled:opacity-50"
+                      >
+                        <MSIcon name="settings_backup_restore" className="text-[14px] leading-none" />
+                        {t('chat.filesChangedRestore')}
+                      </button>
                     </span>
                   ) : (
                     <button
@@ -194,7 +250,7 @@ export default function FileChangesSummary({ sessionId, checkpoints }: FileChang
                       title={t('chat.filesChangedRevertFile')}
                       className="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all disabled:opacity-40"
                     >
-                      <span className="material-symbols-outlined text-[14px] leading-none" aria-hidden>undo</span>
+                      <MSIcon name="undo" className="text-[14px] leading-none" />
                     </button>
                   )}
                 </div>

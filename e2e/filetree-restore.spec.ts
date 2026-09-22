@@ -1,5 +1,5 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, dropUserData, launchApp } from './helpers'
 import { mkdtemp, writeFile, mkdir, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -19,6 +19,7 @@ async function mainWindow(app: import('@playwright/test').ElectronApplication): 
     if (!page) await new Promise((r) => setTimeout(r, 500))
   }
   if (!page) throw new Error('main window not found')
+  await dismissOnboarding(page)
   return page
 }
 
@@ -44,9 +45,12 @@ test.describe('FileTree restore-expanded', () => {
     await writeFile(join(dir, 'folder1', 'a.ts'), 'aaa', 'utf-8')
     await writeFile(join(dir, 'folder1', 'b.ts'), 'bbb', 'utf-8')
 
+    let userData: string | undefined
     try {
       // ── Launch #1: expand folder1 so its state persists to localStorage ──
-      const app1 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+      const first = await launchApp()
+      userData = first.userData
+      const app1 = first.app
       const win1 = await mainWindow(app1)
       if (await win1.locator('text=恢复未保存的更改').first().isVisible().catch(() => false)) {
         await win1.mouse.click(10, 10)
@@ -61,15 +65,16 @@ test.describe('FileTree restore-expanded', () => {
       await win1.waitForTimeout(1000)
       await app1.close()
 
-      // ── Launch #2: app restores the last project; folder1 should show children ──
-      const app2 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+      // ── Launch #2: same profile, so the app restores last project + expanded state ──
+      const { app: app2 } = await launchApp({ userData: userData! })
       const win2 = await mainWindow(app2)
       if (await win2.locator('text=恢复未保存的更改').first().isVisible().catch(() => false)) {
         await win2.mouse.click(10, 10)
         await win2.waitForTimeout(300)
       }
-      // Open the sidebar (starts hidden) — the files tab reveals the tree
-      const explorer = win2.locator('button[title="项目列表"], button[title="Project List"]').first()
+      // Open the sidebar (starts hidden) — the files tab reveals the tree.
+      // 第一个活动栏图标的 tooltip 已改为「任务面板」（办公室改造的重命名）。
+      const explorer = win2.locator('button[title="任务面板"], button[title="Task Panel"], button[title="项目列表"], button[title="Project List"]').first()
       await explorer.click()
       await win2.waitForTimeout(500)
       // Poll for the tree to appear (restoreLastProject may take a moment)
@@ -98,6 +103,7 @@ test.describe('FileTree restore-expanded', () => {
       await app2.close()
     } finally {
       await rm(dir, { recursive: true, force: true })
+      if (userData) dropUserData(userData)
     }
   })
 })

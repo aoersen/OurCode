@@ -6,6 +6,7 @@ import UsagePanel from './UsagePanel'
 import SkillPanel from '../Skills/SkillPanel'
 import McpPanel from '../Mcp/McpPanel'
 import GitPanel from '../Git/GitPanel'
+import BrowserPanel from '../Browser/BrowserPanel'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 
@@ -108,8 +109,9 @@ export default function Sidebar() {
 
   return (
     <div className="h-full flex flex-col bg-transparent">
-      {/* Sidebar Header — files 页的标题/返回/折叠都在面板内部（列表视图标题行、树视图「← 项目列表」行），头栏不渲染以免顶部留大片空白；skills 页同理（SkillPanel 自带 header：管理按钮 + 折叠） */}
-      {activeSidebarTab !== 'files' && activeSidebarTab !== 'skills' && (
+      {/* Sidebar Header — files / skills / mcp 页的标题都在面板内部（各自带 header），
+          头栏不渲染以免顶部留大片空白 */}
+      {activeSidebarTab !== 'files' && activeSidebarTab !== 'skills' && activeSidebarTab !== 'mcp' && (
         <div
           className="flex items-center justify-between shrink-0"
           style={{ padding: '0 12px', height: 36 }}
@@ -167,6 +169,8 @@ export default function Sidebar() {
           <SkillPanel />
         ) : activeSidebarTab === 'mcp' ? (
           <McpPanel />
+        ) : activeSidebarTab === 'browser' ? (
+          <BrowserPanel />
         ) : null}
       </div>
     </div>

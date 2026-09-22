@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * 回退全部改动确认 —— 内嵌于对话面板决策区（极简纯净版 V2 风格）：白卡 + 发丝线
@@ -52,14 +53,14 @@ export default function RevertAllConfirmDialog() {
     >
       {/* 头部：undo 图标 + 标题 + 右上角关闭 */}
       <div className="px-4 py-3 flex items-center gap-2 border-b border-nova-border bg-nova-hover/50">
-        <span className="material-symbols-outlined text-[18px] leading-none text-nova-accent shrink-0" aria-hidden>undo</span>
+        <MSIcon name="undo" className="text-[18px] leading-none text-nova-accent shrink-0" />
         <span className="text-[13px] font-semibold text-nova-text-primary">{t('chat.filesChangedRevertAll')}</span>
         <button
           onClick={handleKeep}
           title={t('common.close')}
           className="ml-auto text-nova-text-muted hover:text-nova-text-primary transition-colors p-1 rounded hover:bg-nova-hover"
         >
-          <span className="material-symbols-outlined text-[18px] leading-none" aria-hidden>close</span>
+          <MSIcon name="close" className="text-[18px] leading-none" />
         </button>
       </div>
 
@@ -74,7 +75,7 @@ export default function RevertAllConfirmDialog() {
           <div className="bg-[#f8fafc] dark:bg-white/5 rounded-lg p-3 flex flex-col gap-2 border border-nova-border max-h-48 overflow-y-auto">
             {list.map((p) => (
               <div key={p} className="flex items-center gap-2 text-nova-text-secondary min-w-0">
-                <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted shrink-0" aria-hidden>description</span>
+                <MSIcon name="description" className="text-[15px] leading-none text-nova-text-muted shrink-0" />
                 <span className="font-mono text-[12px] truncate" title={p}>{p}</span>
               </div>
             ))}

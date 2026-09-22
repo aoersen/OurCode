@@ -6,6 +6,7 @@ import ChatInput from './ChatInput'
 import ChatSidebar from './ChatSidebar'
 import QuestionConfirmBar from './QuestionConfirmBar'
 import InlineDecisionArea from './InlineDecisionArea'
+import ModeMenu from './ModeMenu'
 import ArenaModal from './ArenaModal'
 import WorkflowModal from './WorkflowModal'
 import ModelSelector from './ModelSelector'
@@ -13,11 +14,12 @@ import WaveLogo from './WaveLogo'
 import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
-import { useShallow } from 'zustand/react/shallow'
 import { useI18n } from '@/i18n/useI18n'
-import { statusBadge } from '@/services/targetMode/targetModeService'
 import type { ChatSession } from '@/types'
 import { resolveThinkingLevel } from '@/types'
+import MSIcon from '@/components/Common/icons/MSIcon'
+import Button from '@/components/Common/Button'
+import { isComposingEvent } from '@/utils/composition'
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -70,7 +72,7 @@ function SessionTitleEditor({ session }: { session: ChatSession }) {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') commit()
+          if (e.key === 'Enter' && !isComposingEvent(e)) commit()
           else if (e.key === 'Escape') setEditing(false)
         }}
         className="w-[180px] text-[11px] px-1.5 py-0.5 rounded border border-nova-accent/50 bg-nova-input-bg text-nova-text-primary outline-none"
@@ -103,18 +105,8 @@ export default function ChatPanel() {
   // changes) — the old getActiveSession() function selector never re-renders.
   const activeSession = useChatStore((s) => (s.activeSessionId ? s.sessions.find((x) => x.id === s.activeSessionId) ?? null : null))
   const createSession = useChatStore((s) => s.createSession)
-  const setProjectEditMode = useChatStore((s) => s.setProjectEditMode)
+  const requestEditModeChange = useChatStore((s) => s.requestEditModeChange)
   const updateSessionParams = useChatStore((s) => s.updateSessionParams)
-  const setTargetMode = useChatStore((s) => s.setTargetMode)
-  const targetModeStatus = useChatStore((s) => s.targetModeStatus)
-  const refreshTargetModeStatus = useChatStore((s) => s.refreshTargetModeStatus)
-  // Only the ACTIVE session's subagent entries — subscribing to the whole map
-  // re-rendered ChatPanel (and the whole conversation tree) on every subagent
-  // progress update (~150 ms apart during subagent runs). useShallow keeps the
-  // filtered array reference stable unless the relevant entries actually change.
-  const activeSessionSubagents = useChatStore(useShallow((s) =>
-    activeSession ? Object.values(s.subagentProgress).filter((p) => p.sessionId === activeSession.id) : []
-  ))
   const activeConfigGroupId = useConfigStore((s) => s.activeConfigGroupId)
   const models = useConfigStore((s) => s.models)
   const activeConfigGroup = useConfigStore((s) => s.configGroups.find((g) => g.id === s.activeConfigGroupId))
@@ -136,15 +128,9 @@ export default function ChatPanel() {
   const [view, setView] = useState<'chat' | 'trace'>('chat')
 
   const projectEditMode = activeSession?.projectEditMode || 'confirm_before_change'
+  // 目标模式开关已迁至「一人公司」（左侧 3D 办公室视图）；此处保留只读状态，
+  // 用于模式栏在目标模式运行期间隐藏 auto_edit/plan 审批选项。
   const targetMode = activeSession?.targetMode === true
-  // Current active role for the target-mode badge (v2 改动5): the newest
-  // subagent activity for this session — a running one wins over finished ones.
-  const activeTargetRole = targetMode && activeSession
-    ? (() => {
-        if (activeSessionSubagents.length === 0) return ''
-        return (activeSessionSubagents.find((p) => p.status === 'running') || activeSessionSubagents[activeSessionSubagents.length - 1]).name
-      })()
-    : ''
   // Same resolution as the agent loop (`session.model || group.defaultModel`) —
   // previously the pill fell back to nothing when session.model was empty,
   // showing "选择模型" while the conversation actually ran on the default model.
@@ -158,17 +144,14 @@ export default function ChatPanel() {
     }
   }
 
-  // While target mode is active, poll implementationStatus.md so the badge in
-  // the mode bar stays in sync with the agent's own progress writes.
-  useEffect(() => {
-    if (!targetMode) return
-    refreshTargetModeStatus()
-    const timer = setInterval(() => {
-      if (document.hidden) return // 窗口隐藏时暂停轮询
-      refreshTargetModeStatus()
-    }, 5000)
-    return () => clearInterval(timer)
-  }, [targetMode, refreshTargetModeStatus])
+  // Mode switch is where the session-wide READ policy follows the edit mode:
+  // entering 完全访问 arms it behind one native confirmation; leaving it
+  // disarms (a safe direction, no dialog), so 手动确认 really asks again.
+  // 逻辑已收敛到 store 的 requestEditModeChange（Shift+Tab 循环复用同一路径）。
+  const handleEditModeChange = (mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access') => {
+    if (!activeSession) return
+    void requestEditModeChange(activeSession.id, mode)
+  }
 
   return (
     <div className="h-full flex bg-transparent chat-accent">
@@ -243,7 +226,7 @@ export default function ChatPanel() {
                 <div className="relative">
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
-                    className="pill-btn flex items-center gap-1 max-w-[150px] text-[11px] border border-nova-border bg-nova-hover/50"
+                    className="pill-btn flex items-center gap-1 max-w-[200px] text-[11px] border border-nova-border bg-nova-hover/50"
                     title={t('chat.selectModel')}
                   >
                     <span className="truncate">
@@ -289,21 +272,21 @@ export default function ChatPanel() {
                           onClick={() => { setShowArena(true); setShowMoreMenu(false) }}
                           className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
                         >
-                          <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted" aria-hidden>compare_arrows</span>
+                          <MSIcon name="compare_arrows" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.arenaCompare')}
                         </button>
                         <button
                           onClick={() => { setShowWorkflows(true); setShowMoreMenu(false) }}
                           className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
                         >
-                          <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted" aria-hidden>sync</span>
+                          <MSIcon name="sync" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.workflows')}
                         </button>
                         <button
                           onClick={() => { openMemoryManager(); setShowMoreMenu(false) }}
                           className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
                         >
-                          <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted" aria-hidden>memory</span>
+                          <MSIcon name="memory" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.memory')}
                         </button>
                         <div className="h-px bg-nova-border my-1" />
@@ -329,6 +312,11 @@ export default function ChatPanel() {
         <div className="flex-1 flex flex-col overflow-hidden relative">
           {activeSession ? (
             <>
+              {/* Agent 执行状态胶囊 —— 占一行自己的空间，不再浮在消息之上。
+                  （之前 absolute 浮层会盖住首条消息的文字，窄面板尤其明显。）
+                  展开后的详情卡仍是浮层：那是用户主动点开的气泡。 */}
+              {view === 'chat' && <AgentStatusMiniPanel sessionId={activeSession.id} />}
+
               {view === 'trace' ? (
                 <div className="flex-1 min-h-0">
                   <AgentTraceView />
@@ -337,39 +325,16 @@ export default function ChatPanel() {
                 <ChatMessages />
               )}
 
-              {/* Agent status mini panel — floating top-left of the CHAT VIEW,
-                  pinned to the visible chat area (NOT the scrolling message
-                  list), so it stays put while the conversation scrolls. */}
-              {view === 'chat' && <AgentStatusMiniPanel sessionId={activeSession.id} />}
-
               {/* 内嵌决策区 —— 询问选择 / 工具审批 / 重新生成 / 回退全部等框
                   全部在对话面板内完成（不再弹窗），吸底展示在消息区最底部、
-                  模式栏（目标模式按钮）上方。 */}
+                  模式栏上方。 */}
               <InlineDecisionArea />
 
-              {/* Mode bar —— 左对齐单行：目标模式 / 思考等级 / 审批模式 / 轨迹。
+              {/* Mode bar —— 左对齐单行：思考等级 / 审批模式 / 轨迹。
                   对话与轨迹视图都常驻（轨迹视图靠「轨迹」按钮切回对话）。
-                  轨迹按钮原在消息区上方的独立行，现并入本行最右侧。 */}
+                  轨迹按钮原在消息区上方的独立行，现并入本行最右侧。
+                  目标模式开关已迁至「一人公司」视图（左侧活动栏入口）。 */}
               <div className="shrink-0 px-3 py-2 border-t border-nova-border flex items-center justify-start gap-1.5 bg-transparent">
-                {/* Target-mode pill: agent runs autonomously until the user
-                    stops it. Oval toggle, green + pulsing while on. */}
-                <button
-                  onClick={() => setTargetMode(activeSession.id, !targetMode)}
-                  className={`px-3 py-1 text-xs rounded-full border transition-all select-none whitespace-nowrap ${
-                    targetMode
-                      ? 'text-green-500 border-green-500/40 bg-green-500/10'
-                      : 'text-nova-text-muted border-nova-border hover:text-nova-text-primary hover:border-nova-accent/50'
-                  }`}
-                  title={t('chat.targetModeHint')}
-                >
-                  {targetMode ? t('chat.targetModeOn') : t('chat.targetModeOff')}
-                  {targetMode && statusBadge(targetModeStatus) && (
-                    <span className="ml-1 text-green-300 font-medium">{statusBadge(targetModeStatus)}</span>
-                  )}
-                  {targetMode && activeTargetRole && (
-                    <span className="ml-1 text-green-300/80 font-medium">· {activeTargetRole}</span>
-                  )}
-                </button>
                 {/* 思考档位 — 关闭/低/中/高/最高。关闭即不请求思考（reasoning
                     模型仍可能自行输出）；最高档在支持预算的 provider
                     （Anthropic/Gemini）上调满 16384 token。 */}
@@ -388,31 +353,15 @@ export default function ChatPanel() {
                   <option value="high" title={t('chat.thinkingLevelHighHint')}>{t('chat.thinkingLevelHigh')}</option>
                   <option value="max" title={t('chat.thinkingLevelMaxHint')}>{t('chat.thinkingLevelMax')}</option>
                 </select>
-                <select
+                {/* 编辑方式 —— 四档权限模式（手动确认/自动编辑/计划/完全访问）。
+                    弹出菜单展示图标 + 一句话说明；Shift+Tab 可循环切换。
+                    目标模式开启时其自身流程取代 auto_edit/plan，只保留两档。 */}
+                <ModeMenu
                   value={projectEditMode}
-                  onChange={(e) => setProjectEditMode(activeSession.id, e.target.value as 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access')}
-                  className={`text-xs rounded-md px-2 py-1 border outline-none cursor-pointer transition-colors ${
-                    projectEditMode === 'full_access'
-                      ? 'border-orange-500/50 bg-orange-500/10 text-orange-400'
-                      : 'border-nova-border bg-nova-input-bg text-nova-text-primary hover:border-nova-accent focus:border-nova-accent'
-                  }`}
-                  title={t('chat.projectEditModeLabel')}
-                  style={{ backgroundImage: 'none' }}
-                >
-                  <option value="confirm_before_change" title={t('chat.projectEditModeConfirmHint')}>{t('chat.projectEditModeConfirm')}</option>
-                  <option value="full_access" title={t('chat.projectEditModeFullHint')} className="text-orange-400">{t('chat.projectEditModeFull')}</option>
-                  {/* While target mode is on, its own workflow supersedes
-                      auto_edit / plan — only manual-confirm and full-access
-                      remain selectable. */}
-                  {!targetMode && (
-                    <>
-                      <option value="auto_edit" title={t('chat.projectEditModeAutoHint')}>{t('chat.projectEditModeAuto')}</option>
-                      <option value="plan" title={t('chat.projectEditModePlanHint')}>{t('chat.projectEditModePlan')}</option>
-                    </>
-                  )}
-                </select>
-                {/* 轨迹视图切换 —— 与目标模式同一行，靠最右侧；点击在对话与
-                    agent 执行日志之间切换。 */}
+                  targetMode={targetMode}
+                  onChange={handleEditModeChange}
+                />
+                {/* 轨迹视图切换 —— 本行最右侧；点击在对话与 agent 执行日志之间切换。 */}
                 <button
                   onClick={() => setView(view === 'trace' ? 'chat' : 'trace')}
                   className={`ml-auto px-3 py-1 text-xs rounded-full transition-all ${view === 'trace' ? 'bg-nova-accent/10 text-nova-accent font-medium' : 'text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover'}`}
@@ -445,12 +394,9 @@ export default function ChatPanel() {
                 <div className="text-xs text-nova-text-muted mb-6 max-w-xs mx-auto leading-relaxed">
                   {t('chat.emptyDesc')}
                 </div>
-                <button
-                  onClick={handleNewSession}
-                  className="px-5 py-2 text-white rounded-lg text-sm hover:opacity-90 transition-opacity shadow-sm bg-nova-accent"
-                >
+                <Button onClick={handleNewSession} className="px-5 shadow-sm">
                   {t('chat.startNewChat')}
-                </button>
+                </Button>
                 {!activeConfigGroupId && (
                   <button
                     onClick={openSettings}

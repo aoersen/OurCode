@@ -9,7 +9,8 @@ import { DeepSeekAdapter } from './adapters/DeepSeekAdapter'
 import { GroqAdapter } from './adapters/GroqAdapter'
 import { buildCacheKey, fetchCachedResponse, shouldCache, storeCachedResponse, CachedResponse } from './responseCache'
 import { classifyLLMError } from './classify'
-import { redactError } from './redact'
+import { redactError, redactSecrets, type RedactSecretsOptions } from './redact'
+import { v4 as uuidv4 } from 'uuid'
 
 const REQUEST_TIMEOUT_MS = 600_000 // 10 min idle (no-data) timeout for LLM streams
 
@@ -84,6 +85,54 @@ export function configureLLMCache(config: LLMCacheConfig): void {
   if (config.anthropicPromptCache1hEnabled) anthropicPromptCache1hEnabled = config.anthropicPromptCache1hEnabled
 }
 
+// ── Wire-log configuration (wired from chatStore, defaults ON) ───────────
+// The wire log records one JSON line per request event — the redacted request
+// body, each attempt's outcome and cache hits — appended to
+// <userData>/wire-logs/<sessionId>.jsonl by the main process. It is the
+// replayable record the usage dashboard cannot provide (usage_events keeps
+// only aggregate metadata). Emission is best-effort and never affects the
+// request path.
+
+/** Session/turn attribution for the wire log (set by the agent loop). */
+export interface WireLogContext {
+  sessionId?: string
+  turnId?: number
+}
+
+interface WireLogConfig {
+  /** Master switch — lazily evaluated per request (default: enabled). */
+  enabled?: () => boolean
+  /** Attribution — chatStore sets its run context before each request. */
+  getContext?: () => WireLogContext
+}
+
+let wireLogEnabled: () => boolean = () => true
+let wireLogContext: () => WireLogContext = () => ({})
+
+/** Wire the master switch + session/turn attribution. */
+export function configureWireLog(config: WireLogConfig): void {
+  if (config.enabled) wireLogEnabled = config.enabled
+  if (config.getContext) wireLogContext = config.getContext
+}
+
+/** Emit one redacted wire-log line. Never throws, never blocks the request. */
+async function emitWireLine(sessionId: string, line: Record<string, unknown>): Promise<void> {
+  try {
+    const api = (window as any).electronAPI
+    if (!api?.wireLogAppend) return
+    await api.wireLogAppend(sessionId, JSON.stringify(line))
+  } catch { /* wire logging is best-effort */ }
+}
+
+/** Serialize + redact a value so logged bodies never leak request secrets. */
+function scrubToJson(value: unknown, secrets: RedactSecretsOptions): unknown | undefined {
+  try {
+    return JSON.parse(redactSecrets(JSON.stringify(value), secrets))
+  } catch {
+    return undefined
+  }
+}
+
 /** Replay a cached response as stream chunks, zeroing usage (no tokens billed). */
 function* replayCached(cached: CachedResponse): Generator<LLMStreamChunk> {
   const marker = { savedTokensIn: cached.tokensIn, savedTokensOut: cached.tokensOut }
@@ -101,11 +150,24 @@ function* replayCached(cached: CachedResponse): Generator<LLMStreamChunk> {
 export async function* sendLLMRequest(
   req: LLMRequest,
   config: ApiConfigGroup,
-  timeoutMs: number = REQUEST_TIMEOUT_MS
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+  outerSignal?: AbortSignal,
 ): AsyncGenerator<LLMStreamChunk> {
   const adapter = getAdapter(config.provider, config.apiFormat)
   // Trim stray whitespace/newlines so a pasted key can't silently break auth.
   const safeConfig = { ...config, apiKey: (config.apiKey || '').trim() }
+
+  // Wire-log setup — one trace per request; all emission is best-effort.
+  const wireOn = wireLogEnabled()
+  const wctx = wireOn ? wireLogContext() : undefined
+  const wireSession = wctx?.sessionId || ''
+  const traceId = wireOn && wireSession ? uuidv4() : ''
+  const wireSecrets: RedactSecretsOptions = {
+    apiKey: safeConfig.apiKey,
+    baseUrl: safeConfig.baseUrl,
+    customHeaders: safeConfig.customHeaders,
+  }
+  const startedAt = Date.now()
 
   // Client-side response cache: exact-duplicate deterministic requests are
   // replayed locally instead of hitting the API (saves the user's tokens).
@@ -114,6 +176,21 @@ export async function* sendLLMRequest(
     cacheKey = await buildCacheKey(req, config.provider)
     const hit = await fetchCachedResponse(cacheKey)
     if (hit) {
+      if (traceId) {
+        void emitWireLine(wireSession, {
+          type: 'cache_hit',
+          traceId,
+          turnId: wctx?.turnId,
+          startedAt,
+          durationMs: Date.now() - startedAt,
+          provider: config.provider,
+          model: req.model,
+          request: scrubToJson(req, wireSecrets),
+          chunks: scrubToJson(hit.chunks, wireSecrets),
+          savedTokensIn: hit.tokensIn,
+          savedTokensOut: hit.tokensOut,
+        })
+      }
       yield* replayCached(hit)
       return
     }
@@ -138,12 +215,38 @@ export async function* sendLLMRequest(
   let tokensIn = 0
   let tokensOut = 0
 
+  if (traceId) {
+    void emitWireLine(wireSession, {
+      type: 'request',
+      traceId,
+      turnId: wctx?.turnId,
+      startedAt,
+      provider: config.provider,
+      model: req.model,
+      request: scrubToJson(reqWithCache, wireSecrets),
+    })
+  }
+
   const maxRetries = retryEnabled() ? Math.max(0, retryMaxRetries()) : 0
 
   for (let attempt = 0; ; attempt++) {
+    // User-initiated stop (outer signal) — settle immediately instead of
+    // opening a retry loop that would just get aborted again.
+    if (outerSignal?.aborted) {
+      throw outerSignal.reason ?? new DOMException('已取消', 'AbortError')
+    }
+    const attemptStart = Date.now()
     // A FRESH controller per attempt — the finally below aborts unconditionally,
     // and an aborted signal can't be reused for the retry.
     const controller = new AbortController()
+    // Compose the enclosing run's stop signal: the user's Stop button cancels
+    // the in-flight HTTP request immediately instead of waiting for the next
+    // chunk (or the idle timeout when the provider stalls mid-stream).
+    const onOuterAbort = (): void => controller.abort(outerSignal?.reason)
+    if (outerSignal) {
+      if (outerSignal.aborted) onOuterAbort()
+      else outerSignal.addEventListener('abort', onOuterAbort)
+    }
     // IDLE timeout, not a wall-clock deadline: long reasoning streams (DeepSeek
     // reasoner etc.) legitimately run past 120s as long as chunks keep arriving.
     // The timer is re-armed on every chunk, so only a connection that goes
@@ -170,14 +273,33 @@ export async function* sendLLMRequest(
           break
         }
       }
+      if (traceId) {
+        void emitWireLine(wireSession, {
+          type: 'attempt',
+          traceId,
+          attempt,
+          startedAt: attemptStart,
+          durationMs: Date.now() - attemptStart,
+          ok: true,
+          truncated: !completed,
+          tokensIn,
+          tokensOut,
+          chunks: scrubToJson(chunks, wireSecrets),
+        })
+      }
       break // request finished (naturally or via the done chunk)
     } catch (error: any) {
       // API key and custom header values must never surface in an error the
       // chat/model can see — some providers echo the key back in the error
       // body, and URL-keyed ones (Gemini) put it in the URL. Redact here, the
       // single choke point where the request's own secrets are in scope.
+      // User-initiated stop keeps its AbortError identity so the caller's
+      // abort branch (e.g. "[生成已停止]") runs instead of a timeout card.
+      const abortedExternally = !!outerSignal?.aborted
       const err = (error.name === 'AbortError' || controller.signal.aborted)
-        ? new Error('请求超时，请稍后重试')
+        ? abortedExternally
+          ? (outerSignal?.reason ?? error)
+          : new Error('请求超时，请稍后重试')
         : redactError(error, {
             apiKey: safeConfig.apiKey,
             baseUrl: safeConfig.baseUrl,
@@ -186,9 +308,22 @@ export async function* sendLLMRequest(
       // Auto-retry transient failures ONLY before the stream produced anything
       // (chunks.length === 0). Once output has started, retrying would replay
       // partial content — surface the error instead. Context-overflow is never
-      // retried: the fix is compaction, not a duplicate request.
+      // retried: the fix is compaction, not a duplicate request. A user stop is
+      // never retried either — the outer signal stays aborted.
       const info = classifyLLMError(err)
-      if (chunks.length === 0 && attempt < maxRetries && info.retryable) {
+      if (traceId) {
+        void emitWireLine(wireSession, {
+          type: 'attempt',
+          traceId,
+          attempt,
+          startedAt: attemptStart,
+          durationMs: Date.now() - attemptStart,
+          ok: false,
+          error: err.message,
+          retried: chunks.length === 0 && attempt < maxRetries && info.retryable && !abortedExternally,
+        })
+      }
+      if (chunks.length === 0 && attempt < maxRetries && info.retryable && !abortedExternally) {
         clearTimer()
         await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)))
         continue
@@ -196,6 +331,7 @@ export async function* sendLLMRequest(
       throw err
     } finally {
       clearTimer()
+      outerSignal?.removeEventListener('abort', onOuterAbort)
       // Abort the underlying HTTP request unconditionally. A consumer that
       // stops early (stop generation / abort) breaks out of the for-await —
       // without this the main-process fetch keeps downloading the rest of the

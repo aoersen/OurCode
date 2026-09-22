@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
 import FileTreeNode from './FileTreeNode'
 import { FileEntry } from '@/types'
 import { useEditorStore } from '@/stores/editorStore'
+import { useUIStore } from '@/stores/uiStore'
 import LoadingSpinner from '../Common/LoadingSpinner'
 import { useI18n } from '@/i18n/useI18n'
 
@@ -10,6 +11,10 @@ interface FileTreeProps {
   /** Bumped by the parent (tree-view header's refresh button) to force a full
    *  tree reload — re-reads the root and every expanded directory. */
   refreshSignal?: number
+  /** Called after a non-directory entry is opened in the editor (e.g. the
+   *  office view's in-panel tree uses it to also switch to the workspace so the
+   *  opened file is actually visible). */
+  onOpenFile?: (path: string) => void
 }
 
 /** Per-project expanded-directory persistence: the tree's fold/unfold state
@@ -65,7 +70,7 @@ function saveExpandedDirs(rootPath: string, dirs: Set<string>): void {
   } catch { /* ignore */ }
 }
 
-function FileTree({ rootPath, refreshSignal }: FileTreeProps) {
+function FileTree({ rootPath, refreshSignal, onOpenFile }: FileTreeProps) {
   const [files, setFiles] = useState<FileEntry[]>([])
   // The root itself is always expanded; the rest of the fold state is restored
   // from this project's last visit.
@@ -81,6 +86,12 @@ function FileTree({ rootPath, refreshSignal }: FileTreeProps) {
   // editorStore would re-render the entire tree on every cursor move/keystroke.
   const openFile = useEditorStore((s) => s.openFile)
   const activeFilePath = useEditorStore((s) => s.activeFilePath)
+  // Main refuses to register an untrusted folder, so the tree would read as an
+  // empty project. Surface the real reason and the one action that fixes it.
+  const untrusted = useUIStore((s) => (s.untrustedProjectPath === rootPath ? rootPath : null))
+  const requestProjectTrust = useUIStore((s) => s.requestProjectTrust)
+  // Bumped after trust is granted to re-run the load/watch effect.
+  const [trustGeneration, setTrustGeneration] = useState(0)
   const { showHiddenFiles } = useEditorStore((s) => s.preferences)
   const t = useI18n()
 
@@ -240,7 +251,12 @@ function FileTree({ rootPath, refreshSignal }: FileTreeProps) {
     // Start the watcher in the BACKGROUND — its initial recursive scan
     // (chokidar depth 10) and MCP-config load can take a while on big
     // projects, and the file tree must not wait for it to show files.
-    window.electronAPI.watch?.(rootPath)?.catch?.(() => { /* watcher failed — the tree still loads */ })
+    void Promise.resolve(window.electronAPI.watch?.(rootPath))
+      .then((res) => {
+        if (!res || cancelled) return
+        useUIStore.setState({ untrustedProjectPath: res.ok === false ? rootPath : null })
+      })
+      .catch(() => { /* watcher failed — the tree still loads */ })
     const unsubscribe = window.electronAPI.onFileChanged?.(handleFileChanged)
 
     return () => {
@@ -249,7 +265,7 @@ function FileTree({ rootPath, refreshSignal }: FileTreeProps) {
       window.electronAPI.unwatch?.(rootPath)
       unsubscribe?.()
     }
-  }, [rootPath, refreshTree, fetchGitStatus, handleFileChanged])
+  }, [rootPath, refreshTree, fetchGitStatus, handleFileChanged, trustGeneration])
 
   // Git status badges refresh on a timer; the initial fetch happens once the
   // tree is loaded (see the watch effect above).
@@ -282,8 +298,9 @@ function FileTree({ rootPath, refreshSignal }: FileTreeProps) {
       toggleDir(path)
     } else {
       openFile(path)
+      onOpenFile?.(path)
     }
-  }, [toggleDir, openFile])
+  }, [toggleDir, openFile, onOpenFile])
 
   const filteredFiles = useMemo(() => searchQuery
     ? filterFiles(files, searchQuery)
@@ -332,6 +349,20 @@ function FileTree({ rootPath, refreshSignal }: FileTreeProps) {
           />
         </div>
       </div>
+
+      {untrusted && (
+        <div className="mx-2 mb-1 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+          <span className="flex-1 leading-snug">{t('sidebar.untrustedWorkspace')}</span>
+          <button
+            onClick={async () => {
+              if (await requestProjectTrust(rootPath)) setTrustGeneration((v) => v + 1)
+            }}
+            className="shrink-0 rounded border border-amber-500/40 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-amber-500/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-60"
+          >
+            {t('project.trustWorkspace')}
+          </button>
+        </div>
+      )}
 
       {/* File Tree */}
       <div

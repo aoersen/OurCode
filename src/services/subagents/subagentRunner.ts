@@ -17,12 +17,12 @@
 import { v4 as uuidv4 } from 'uuid'
 import { sendLLMRequest } from '@/services/llm/LLMClient'
 import { ToolExecutor } from '@/services/tools'
-import type { ToolCall } from '@/services/tools/types'
+import type { ToolCall, ToolResult } from '@/services/tools/types'
 import { captureCheckpoint } from '@/services/checkpointService'
 import { buildSkillIndex, listSkills } from '@/services/skills/skillManager'
 import { loadAgentDefinition, SubagentGuard, resolveAllowedRoot } from '@/services/subagents/subagentDefinitions'
-import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel } from '@/services/subagents/subagentReport'
-import { useChatStore } from '@/stores/chatStore'
+import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel, sanitizeModelName } from '@/services/subagents/subagentReport'
+import { useChatStore, setWireContextForRun, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { getFileContent } from '@/editor/modelRegistry'
@@ -97,11 +97,15 @@ async function buildSubSystemPrompt(opts: SubAgentOptions, defSystemPrompt: stri
   // Skills are available to subagents too
   prompt += await buildSkillIndex(rootPath)
 
+  // 与主会话一致：MCP / 技能安装必须走本 IDE 的配置机制，防止子 Agent
+  // 把配置写进 Claude Code 等外部工具。
+  prompt += MCP_AND_SKILLS_GUIDELINES
+
   prompt += `\n\n<subagent_rules>
 - 自主完成任务：使用工具（读取/搜索/编辑文件、执行命令）推进，不要向用户请求确认。
 - 不要调用 submit_plan、ask_user_question、manage_todo、run_subagent 等控制类工具。
 - 修改文件时用 edit_file 尽量精确，不要破坏无关代码。
-- 任务完成后，以简洁的结构化摘要报告：完成了什么、修改了哪些文件、遗留问题。
+- 任务完成后，以简洁的结构化摘要报告：完成了什么、修改了哪些文件、遗留问题。报告不超过 8 行，只写结论与关键事实，不要复述过程。
 </subagent_rules>`
   return prompt
 }
@@ -127,8 +131,27 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
   const session = useChatStore.getState().sessions.find((s) => s.id === opts.sessionId)
   const configGroup = useConfigStore.getState().configGroups.find((g) => g.id === session?.configGroupId)
   // Model override (v2 §13.2): the target-mode envelope may pin a per-role
-  // model; otherwise resolve from the session exactly as before.
-  const model = resolveSubagentModel(opts.model, session?.model, configGroup?.defaultModel)
+  // model; otherwise resolve from the session exactly as before. 最后一道保险：
+  // 传入该配置组已知的可用模型列表——信封里写错的模型名会被跳过，回退到会话
+  // /默认模型，而不是直接发给 API 拿 400 "Unsupported model"。
+  const configState = useConfigStore.getState()
+  // knownModels 只取「会话所属配置组」自己的域：该组的模型列表缓存
+  // + （活动组恰好就是该组时的）已拉取列表 + 同 provider 的自定义模型
+  // + 会话/默认模型本身（用户配置即已知可用）。
+  // 不能用全局 configState.models —— 那是「当前活动配置组」的列表，
+  // 一人公司等独立窗口里常为空或属于另一组；把其他组/其他 provider 的名字
+  // 混进来只会让校验形同虚设（看似合法、实际 400 "Unsupported model"）。
+  const knownModels = Array.from(new Set([
+    ...(configState.modelsCache[configGroup?.id || '']?.models || []),
+    ...(configState.activeConfigGroupId === configGroup?.id ? configState.models.map((m) => m.id) : []),
+    ...configState.customModels.filter((m) => !configGroup || m.provider === configGroup.provider).map((m) => m.id),
+    ...[session?.model, configGroup?.defaultModel].filter((m): m is string => !!m),
+  ])).map((m) => m.trim()).filter(Boolean)
+  const model = resolveSubagentModel(opts.model, session?.model, configGroup?.defaultModel, knownModels.length > 0 ? knownModels : undefined)
+  // 透明度：信封指定的模型名清洗后存在、但没被采用（不在该组已知列表/无法验证），
+  // 在报告里写明实际用了哪个模型，方便排查「角色怎么没用我指定的模型」。
+  const requestedModel = sanitizeModelName(opts.model)
+  const ignoredEnvelopeModel = requestedModel && requestedModel !== model ? requestedModel : undefined
 
   const executor = new ToolExecutor()
   await executor.refreshMcpTools()
@@ -136,6 +159,47 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
   // so its tool list matches the project-scoped skill index below.
   await executor.refreshSkillTools(opts.projectPath)
   executor.setSessionContext(opts.sessionId, opts.projectPath)
+
+  /** Execute one subagent tool with the parent run's abort signal. On abort the
+   *  call settles at once with a synthetic stopped result (the in-flight tool
+   *  may keep running in the background, but its result is discarded). */
+  const executeToolWithAbort = (tc: ToolCall): Promise<{ result: ToolResult; aborted: boolean }> => {
+    const ctx = {
+      sessionId: opts.sessionId,
+      projectPath: opts.projectPath,
+      toolCallId: tc.id,
+      abortSignal: opts.abortSignal,
+      // Subagents inherit the parent session's edit mode for read-permission
+      // dialogs (advisory — only native dialogs can grant).
+      projectEditMode: session?.projectEditMode,
+    }
+    const signal = opts.abortSignal
+    if (!signal) return executor.execute(tc, ctx).then((result) => ({ result, aborted: false }))
+    if (signal.aborted) {
+      return Promise.resolve({ result: { toolCallId: tc.id, name: tc.name, result: '[子智能体已停止]', isError: true }, aborted: true })
+    }
+    return new Promise((resolve) => {
+      const cleanup = () => signal.removeEventListener('abort', onAbort)
+      const onAbort = () => {
+        cleanup()
+        resolve({ result: { toolCallId: tc.id, name: tc.name, result: '[子智能体已停止]', isError: true }, aborted: true })
+      }
+      signal.addEventListener('abort', onAbort)
+      executor.execute(tc, ctx).then(
+        (result) => {
+          cleanup()
+          resolve({ result, aborted: false })
+        },
+        (error) => {
+          cleanup()
+          resolve({
+            result: { toolCallId: tc.id, name: tc.name, result: `Error: ${error?.message || String(error)}`, isError: true },
+            aborted: false,
+          })
+        },
+      )
+    })
+  }
 
   const recordEvent = (event: Partial<UsageEvent>, tokens = 0) => {
     const full: UsageEvent = {
@@ -165,6 +229,17 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
   // No config group / model → cannot run
   if (!configGroup || !model) {
     recordEvent({ ok: false, error: '未配置模型，无法运行子智能体', durationMs: Date.now() - startedAt })
+    // 也要留下一条 FAILED 进度记录：此前这里直接 return，任务在项目栏 / 看板的
+    // 「活动任务」里完全不可见——派发发生后 UI 像「没刷新」一样毫无变化。
+    pushProgress({
+      status: 'error',
+      sessionId: opts.sessionId,
+      name: opts.name,
+      task: opts.task,
+      description: opts.description,
+      startedAt,
+      error: '未配置模型：会话未绑定有效的 API 配置或模型',
+    })
     return `Error: 无法运行子智能体「${opts.name}」— 会话未绑定有效的 API 配置或模型。`
   }
 
@@ -237,7 +312,13 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
       let lastThinkingPush = 0
 
       try {
-        for await (const chunk of sendLLMRequest(req, configGroup)) {
+        // Attribute the subagent's model requests to the parent session so
+        // they land in the same wire-log file as the main loop's.
+        setWireContextForRun({ sessionId: opts.sessionId })
+        // The user's Stop button aborts the request itself (outer signal), not
+        // just the chunk loop — a stalled provider can't hold the subagent run
+        // hostage until the idle timeout.
+        for await (const chunk of sendLLMRequest(req, configGroup, undefined, opts.abortSignal)) {
           if (opts.abortSignal?.aborted) break
           if (chunk.thinking) {
             roundThinking += chunk.thinking
@@ -258,6 +339,9 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           if (chunk.done) break
         }
       } catch (error: any) {
+        // User hit Stop — the parent run's signal fired; don't record it as a
+        // failure, just unwind (the final status below reads the signal).
+        if (opts.abortSignal?.aborted) break
         lastError = error.message
         break
       }
@@ -312,7 +396,13 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           steps: [...currentSteps(), { id: tc.id, name: tc.name, arguments: compactArgs(tc.arguments), status: 'running' }],
         })
 
-        const result = await executor.execute(tc)
+        // Execute with the parent run's abort signal threaded through the
+        // pipeline, and settle IMMEDIATELY when the user hits Stop — even a
+        // long run_command (build/test) that ignores the signal can't keep the
+        // run (and the whole office task) looking stuck for its full timeout.
+        const execution = await executeToolWithAbort(tc)
+        if (execution.aborted) break
+        const result = execution.result
         toolCallCount++
         pushProgress({ toolCallCount })
         if (result.isError) lastError = result.result
@@ -386,6 +476,7 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
       `## 子智能体「${opts.name}」执行报告`,
       opts.description ? `**任务背景**: ${opts.description}` : '',
       `**工具调用**: ${toolCallCount} 次 · **修改文件**: ${changedPaths.size} 个${tokensUsed ? ` · **消耗 token**: ${tokensUsed}` : ''}`,
+      ignoredEnvelopeModel ? `**模型说明**: 信封指定的 \`${ignoredEnvelopeModel}\` 未通过该配置组的可用模型校验，本次实际使用 \`${model}\`` : '',
       changedPaths.size > 0 ? `**涉及文件**:\n${Array.from(changedPaths).map((p) => `- ${p}`).join('\n')}` : '',
       '',
       `**结果**:`,
@@ -404,6 +495,7 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
       return [
         statusLineText,
         `**摘要**: 子智能体「${opts.name}」任务${statusLabel === '完成' ? '完成' : `未完全完成（${statusLabel}）`}，工具调用 ${toolCallCount} 次，修改 ${changedPaths.size} 个文件${tokensUsed ? `，消耗 ${tokensUsed} tokens` : ''}。`,
+        ignoredEnvelopeModel ? `**模型**: 信封指定的 \`${ignoredEnvelopeModel}\` 未通过该配置组的可用模型校验，已改用 \`${model}\`；后续派发请省略 model 字段（默认用会话模型）。` : '',
         `**报告全文**: ${resolved}`,
       ].filter((l) => l !== '').join('\n')
     }

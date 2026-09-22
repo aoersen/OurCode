@@ -11,19 +11,74 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0b1220;
+  background: #f6f7fb;
   user-select: none;
   -webkit-font-smoothing: antialiased;
+
+  /* 「一人公司」整体走极简纯净白：在办公室子树内强制覆盖浅色 token，
+     使内部 nova-* 类（含右下对话区）不受应用深色主题影响。 */
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --sidebar: #ffffff;
+  --card: rgba(255, 255, 255, 0.75);
+  --editor-bg: #ffffff;
+  --border: rgba(15, 23, 42, 0.08);
+  --border-strong: rgba(15, 23, 42, 0.16);
+  --hover: rgba(15, 23, 42, 0.06);
+  --input-bg: rgba(255, 255, 255, 0.6);
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-placeholder: #94a3b8;
+  --text-disabled: #cbd5e1;
+  --accent: #0058bc;
+  --accent-purple: #7c3aed;
+  --primary-color: #0058bc;
+  --primary-color-10: rgba(0, 88, 188, 0.1);
+  --primary-color-20: rgba(0, 88, 188, 0.2);
+  --primary-color-30: rgba(0, 88, 188, 0.3);
+  --ai-bg: #ffffff;
+  --ai-surface: rgba(255, 255, 255, 0.6);
+  --ai-border: rgba(15, 23, 42, 0.1);
+  --ai-accent: #0058bc;
+  --bg-activity: rgba(255, 255, 255, 0.5);
+  --bg-tabs: rgba(255, 255, 255, 0.6);
+  --bg-tab-active: #ffffff;
+  --bg-statusbar: rgba(255, 255, 255, 0.55);
+  --bg-selected: rgba(0, 88, 188, 0.12);
+  --text-active: #0f172a;
+  --selection: #0058bc;
+  --link: #0058bc;
+  --green: #16a34a;
+  --red: #dc2626;
+  --yellow: #d97706;
+  --info: #0058bc;
+  --warning: #d97706;
+  --success: #16a34a;
+  --error: #dc2626;
+  --error-container: #fee2e2;
+  --primary-container: #e8f0ff;
+  --bubble-user: #f1f5f9;
+  --bubble-user-hover: #e2e8f0;
+  --hl-bg: rgba(15, 23, 42, 0.06);
+  --hl-bg-hover: rgba(15, 23, 42, 0.1);
+  --hl-text: #334155;
 }
 
 #office3d-root .office3d-stage {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* letterbox：画布按固定投影宽高比居中放置（取景冻结，拖动只整体缩放） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 #office3d-root .office3d-stage canvas {
   display: block;
+  /* CSS 尺寸由 OfficeScene.applyRenderSize 的 renderer.setSize(..., true) 控制
+     （letterbox 适配容器），不做 100% 拉伸——否则画布会被扭曲或重新构图。 */
 }
 
 /* 悬浮标签（世界坐标投影） */
@@ -42,27 +97,27 @@
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  background: rgba(15, 23, 42, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.1);
   backdrop-filter: blur(8px);
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
-  color: #e2e8f0;
+  color: #334155;
   pointer-events: auto;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
   white-space: nowrap;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 #office3d-root .office3d-tag:hover {
-  border-color: #38bdf8;
+  border-color: #0058bc;
 }
 
 #office3d-root .office3d-tag.selected {
-  border-color: #38bdf8;
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.4), 0 4px 16px rgba(0, 0, 0, 0.6);
+  border-color: #0058bc;
+  box-shadow: 0 0 0 2px rgba(0, 88, 188, 0.2), 0 2px 8px rgba(15, 23, 42, 0.1);
 }
 
 #office3d-root .office3d-tag-dot {

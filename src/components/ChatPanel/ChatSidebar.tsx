@@ -17,6 +17,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
   const pendingQuestion = useChatStore((s) => s.pendingQuestion)
   const pendingApproval = useChatStore((s) => s.pendingApproval)
   const batchApproval = useChatStore((s) => s.batchApproval)
+  const decisionBacklog = useChatStore((s) => s.decisionBacklog)
   const setActiveSession = useChatStore((s) => s.setActiveSession)
   const importSession = useChatStore((s) => s.importSession)
   const { openSessionMenu } = useSessionMenu()
@@ -33,15 +34,17 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
 
   // Sessions waiting on the user (question / tool approval / batch approval /
   // plan approval) — bubble icon next to the title (same signal as the left
-  // project list).
+  // project list). The backlog matters as much as the slots: a parked prompt is
+  // exactly the case where the badge is the only way to find it.
   const attentionSessionIds = useMemo(() => {
     const ids = new Set<string>()
     if (pendingQuestion?.sessionId) ids.add(pendingQuestion.sessionId)
     if (pendingApproval?.sessionId) ids.add(pendingApproval.sessionId)
     if (batchApproval?.sessionId) ids.add(batchApproval.sessionId)
+    for (const parked of decisionBacklog) ids.add(parked.sessionId)
     for (const s of sessions) if (s.planStatus === 'pending_approval') ids.add(s.id)
     return ids
-  }, [pendingQuestion, pendingApproval, batchApproval, sessions])
+  }, [pendingQuestion, pendingApproval, batchApproval, decisionBacklog, sessions])
 
   // Filter sessions based on search query, archive status, and pin sorting
   const filteredSessions = useMemo(() => {
@@ -142,7 +145,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
       <div className="flex items-center justify-between px-3 py-2 border-b border-nova-border">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-xs font-semibold text-nova-text-secondary">{t('chat.sessionList')}</span>
-          <span className="text-[9px] px-1.5 py-px rounded-full bg-nova-accent/12 text-nova-accent font-medium shrink-0">
+          <span className="text-[11px] px-1.5 py-px rounded-full bg-nova-accent/12 text-nova-accent font-medium shrink-0">
             {visibleSessions.length}
           </span>
         </div>
@@ -229,7 +232,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
                           spinning (running) > red dot (error) */}
                       {attentionSessionIds.has(session.id) ? (
                         <span
-                          className="shrink-0 inline-flex items-center gap-1 px-1.5 py-px rounded-full text-[9px] font-medium"
+                          className="shrink-0 inline-flex items-center gap-1 px-1.5 py-px rounded-full text-[11px] font-medium"
                           style={{ background: 'color-mix(in srgb, var(--accent, #0058bc) 14%, transparent)', color: 'var(--accent)' }}
                         >
                           <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

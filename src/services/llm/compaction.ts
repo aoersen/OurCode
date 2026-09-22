@@ -60,6 +60,12 @@ export interface CompactMessage {
    *  extract the read/modified file lists appended to the summary. */
   toolCalls?: LLMToolCall[]
   toolCallId?: string
+  /** Assembled onto the request but never stored in the session (the per-turn
+   *  dynamic-context message, tool-result screenshots). It is summarized like
+   *  anything else, but `summaryMessageCount` counts SESSION messages, so it
+   *  must not be included there — over-counting makes every later turn slice
+   *  away real history that the UI and SQLite still show. */
+  synthetic?: boolean
 }
 
 export interface CompactOptions {
@@ -350,8 +356,9 @@ export async function maybeCompact(opts: CompactOptions): Promise<CompactResult 
     messages: [opts.messages[0], { role: 'system', content: buildSummaryBlock(finalSummary) }, ...opts.messages.slice(boundary)],
     summary: finalSummary,
     // Total session messages now covered by the summary = the previously
-    // summarized count plus the session messages summarized this round
-    // (the previous summary block itself is excluded from `history`).
-    boundaryCount: (opts.session.summaryMessageCount ?? 0) + history.length,
+    // summarized count plus the session messages summarized this round (the
+    // previous summary block and the request-only messages are excluded).
+    boundaryCount:
+      (opts.session.summaryMessageCount ?? 0) + history.filter((m) => !m.synthetic).length,
   }
 }

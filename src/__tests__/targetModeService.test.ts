@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { parseStatus, statusBadge, ensureInitialized } from '@/services/targetMode/targetModeService'
+import { parseStatus, ensureInitialized } from '@/services/targetMode/targetModeService'
 import { TARGET_MODE_STATUS_INIT } from '@/services/targetMode/spec'
 
 describe('targetModeService.parseStatus', () => {
@@ -38,19 +38,18 @@ describe('targetModeService.parseStatus', () => {
     expect(s.round).toBe(3)
     expect(s.percent).toBe(50)
   })
-})
 
-describe('targetModeService.statusBadge', () => {
-  it('formats round + percent', () => {
-    expect(statusBadge({ round: 2, percent: 62.5, progressText: '' })).toBe('R2 · 63%')
+  it('parses stage from 实施进度 (V12 human badge)', () => {
+    const s = parseStatus('当前轮次：2\n总体百分比：62.5%\n实施进度：阶段 3/5')
+    expect(s.stageCurrent).toBe(3)
+    expect(s.stageTotal).toBe(5)
+    expect(s.progressText).toContain('阶段 3/5')
   })
 
-  it('formats round only when percent is missing', () => {
-    expect(statusBadge({ round: 0, percent: null, progressText: '' })).toBe('R0')
-  })
-
-  it('handles null status', () => {
-    expect(statusBadge(null)).toBe('')
+  it('leaves stage null when absent', () => {
+    const s = parseStatus('当前轮次：2\n总体百分比：62.5%')
+    expect(s.stageCurrent).toBeNull()
+    expect(s.stageTotal).toBeNull()
   })
 })
 

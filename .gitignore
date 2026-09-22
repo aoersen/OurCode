@@ -39,6 +39,9 @@ Thumbs.db
 electron/__tests__/fixtures/mcp-config-*/
 electron/__tests__/fixtures/mcp-http-config-*/
 
+# Local MCP runtime config (may contain real API keys; the tracked template is mcp_config.example.json)
+mcp_config.json
+
 # Downloaded release artifacts (build cache)
 .downloads/
 

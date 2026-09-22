@@ -1,28 +1,63 @@
-/* Import fonts — Plus Jakarta Sans (UI) + JetBrains Mono (code) */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* 本地打包字体 —— 局域网/离线部署取不到 Google Fonts，UI 与等宽字体必须随产物分发。
+   可变字重 + 仅 latin / latin-ext 子集（中文按 font-family 顺序落到系统字体）。
+   图标不再依赖连字字体，见 src/components/Common/icons/MSIcon.tsx。 */
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* Material Symbols Outlined — 工具调用等处的图标字体（Stitch 全工具版设计）。
-   类名与 Google 字体 CSS 一致；本地兜底定义保证在离线/字体加载失败时
-   退化为字面文本而不破坏布局。 */
-.material-symbols-outlined {
-  font-family: 'Material Symbols Outlined';
-  font-weight: normal;
-  font-style: normal;
-  line-height: 1;
-  letter-spacing: normal;
-  text-transform: none;
-  display: inline-block;
-  white-space: nowrap;
-  word-wrap: normal;
-  direction: ltr;
-  -webkit-font-feature-settings: 'liga';
-  -webkit-font-smoothing: antialiased;
-  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-}
 
 /* Root — Light Glassmorphism design tokens (GPT-platform style).
    Default is LIGHT; `.dark` (below) overrides with the dark glass variant. */
@@ -163,6 +198,19 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text-primary);
+}
+
+/* 键盘可达性 —— 全站有 60+ 处 `outline-none` 把浏览器默认焦点环抹掉了，而组件里
+   没有任何 focus-visible 样式，Tab 键走一遍完全看不见焦点在哪。这里统一补一条
+   只在键盘聚焦时出现的 accent 环（鼠标点击不触发 :focus-visible，不会到处画框）。
+
+   但文本类输入（textarea / 文本 input / contenteditable）必须排除：按规范它们
+   即使鼠标点击也会命中 :focus-visible，点上输入框就在输入区上下各画出一条全宽
+   蓝线（聊天输入框「两条横线」问题的根源）；而闪烁的输入光标本身就是焦点指示，
+   且输入框容器一般还有 :focus-within 光圈，无需再叠加轮廓。 */
+:focus-visible:not(textarea, input:not([type]), input[type='text'], input[type='search'], input[type='email'], input[type='number'], input[type='password'], input[type='url'], input[type='tel'], [contenteditable='true']) {
+  outline: 2px solid var(--accent, #0058bc);
+  outline-offset: 2px;
 }
 
 /* Glass canvas — two/three soft "fruity" gradient orbs behind the floating
@@ -351,8 +399,38 @@ textarea[data-ai-input] {
 
 .markdown-body ul,
 .markdown-body ol {
-  margin-left: 20px;
+  /* Tailwind preflight 把 list-style 重置成 none，只留 margin 的话，AI 回答里的
+     列表会退化成"缩进的裸文本"——看不出这是一组条目。 */
+  list-style: disc outside;
+  margin-left: 4px;
+  padding-left: 1.5em;
   margin-bottom: 8px;
+}
+
+.markdown-body ol {
+  list-style: decimal outside;
+}
+
+.markdown-body ul ul {
+  list-style: circle outside;
+}
+
+.markdown-body ol ol {
+  list-style: lower-alpha outside;
+}
+
+.markdown-body li {
+  margin-bottom: 2px;
+  padding-left: 2px;
+}
+
+.markdown-body li::marker {
+  color: var(--text-muted);
+}
+
+/* 任务清单 `- [ ]` 由 marked 渲染成 checkbox，不需要圆点 */
+.markdown-body li:has(> input[type="checkbox"]) {
+  list-style: none;
 }
 
 .markdown-body blockquote {
@@ -646,10 +724,6 @@ textarea[data-ai-input] {
   transition: color 0.15s, background 0.15s;
 }
 
-.copy-btn .material-symbols-outlined {
-  font-size: 14px;
-}
-
 .copy-btn:hover {
   background: rgba(15, 23, 42, 0.06);
   color: var(--text-primary);
@@ -678,6 +752,10 @@ textarea[data-ai-input] {
 .code-block .hljs {
   background: transparent;
   color: #24292f; /* github-light base text */
+  /* highlight.js 主题自带 `padding: 1em` + display:block，叠在 .code-block pre 的
+     14px 上，会让 5 行代码撑出两倍高的空白。内边距只由 pre 负责。 */
+  padding: 0;
+  overflow-x: visible;
 }
 
 :root.dark .code-block .hljs {
@@ -997,21 +1075,9 @@ textarea[data-ai-input] {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-/* ── 聊天区强调色作用域（浅色 → mockup 亮蓝 #3b82f6；深色保留暗色方案）──
-   挂在 ChatPanel 根容器上，只影响聊天面板子树（含头部/输入框）。 */
-:root:not(.dark) .chat-accent {
-  --accent: #3b82f6;
-  --primary-color: #3b82f6;
-  --primary-color-10: rgba(59, 130, 246, 0.1);
-  --primary-color-20: rgba(59, 130, 246, 0.2);
-  --primary-color-30: rgba(59, 130, 246, 0.3);
-  --ai-accent: #3b82f6;
-  --ai-glow: #3b82f6;
-  --link: #3b82f6;
-  --selection: #3b82f6;
-  --bg-selected: rgba(59, 130, 246, 0.12);
-  --primary-container: #eff6ff;
-}
+/* chat-accent scope removed: light mode no longer overrides the user's accent
+   color to a hardcoded blue — the panel inherits --accent from :root as dark
+   mode already does. */
 
 /* ── 聊天输入框容器（mockup「极简纯净版」输入面板）──
    surface 底 + hairline 边框 + 轻阴影；聚焦时边框转 accent（浅色为亮蓝
@@ -1155,6 +1221,11 @@ textarea[data-ai-input] {
   animation: pulseSoft 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* 一人公司看板:运行中角色章/任务环的彩虹 conic 环旋转 */
+@keyframes spinRing {
+  to { transform: rotate(360deg); }
+}
+
 /* User message bubble — 极简纯净版: quiet light-gray bubble (#f1f5f9, matches
    the design's rounded-[20px] rounded-br-[4px]); no electric-blue edge, no
    glass blur. The theme-aware tokens keep it receding behind the AI answer.
@@ -1250,4 +1321,39 @@ textarea[data-ai-input] {
 .chat-msg-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 120px;
+}
+
+/* 一人公司任务指示（左侧项目/任务列表）：运行中 = 彩虹渐变环旋转，
+   完成 = 纯绿实环（静止），失败/停止 = 纯红实环（静止）。
+   .oc-ring-run 需配合 Tailwind animate-spin 使用（1s 旋转）。 */
+.oc-ring-run {
+  background: conic-gradient(from 0deg, #f43f5e, #f59e0b, #22c55e, #06b6d4, #6366f1, #a855f7, #f43f5e);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+.oc-ring-done {
+  border: 2px solid #16a34a;
+}
+.oc-ring-fail {
+  border: 2px solid #dc2626;
+}
+
+/* Accessibility: respect prefers-reduced-motion — disable animations and
+   reduce backdrop blur for users who opt out of motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .glass-panel,
+  .glass-chrome,
+  .glass-flat,
+  .glass-modal {
+    backdrop-filter: blur(4px) saturate(120%);
+    -webkit-backdrop-filter: blur(4px) saturate(120%);
+  }
 }

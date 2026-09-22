@@ -1,24 +1,41 @@
-import { useUIStore } from '@/stores/uiStore'
+import { useUIStore, type SidebarTab } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+import { IS_OFFICE } from '@/utils/windowMode'
 import type { TranslationKey } from '@/i18n'
+
+const OFFICE_ICON = (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 21V8l6-4 6 4v13" />
+    <path d="M16 21V5l4 3v13" />
+    <path d="M2 21h20" />
+    <path d="M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01" />
+  </svg>
+)
 
 export default function ActivityBar() {
   const activeSidebarTab = useUIStore((s) => s.activeSidebarTab)
-  const setActiveSidebarTab = useUIStore((s) => s.setActiveSidebarTab)
-  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const isSidebarVisible = useUIStore((s) => s.isSidebarVisible)
   const t = useI18n()
 
-  const topIcons: Array<{ key: 'files' | 'git' | 'changes' | 'agent' | 'usage' | 'skills' | 'mcp' | 'office'; titleKey: TranslationKey; icon: JSX.Element }> = [
+  const topIcons: Array<{ key: SidebarTab; titleKey: TranslationKey; icon: JSX.Element }> = [
+    // 办公室窗口（一人公司）：顶部最上方放「办公室」图标（从项目工作区回到 3D
+    // 视图），位于「代码管理」之上。
+    ...(IS_OFFICE
+      ? [{ key: 'office' as const, titleKey: 'activityBar.office' as TranslationKey, icon: OFFICE_ICON }]
+      : []),
+    // 办公室窗口（一人公司）不显示「文件」入口（项目文件树在办公室视图左侧栏内
+    // 就地打开）；代码管理/文件变更/Agent任务/使用统计/技能/MCP 全部保留。
+    ...(IS_OFFICE ? [] : [
     {
-      key: 'files',
-      titleKey: 'activityBar.explorer' as TranslationKey,
+      key: 'files' as const,
+      titleKey: 'activityBar.conversation' as TranslationKey,
       icon: (
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       ),
     },
+    ]),
     {
       key: 'git',
       titleKey: 'activityBar.scm' as TranslationKey,
@@ -57,18 +74,6 @@ export default function ActivityBar() {
       ),
     },
     {
-      key: 'office',
-      titleKey: 'activityBar.office' as TranslationKey,
-      icon: (
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 21V8l6-4 6 4v13" />
-          <path d="M16 21V5l4 3v13" />
-          <path d="M2 21h20" />
-          <path d="M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01" />
-        </svg>
-      ),
-    },
-    {
       key: 'usage',
       titleKey: 'activityBar.usage' as TranslationKey,
       icon: (
@@ -99,9 +104,30 @@ export default function ActivityBar() {
         </svg>
       ),
     },
+    {
+      key: 'browser',
+      titleKey: 'activityBar.browser' as TranslationKey,
+      icon: (
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18" />
+          <path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z" />
+        </svg>
+      ),
+    },
   ]
 
+  // 底部图标。主窗口：设置正上方放「一人公司」入口（点击打开独立办公室窗口）；
+  // 办公室窗口本身不重复放该入口。
   const bottomIcons: Array<{ key: string; titleKey: TranslationKey; icon: JSX.Element; action: () => void }> = [
+    ...(IS_OFFICE
+      ? []
+      : [{
+          key: 'office',
+          titleKey: 'activityBar.office' as TranslationKey,
+          icon: OFFICE_ICON,
+          action: () => window.electronAPI.openOfficeWindow(),
+        }]),
     {
       key: 'settings',
       titleKey: 'activityBar.settings' as TranslationKey,
@@ -127,17 +153,11 @@ export default function ActivityBar() {
   ]
 
   const handleClick = (key: string) => {
-    // Sidebar panels (file change history / agent tasks / usage / skills / MCP / 3D office): switch tab
-    if (key === 'changes' || key === 'agent' || key === 'usage' || key === 'skills' || key === 'mcp' || key === 'office') {
-      const ui = useUIStore.getState()
-      if (!ui.isSidebarVisible) ui.toggleSidebar()
-      ui.setActiveSidebarTab(key as 'changes' | 'agent' | 'usage' | 'skills' | 'mcp' | 'office')
-      return
-    }
-    if (!isSidebarVisible) {
-      toggleSidebar()
-    }
-    setActiveSidebarTab(key as 'files' | 'git')
+    // Sidebar panels (file change history / agent tasks / usage / skills / MCP /
+    // 办公室视图切换 / 浏览器): switch tab, revealing the sidebar if hidden.
+    const ui = useUIStore.getState()
+    if (!ui.isSidebarVisible) ui.toggleSidebar()
+    ui.setActiveSidebarTab(key as SidebarTab)
   }
 
   return (
@@ -159,8 +179,8 @@ export default function ActivityBar() {
               onClick={() => handleClick(item.key)}
               className="relative flex items-center justify-center rounded-full transition-all"
               style={{
-                width: 38,
-                height: 38,
+                width: 42,
+                height: 42,
                 color: isActive ? 'var(--accent)' : 'var(--text-muted)',
                 background: isActive ? 'var(--bg-selected)' : 'transparent',
                 margin: '1px 0',
@@ -206,8 +226,8 @@ export default function ActivityBar() {
             aria-label={t(item.titleKey)} title={t(item.titleKey)}
             onClick={item.action}
             style={{
-              width: 38,
-              height: 38,
+              width: 42,
+              height: 42,
               color: 'var(--text-muted)',
               display: 'flex',
               alignItems: 'center',

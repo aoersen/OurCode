@@ -1,5 +1,5 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, launchApp } from './helpers'
 import { mkdtemp, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -18,6 +18,7 @@ async function mainWindow(app: import('@playwright/test').ElectronApplication): 
     if (!page) await new Promise((r) => setTimeout(r, 500))
   }
   if (!page) throw new Error('main window not found')
+  await dismissOnboarding(page)
   return page
 }
 
@@ -28,7 +29,8 @@ test.describe('Light-mode editor deep diagnostic', () => {
     await writeFile(join(dir, 'demo.ts'), 'const answer = 42\nconsole.log(answer)\n', 'utf-8')
 
     // ── Launch 0: clean persisted project/session state ──
-    const app0 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+    const first = await launchApp()
+    const app0 = first.app
     const win0 = await mainWindow(app0)
     await win0.evaluate(() => {
       localStorage.setItem('lastProjectState', JSON.stringify({ path: null, view: 'list' }))
@@ -38,8 +40,8 @@ test.describe('Light-mode editor deep diagnostic', () => {
     await app0.close()
     await new Promise((r) => setTimeout(r, 500))
 
-    // ── Launch 1: the real test ──
-    const app = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+    // ── Launch 1: the real test (same profile as launch 0) ──
+    const { app } = await launchApp({ userData: first.userData })
     const win = await mainWindow(app)
 
     await app.evaluate(({ dialog }, folder) => {

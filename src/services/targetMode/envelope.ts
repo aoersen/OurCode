@@ -8,6 +8,7 @@
  * sessions only), so a plain run_subagent task that happens to start with `---`
  * can never be misinterpreted (isolation by construction).
  */
+import { sanitizeModelName } from '@/services/subagents/subagentReport'
 
 export interface TaskEnvelope {
   /** 信封派发对象（角色名，如 tm-tester） */
@@ -41,6 +42,17 @@ function parseList(raw?: string): string[] {
     .map((x) => x.trim().replace(/^['"`]|['"`]$/g, ''))
     .filter(Boolean)
 }
+
+/**
+ * Sanitize the envelope's optional `model:` field. The supervisor LLM often
+ * copies the template verbatim (`model: <可选…>`), wraps the name in quotes
+ * (`model: "deepseek-chat"`) or writes placeholder junk (`undefined` /
+ * `optional` / 空串） — any of these would reach resolveSubagentModel as a
+ * truthy override and get sent to the API as a bogus model id
+ * (HTTP 400 "Unsupported model"). Delegates to the shared sanitizeModelName
+ * so the runner-side fallback chain applies the exact same cleaning rules.
+ */
+const sanitizeModelField = sanitizeModelName
 
 /**
  * Parse a task envelope out of a run_subagent prompt. Returns null when the
@@ -84,7 +96,7 @@ export function parseEnvelope(task: string): TaskEnvelope | null {  const m = /^
     filesToRead: parseList(fm.files_to_read),
     acceptance: fm.acceptance || undefined,
     fixAttempts: fm.fix_attempts !== undefined ? parseInt(fm.fix_attempts, 10) || 0 : 0,
-    model: fm.model || undefined,
+    model: sanitizeModelField(fm.model),
     reportPath: fm.report_path || undefined,
     prompt: task.slice(m[0].length).trim(),
   }

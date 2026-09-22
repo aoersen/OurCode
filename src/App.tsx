@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import MainLayout from './components/Layout/MainLayout'
 import ErrorBoundary from './components/Common/ErrorBoundary'
 import SessionEventNotifier from './components/Common/SessionEventNotifier'
+import PromptDialogHost from './components/Common/PromptDialog'
 import OnboardingModal from './components/Onboarding/OnboardingModal'
 import RestoreBackupsModal from './components/Editor/RestoreBackupsModal'
 import type { BackupEntry } from '@shared/types'
@@ -16,8 +17,10 @@ import { useShortcutStore } from './stores/shortcutStore'
 import { ensureProblemsSubscription, useProblemsStore } from './stores/problemsStore'
 import { ensureLspDiagnosticsSubscription } from './services/lsp/lspClient'
 import { ensureDebugEventSubscription } from './stores/debugStore'
+import { ensureBrowserSubscription } from './stores/browserStore'
 import { registerCoreCommands } from './services/commands/coreCommands'
 import { setLocale, resolveLocale, getSystemLocale, type LanguagePreference } from './i18n'
+import { IS_OFFICE } from './utils/windowMode'
 
 export default function App() {
   const loadConfigGroups = useConfigStore((s) => s.loadConfigGroups)
@@ -50,7 +53,7 @@ export default function App() {
     // Register the shared command surface (shortcuts / palette / plugins)
     registerCoreCommands()
     loadConfigGroups().then(async () => {
-      loadSessions()
+      await loadSessions()
       await loadPreferences()
       // Apply the persisted UI language to the document ('system' resolves to
       // the OS locale captured at bootstrap)
@@ -66,6 +69,17 @@ export default function App() {
       // empty project so the user can chat in agent mode without opening a folder.
       if (!useUIStore.getState().rootPath) {
         await useUIStore.getState().ensureDefaultProject()
+      }
+      // 办公室窗口：确保存在一个活动的 office 会话——无会话时办公室视图右下角
+      // 的目标输入框不可见，用户会卡在「打开对话」上；有会话即可直接启动目标模式。
+      // createSession 已为办公室会话默认置位 targetMode（一人公司 = 目标模式），
+      // 启动兜底会话无需再手动补位；不显式走 setTargetMode —— 后者会弹实验性
+      // 提示并把尚未发消息的空会话落盘（每次开公司累积一条空会话）。
+      if (IS_OFFICE && !useChatStore.getState().activeSessionId) {
+        const configId = useConfigStore.getState().activeConfigGroupId
+        if (configId) {
+          useChatStore.getState().createSession(configId, useUIStore.getState().rootPath || undefined)
+        }
       }
       // Restore the tabs open when the app last closed (hides the editor when
       // none were open — the chat panel fills the window instead)
@@ -90,6 +104,8 @@ export default function App() {
       ensureLspDiagnosticsSubscription()
       // Debug Adapter Protocol events (single session)
       ensureDebugEventSubscription()
+      // Agent browser session mirror (console + page state) for the Browser panel
+      ensureBrowserSubscription()
       setReady(true)
       if (!hasCompleted) {
         setShowOnboarding(true)
@@ -113,6 +129,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <SessionEventNotifier />
+      <PromptDialogHost />
       <MainLayout />
       {ready && showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
       {ready && pendingBackups.length > 0 && (

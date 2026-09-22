@@ -1,10 +1,10 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, session, Notification, protocol, type WebContents, type IpcMainInvokeEvent } from 'electron'
-import { join, resolve, dirname, sep, relative, isAbsolute, extname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, session, Notification, protocol, type WebContents, type IpcMainInvokeEvent, type MessageBoxOptions } from 'electron'
+import { join, resolve, dirname, relative, isAbsolute, extname, basename } from 'path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
 import { exec, execFile, spawn } from 'child_process'
-import type { ExecFileOptions } from 'child_process'
+import type { ExecFileOptions, ChildProcess } from 'child_process'
 import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { autoUpdater, UpdateInfo } from 'electron-updater'
@@ -16,10 +16,26 @@ import { LspServer } from './services/lsp'
 import { DebugAdapterClient } from './services/debug'
 import { MCPManager, extractMcpText, toMcpToolDefinition } from './services/mcp-manager'
 import { scrubbedSpawnEnv } from './services/env-scrub'
+import { decideNavigation, hasArbitraryNavigation, revokeArbitraryNavigation, type NavigationPolicy } from './services/navigation-guard'
+import { checkVcsArgs, parseGhAuthStatus } from './services/vcs-exec'
+import { WireLogService } from './services/wire-log'
+import {
+  browserAct,
+  browserClose,
+  browserConsole,
+  browserHistory,
+  browserNavigate,
+  browserPageText,
+  browserScreenshot,
+  browserSetVisible,
+  browserState,
+  initBrowserSession,
+} from './services/browser-session'
 import { SpillStore } from './services/spill-store'
+import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
 import { v4 as uuidv4 } from 'uuid'
 import { IPC_CHANNELS } from '../shared/constants'
-import type { UsageEvent } from '../shared/types'
+import type { UsageEvent, BrowserAction, BrowserActOptions } from '../shared/types'
 
 const DEFAULT_EXCLUDE_FOLDERS = ['node_modules', '.git', 'dist', 'build', 'out']
 
@@ -32,18 +48,46 @@ const APP_ICON = join(__dirname, '..', 'build', 'icon.png')
 // multi-hundred-MB file to search it would block the main process)
 const SEARCH_MAX_FILE_BYTES = 50 * 1024 * 1024
 
+// ── 崩溃/异常留痕 ─────────────────────────────────────────────────────────────
+// 此前主进程没有 uncaughtException 处理：任何未捕获异常都会让应用无声退出，
+// 用户只看到「崩溃了」却没有任何可诊断的信息。这里把主进程异常、未处理的
+// Promise 拒绝与渲染进程死亡统一追加到 userData/crash.log（保留现场供排查），
+// 主进程不再因单个异常直接退出。
+const CRASH_LOG_PATH = () => join(app.getPath('userData'), 'crash.log')
+
+function appendCrashLog(kind: string, info: unknown): void {
+  const line =
+    `\n[${new Date().toISOString()}] ${kind}\n` +
+    (info instanceof Error ? `${info.stack || info.message}` : typeof info === 'string' ? info : JSON.stringify(info)) +
+    '\n'
+  try {
+    appendFileSync(CRASH_LOG_PATH(), line, 'utf-8')
+  } catch {
+    // 日志写入失败不能再抛（否则就是新的崩溃源）
+  }
+  console.error(`[crash:${kind}]`, info)
+}
+
+process.on('uncaughtException', (err) => appendCrashLog('uncaughtException', err))
+process.on('unhandledRejection', (reason) => appendCrashLog('unhandledRejection', reason))
+// 渲染进程/GPU 等子进程死亡（白屏、闪退的现场）也留痕
+app.on('child-process-gone', (_event, details) => appendCrashLog('child-process-gone', details))
+
 /**
- * Paths the renderer is allowed to touch. Populated from the dialogs that the
- * user explicitly opened (open folder / open file / save file), explicit
- * fs:authorize calls and the watched project root. Every fs:* handler validates
- * against this allowlist so that a compromised renderer (e.g. via the Markdown
- * surface) cannot read/write/delete arbitrary files outside what the user
- * opened.
+ * Paths the renderer is allowed to touch. Populated from the dialogs the user
+ * explicitly answered and from renderer-named paths that workspace trust already
+ * covers (see authorizeRendererPath / WorkspaceTrust). Every fs:* handler
+ * validates against this allowlist so that a compromised renderer (e.g. via the
+ * Markdown surface) cannot read/write/delete arbitrary files outside what the
+ * user opened.
  */
 const allowedRoots: Set<string> = new Set()
 
+/** The workspace-trust authority, created once the SQLite store is open. */
+let trust: WorkspaceTrust | null = null
+
 function normalizePath(p: string): string {
-  return resolve(p)
+  return canonicalDir(p)
 }
 
 /** Register a directory (and everything under it) as accessible to the renderer */
@@ -52,25 +96,96 @@ function registerRoot(p: string): void {
   allowedRoots.add(normalizePath(p))
 }
 
-/** Check whether a path is inside any registered root */
-function isPathAllowed(p: string): boolean {
-  const normalized = normalizePath(p)
-  // Windows paths are case-insensitive, but resolve() keeps the input's case —
-  // roots and requests can legitimately differ in case (OS dialog vs stored
-  // session string), so compare case-insensitively on win32.
-  const win = process.platform === 'win32'
-  const probe = win ? normalized.toLowerCase() : normalized
+/**
+ * Register a path the renderer named, but only if trust for it was established
+ * somewhere the renderer can't forge — a native dialog the user answered, or a
+ * grant persisted by an earlier run. Returns false when the path is untrusted;
+ * callers must then surface the trust affordance instead of pretending the
+ * workspace is merely empty.
+ */
+function authorizeRendererPath(p: string): boolean {
+  if (!p || !isAbsolute(p)) return false
+  if (!trust || !trust.isTrusted(p)) return false
+  registerRoot(p)
+  return true
+}
+
+/**
+ * Exact file paths the user allowed the chat AI to read. Populated only by
+ * `trust:requestFile`, which answers through a NATIVE dialog — never on the
+ * renderer's word alone (same rule as workspace trust). Grants are session
+ * scoped: unlike a trusted folder they are not persisted, so the next run
+ * asks again. Read-only by construction — write handlers below check
+ * `isPathWritable`, which never consults this set.
+ */
+const readOnlyAllowed: Set<string> = new Set()
+
+/** Directories granted read-only for the session via the "允许该文件夹" choice
+ *  on the per-file dialog — everything under them becomes readable, still
+ *  never writable. Session scoped, never persisted. */
+const readOnlyDirs: Set<string> = new Set()
+
+/**
+ * Session-wide read policy: the user natively agreed that reads outside the
+ * workspace no longer ask (armed by the full-access confirmation or the
+ * "全部允许" choice on the read-permission dialog). ONLY those two native
+ * dialogs may set this — the renderer's edit-mode value alone never can.
+ */
+let readPolicyArmed = false
+
+/** Files whose read permission was refused this session. Remembering the
+ *  answer keeps a compromised renderer (or a stuck agent) from re-spamming
+ *  the same dialog for a path the user already said no to. */
+const readDenied: Set<string> = new Set()
+
+/** Marker prefix on allowlist errors so the renderer can recognize this exact
+ *  failure and offer the one-time read-permission dialog before surfacing it. */
+const UNTRUSTED_PATH_MARKER = 'EUNTRUSTED'
+
+/** Check whether a path is inside any registered root.
+ *  Falls back to the persistent trust store so that a renderer that restores a
+ *  previously-trusted session isn't rejected before its fs:authorize call has
+ *  had a chance to populate the runtime allowedRoots cache. */
+function isPathWritable(p: string): boolean {
+  // normalizePath already folds case on Windows, where the same folder has
+  // many spellings (OS dialog vs stored session string).
+  const probe = normalizePath(p)
+  if (!probe) return false
   for (const root of allowedRoots) {
-    const r = win ? root.toLowerCase() : root
-    if (probe === r || probe.startsWith(r + sep)) return true
+    if (isWithinDir(root, probe)) return true
+  }
+  return !!(trust && trust.isTrusted(p))
+}
+
+/** Read access is write access plus what the user granted for chat: the armed
+ *  session-wide read policy, exact files, or anything under a granted folder. */
+function isPathReadable(p: string): boolean {
+  if (isPathWritable(p)) return true
+  if (readPolicyArmed) return true
+  const probe = normalizePath(p)
+  if (!probe) return false
+  if (readOnlyAllowed.has(probe)) return true
+  for (const dir of readOnlyDirs) {
+    if (isWithinDir(dir, probe)) return true
   }
   return false
 }
 
+function untrustedPathError(p: string): Error {
+  return new Error(`${UNTRUSTED_PATH_MARKER}: 路径不在允许范围内: ${p}`)
+}
+
 /** Throw if the path is outside every registered root */
-function assertPathAllowed(p: string): void {
-  if (!isPathAllowed(p)) {
-    throw new Error(`路径不在允许范围内: ${p}`)
+function assertPathWritable(p: string): void {
+  if (!isPathWritable(p)) {
+    throw untrustedPathError(p)
+  }
+}
+
+/** Throw if the path is neither writable nor granted read-only */
+function assertPathReadable(p: string): void {
+  if (!isPathReadable(p)) {
+    throw untrustedPathError(p)
   }
 }
 
@@ -129,7 +244,7 @@ const PREVIEW_HTML_CSP = "default-src * data: blob: 'unsafe-inline' 'unsafe-eval
 function registerPreviewProtocol(): void {
   protocol.handle(PREVIEW_SCHEME, async (request) => {
     const filePath = previewUrlToPath(request.url)
-    if (!filePath || !isPathAllowed(filePath)) {
+    if (!filePath || !isPathReadable(filePath)) {
       return new Response('Not found', { status: 404 })
     }
     const headers: Record<string, string> = {
@@ -244,6 +359,38 @@ function runGit(cwd: string, args: string[], input: string | undefined, trim: bo
   })
 }
 
+/** `gh` talks to GitHub over the network, so it gets a longer budget than git.
+ *  Same argv discipline as runGit: execFile, no shell, scrubbed environment —
+ *  except the two token variables, which are how a user may have chosen to
+ *  authenticate the CLI. Handing them to `gh` is safe (its argv is allowlisted
+ *  and it only ever talks to a GitHub host); handing them to `git` or a shell
+ *  command would not be, and those stay fully scrubbed. */
+function runGh(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'gh',
+      args,
+      {
+        cwd,
+        timeout: 90_000,
+        maxBuffer: 5 * 1024 * 1024,
+        env: scrubbedSpawnEnv({ keep: ['GH_TOKEN', 'GITHUB_TOKEN'] }),
+      } as ExecFileOptions,
+      (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
+        if (error) {
+          // gh writes its diagnostics to BOTH streams (`gh pr view` on a repo
+          // with no PRs, `gh auth status` when logged out). Returning only
+          // stderr would turn "no pull request found" into an empty error.
+          const text = `${String(stdout || '').trim()}\n${String(stderr || '').trim()}`.trim()
+          reject(new Error(text || error.message))
+        } else {
+          resolve(String(stdout).trim())
+        }
+      },
+    )
+  })
+}
+
 let mainWindow: BrowserWindow | null = null
 const allWindows: Set<BrowserWindow> = new Set()
 let fileSystem: FileSystemService
@@ -252,6 +399,7 @@ let store: SQLiteStore
 let backup: BackupService
 let mcp: MCPManager
 let spillStore: SpillStore
+let wireLog: WireLogService
 
 // Language servers by document URI (one per open file)
 const lspServers = new Map<string, LspServer>()
@@ -330,8 +478,96 @@ async function stopAllLspServers(): Promise<void> {
 interface TerminalSession {
   pty: pty.IPty
   webContents: WebContents
+  /** 'view' = an integrated-terminal tab, killed when its tab closes.
+   *  'agent' = started by the assistant, so it outlives any view. */
+  owner: 'view' | 'agent'
+  /** Raw pty output, oldest first, capped so a chatty watcher can't grow forever */
+  chunks: string[]
+  chars: number
+  /** null while the process is still running */
+  exitCode: number | null
+  /** Command line an agent run was started with (shown as the tab title) */
+  command: string
 }
 const terminals = new Map<string, TerminalSession>()
+
+/** In-flight `shell:exec` runs keyed by the renderer's requestId, so hitting
+ *  Stop can take the process down instead of only discarding its result. */
+const shellRuns = new Map<string, ChildProcess>()
+/** requestIds the user stopped — their exec callback reports 用户终止, not 超时 */
+const shellStopped = new Set<string>()
+
+/**
+ * Kill a plain child process together with everything it launched.
+ *
+ * `child.kill()` only reaches the direct child: on Windows the shell is
+ * powershell.exe, so `npm run build` leaves the real compiler holding the CPU
+ * (and often the output files) after the agent already moved on. Ask the OS
+ * for the whole tree there; SIGKILL can't be trapped on POSIX.
+ */
+function killChildTree(child: ChildProcess): void {
+  if (process.platform === 'win32' && child.pid != null) {
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+    return
+  }
+  child.kill('SIGKILL')
+}
+
+const CAPTURE_LIMIT_CHARS = 512 * 1024
+/** Finished agent runs stay readable until this many are queued up; older ones
+ *  are dropped so a long conversation cannot accumulate dead pty processes. */
+const MAX_FINISHED_AGENT_RUNS = 8
+/** Hard ceiling on live agent processes — `stop_terminal` is cooperative, and a
+ *  model that ignores it must not be able to pile up shells indefinitely. */
+const MAX_LIVE_AGENT_RUNS = 12
+
+function captureOutput(session: TerminalSession, data: string): void {
+  session.chunks.push(data)
+  session.chars += data.length
+  if (session.chars <= CAPTURE_LIMIT_CHARS) return
+  // Drop from the front down to half the cap rather than trimming to exactly
+  // the limit, so a stream that sits on the ceiling doesn't re-splice per chunk.
+  let drop = 0
+  while (session.chars > CAPTURE_LIMIT_CHARS / 2 && drop < session.chunks.length - 1) {
+    session.chars -= session.chunks[drop].length
+    drop++
+  }
+  session.chunks.splice(0, drop)
+}
+
+/** Free capacity for a new agent run by retiring its oldest finished siblings */
+function pruneAgentRuns(): void {
+  const finished: [string, TerminalSession][] = []
+  for (const [id, session] of terminals) {
+    if (session.owner === 'agent' && session.exitCode !== null) finished.push([id, session])
+  }
+  while (finished.length >= MAX_FINISHED_AGENT_RUNS) {
+    const [id, session] = finished.shift()!
+    terminals.delete(id)
+    try {
+      killProcessTree(session)
+    } catch {
+      /* already exited */
+    }
+  }
+}
+
+/**
+ * Take a run down including whatever it launched.
+ *
+ * node-pty's own kill() only terminates the shell it spawned, so a dev server
+ * the assistant started with it would keep the port bound and the CPU spinning
+ * after `stop_terminal` claimed success. On POSIX the shell forwards SIGHUP to
+ * its jobs; on Windows there is no such convention, so ask the OS for the tree.
+ */
+function killProcessTree(session: TerminalSession): void {
+  const pid = session.pty.pid
+  if (process.platform === 'win32' && pid) {
+    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+    return
+  }
+  session.pty.kill()
+}
 
 /** Broadcast a message to every open window */
 function broadcast(channel: string, ...args: unknown[]): void {
@@ -361,10 +597,51 @@ function attachWindowLifecycle(win: BrowserWindow): void {
     // Kill terminals owned by this window
     for (const [id, t] of terminals) {
       if (t.webContents.id === wcId) {
-        t.pty.kill()
+        if (t.owner === 'agent') killProcessTree(t)
+        else t.pty.kill()
         terminals.delete(id)
       }
     }
+    // The agent browser window is hidden and is not an app window: left open, it
+    // keeps `window-all-closed` from ever firing, so on Windows/Linux the process
+    // would linger with no UI. Deferred one tick so the listener that removes
+    // THIS window from allWindows (registered after this one) has run. On macOS
+    // the app intentionally survives with no windows, and the browser session
+    // keeps its cookies for when it comes back — it goes with the app instead.
+    if (process.platform !== 'darwin') {
+      setImmediate(() => {
+        if (allWindows.size === 0) browserClose()
+      })
+    }
+  })
+}
+
+/** Pin every app window to the app's own origins (see navigation-guard.ts). */
+function installNavigationGuards(): void {
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  const policy: NavigationPolicy = {
+    devOrigin: devUrl ? new URL(devUrl).origin : undefined,
+    rendererDir: join(__dirname, 'renderer'),
+  }
+  app.on('web-contents-created', (_event, contents) => {
+    const arbitrary = (): boolean => hasArbitraryNavigation(contents.id)
+    contents.on('will-navigate', (event, url) => {
+      const decision = decideNavigation(url, policy, arbitrary())
+      if (decision !== 'allow') {
+        event.preventDefault()
+        if (decision === 'open-external') void shell.openExternal(url).catch(() => {})
+      }
+    })
+    // window.open() — including the popups the HTML preview iframe is allowed
+    // to create. Without a handler Electron builds a window with default
+    // preferences, so this is the only thing standing between previewed code
+    // and an unguarded top-level page.
+    contents.setWindowOpenHandler(({ url }) => {
+      const decision = decideNavigation(url, policy, arbitrary())
+      if (decision === 'open-external') void shell.openExternal(url).catch(() => {})
+      return { action: 'deny' }
+    })
+    contents.on('destroyed', () => revokeArbitraryNavigation(contents.id))
   })
 }
 
@@ -427,6 +704,45 @@ function createNewWindow(): void {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+    },
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    win.loadFile(join(__dirname, 'renderer/index.html'))
+  }
+
+  attachWindowLifecycle(win)
+
+  allWindows.add(win)
+  win.on('closed', () => {
+    allWindows.delete(win)
+  })
+}
+
+/**
+ * 「一人公司」独立窗口：渲染进程通过 preload 暴露的 isOfficeMode 识别本窗口
+ * 模式（webPreferences.additionalArguments → process.argv），从而以 3D 办公室
+ * 视图为落地页，并使用独立的会话（mode='office'）/项目命名空间。与主对话
+ * 窗口互不干扰。
+ */
+function createOfficeWindow(): void {
+  const win = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 800,
+    minHeight: 600,
+    frame: false,
+    titleBarStyle: 'hidden',
+    backgroundColor: '#1e1e1e',
+    icon: APP_ICON,
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: ['--office-mode'],
     },
   })
 
@@ -733,17 +1049,21 @@ async function nodeWalkSearchFiles(dirPath: string, query: string): Promise<stri
 function registerIpcHandlers(): void {
   // File System handlers
   ipcMain.handle('fs:readFile', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     return fileSystem.readFile(path)
   })
 
   ipcMain.handle('fs:writeFile', async (_event, path: string, content: string, encoding: string, hasBom?: boolean) => {
-    assertPathAllowed(path)
-    return fileSystem.writeFile(path, content, encoding, hasBom)
+    assertPathWritable(path)
+    await fileSystem.writeFile(path, content, encoding, hasBom)
+    // A successful write moves the file past its reverted state — any stale
+    // 「已回退 → 恢复」forward snapshot for this path is now outdated and must
+    // not be able to restore old AI content over the new one.
+    store.deleteRevertedFileByPath(path)
   })
 
   ipcMain.handle('fs:openStream', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     return fileSystem.openStream(path)
   })
 
@@ -760,7 +1080,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:openWriteStream', async (_event, path: string, encoding: string, hasBom?: boolean) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     return fileSystem.openWriteStream(path, encoding, hasBom)
   })
 
@@ -769,7 +1089,11 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:closeWriteStream', async (_event, id: number) => {
-    return fileSystem.closeWriteStream(id)
+    const finalPath = await fileSystem.closeWriteStream(id)
+    // Streamed saves (user Ctrl+S) also supersede any pending restore of the
+    // written path — same reasoning as fs:writeFile.
+    if (finalPath) store.deleteRevertedFileByPath(finalPath)
+    return finalPath
   })
 
   ipcMain.handle('fs:abortWriteStream', async (_event, id: number) => {
@@ -781,43 +1105,46 @@ function registerIpcHandlers(): void {
   // writing to disk. Unauthorized paths are silently ignored (the protocol
   // handler refuses to serve them anyway) rather than throwing to the renderer.
   ipcMain.handle(IPC_CHANNELS.PREVIEW_SET, (_event, path: string, content: string) => {
-    if (!isPathAllowed(path)) return
+    if (!isPathReadable(path)) return
     previewBuffers.set(path, content)
   })
 
   ipcMain.handle(IPC_CHANNELS.PREVIEW_CLEAR, (_event, path: string) => {
-    if (!isPathAllowed(path)) return
+    if (!isPathReadable(path)) return
     previewBuffers.delete(path)
   })
 
   ipcMain.handle('fs:listDir', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     return fileSystem.listDir(path)
   })
 
   ipcMain.handle('fs:createFile', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     return fileSystem.createFile(path)
   })
 
   ipcMain.handle('fs:createDir', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathWritable(path)
     return fileSystem.createDir(path)
   })
 
   ipcMain.handle('fs:rename', async (_event, oldPath: string, newPath: string) => {
-    assertPathAllowed(oldPath)
-    assertPathAllowed(newPath)
+    assertPathWritable(oldPath)
+    assertPathWritable(newPath)
     return fileSystem.rename(oldPath, newPath)
   })
 
   ipcMain.handle('fs:delete', async (_event, path: string) => {
-    assertPathAllowed(path)
-    return fileSystem.delete(path)
+    assertPathWritable(path)
+    await fileSystem.delete(path)
+    // Deleting the file supersedes any pending restore of it (same reasoning
+    // as fs:writeFile above).
+    store.deleteRevertedFileByPath(path)
   })
 
   ipcMain.handle('fs:stat', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     try {
       return await fileSystem.stat(path)
     } catch (error) {
@@ -830,7 +1157,10 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:watch', async (_event, path: string) => {
-    registerRoot(path)
+    // Watching is also what starts a workspace's MCP servers, so this is the
+    // one call that turns an untrusted folder into code execution. Untrusted
+    // roots register nothing at all and say so.
+    if (!authorizeRendererPath(path)) return { ok: false, untrusted: true }
     // Batch watcher events per root: a build (or install) emits hundreds of
     // change events in quick succession; broadcasting each one as its own
     // fs:fileChanged IPC message floods the renderer and forces a full
@@ -864,6 +1194,7 @@ function registerIpcHandlers(): void {
     } catch (error: any) {
       console.error('MCP 配置加载失败:', error.message)
     }
+    return { ok: true }
   })
 
   ipcMain.handle('fs:unwatch', async (_event, path: string) => {
@@ -874,13 +1205,226 @@ function registerIpcHandlers(): void {
   // loading MCP config. The renderer probes paths at startup (restoring the
   // last project) when the allowlist is still empty — fs:watch can't be reused
   // there because it would start a watcher / reload MCP servers as a side
-  // effect.
+  // effect. Registration is refused unless trust exists; the renderer reports
+  // back and offers trust:request.
   ipcMain.handle('fs:authorize', async (_event, path: string) => {
+    return authorizeRendererPath(path)
+  })
+
+  // Ask the user to trust a workspace. The confirmation is a NATIVE dialog that
+  // only the main process opens — a renderer that got past the fs allowlist
+  // must not also be able to answer the trust prompt on the user's behalf.
+  // `path` must be an existing directory (trust:requestFile routes directories
+  // here too); files go through the read-only grant below.
+  const promptDirTrust = async (event: IpcMainInvokeEvent, path: string): Promise<boolean> => {
+    if (authorizeRendererPath(path)) return true
+    // A prompt the user can't read isn't a consent. The renderer's i18n lives
+    // behind the allowlist we are about to open, so the wording comes from the
+    // OS locale here.
+    const zh = app.getLocale().toLowerCase().startsWith('zh')
+    const options: MessageBoxOptions = zh
+      ? {
+          type: 'warning',
+          title: '信任该文件夹？',
+          message: `是否允许 OurCode 使用「${basename(path)}」？`,
+          detail:
+            `${path}\n\n` +
+            '信任后 IDE 才能读写该文件夹，并且会启动它自带的 MCP 服务——即 ' +
+            'mcp_config.json / .mcp.json 里声明的进程。只信任来源可靠的文件夹。',
+          buttons: ['信任并继续', '不信任'],
+        }
+      : {
+          type: 'warning',
+          title: 'Trust this folder?',
+          message: `Allow OurCode to work in "${basename(path)}"?`,
+          detail:
+            `${path}\n\n` +
+            'Only after you trust it can the IDE read and write the folder, and it will start ' +
+            'the folder\u2019s own MCP servers \u2014 the processes declared in mcp_config.json / ' +
+            '.mcp.json. Trust folders you know where they came from.',
+          buttons: ['Trust', "Don't trust"],
+        }
+    Object.assign(options, { defaultId: 1, cancelId: 1, noLink: true })
+    const win = windowFromEvent(event) ?? mainWindow
+    const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+    if (response !== 0) return false
+    trust?.grant(path)
     registerRoot(path)
+    return true
+  }
+
+  ipcMain.handle('trust:request', async (event, path: string) => {
+    if (!path || !isAbsolute(path)) return false
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      return false
+    }
+    if (!isDir) return false
+    return promptDirTrust(event, path)
+  })
+
+  // One-time READ permission for a file the user attached to a chat message
+  // (drag-drop / pasted path) that lives outside the trusted workspace. Same
+  // trust anchor as trust:request — a native dialog the user answers — but the
+  // grant only lets fs:readFile / fs:stat / fs:listDir touch that file (or its
+  // folder, or everything, depending on the choice below); every fs:* write
+  // keeps requiring full workspace trust.
+  //
+  // `mode` is the session's project edit mode. It is advisory only: it picks
+  // which dialog shape to show (per-file vs. with a session-wide option), and
+  // a compromised renderer forging it still lands on a native dialog whose
+  // buttons are the real consent. Only a native "全部允许" / full-access
+  // confirmation may arm the session-wide read policy.
+  ipcMain.handle('trust:requestFile', async (event, path: string, mode?: string) => {
+    if (!path || !isAbsolute(path)) return false
+    // Already readable (in-workspace, granted earlier, or policy armed) — no prompt.
+    if (isPathReadable(path)) return true
+    const canonical = normalizePath(path)
+    if (!canonical || readDenied.has(canonical)) return false
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      return false
+    }
+    // A dropped directory goes through the full workspace-trust flow (it can
+    // start MCP servers); only files get the lightweight read-only grant.
+    if (isDir) {
+      const granted = await promptDirTrust(event, path)
+      if (!granted) readDenied.add(canonical)
+      return granted
+    }
+    // 手动确认 keeps the minimal per-file dialog; the other edit modes offer
+    // the session-wide read option up front (the plan phase / auto-editing
+    // reads a lot, and full-access users expect no per-file friction).
+    const offerSessionWide = mode === 'auto_edit' || mode === 'plan' || mode === 'full_access'
+    const zh = app.getLocale().toLowerCase().startsWith('zh')
+    const options: MessageBoxOptions = zh
+      ? {
+          type: 'question',
+          title: '允许读取该文件？',
+          message: `是否允许聊天中的 AI 读取「${basename(path)}」？`,
+          detail:
+            `${path}\n\n` +
+            '该文件位于工作区之外。允许后 AI 可以读取（只读，不会修改它），本次会话有效。' +
+            '「允许该文件夹」则同目录下的文件都不再询问。只允许来源可靠的文件。',
+          buttons: offerSessionWide
+            ? ['全部允许（本次会话）', '允许该文件夹', '仅此文件', '拒绝']
+            : ['允许读取', '允许该文件夹（本次会话）', '拒绝'],
+        }
+      : {
+          type: 'question',
+          title: 'Allow reading this file?',
+          message: `Allow the chat AI to read "${basename(path)}"?`,
+          detail:
+            `${path}\n\n` +
+            'This file is outside your workspace. After you allow it, the AI can read ' +
+            '(read-only \u2014 the file is never modified) for this session. "Allow folder" ' +
+            'stops asking for other files in the same folder. Only allow files you trust.',
+          buttons: offerSessionWide
+            ? ['Allow all (this session)', 'Allow folder', 'This file only', 'Deny']
+            : ['Allow', 'Allow folder (this session)', 'Deny'],
+        }
+    // Deny is always the default: pressing Enter must never grant anything.
+    Object.assign(options, { defaultId: options.buttons!.length - 1, cancelId: options.buttons!.length - 1, noLink: true })
+    const win = windowFromEvent(event) ?? mainWindow
+    const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+    if (offerSessionWide) {
+      if (response === 0) {
+        readPolicyArmed = true
+        readOnlyAllowed.add(canonical)
+        return true
+      }
+      if (response === 1) {
+        readOnlyDirs.add(normalizePath(dirname(path)))
+        return true
+      }
+      if (response === 2) {
+        readOnlyAllowed.add(canonical)
+        return true
+      }
+    } else {
+      if (response === 0) {
+        readOnlyAllowed.add(canonical)
+        return true
+      }
+      if (response === 1) {
+        readOnlyDirs.add(normalizePath(dirname(path)))
+        return true
+      }
+    }
+    readDenied.add(canonical)
+    return false
+  })
+
+  // Session-wide read policy, armed only through this native confirmation —
+  // called when the user switches a session to 完全访问. Renderer state alone
+  // can never arm it: the answer comes from the dialog below.
+  ipcMain.handle('trust:armReadPolicy', async (event) => {
+    if (readPolicyArmed) return true
+    const zh = app.getLocale().toLowerCase().startsWith('zh')
+    const options: MessageBoxOptions = zh
+      ? {
+          type: 'warning',
+          title: '完全访问：允许读取工作区外的文件？',
+          message: '完全访问模式下，AI 将可读取工作区外的文件',
+          detail:
+            '允许后，本次会话中 AI 读取工作区外的文件时不再逐个询问（仅读取，' +
+            '不会修改工作区外的文件；修改仍然只发生在工作区内）。只对可信项目启用。',
+          buttons: ['启用完全访问', '取消'],
+        }
+      : {
+          type: 'warning',
+          title: 'Full access: allow reading files outside the workspace?',
+          message: 'In full-access mode the AI may read files outside your workspace',
+          detail:
+            'After you allow this, the AI no longer asks before reading files outside the ' +
+            'workspace for this session (read-only \u2014 files outside the workspace are ' +
+            'never modified; edits still happen inside the workspace only). Enable for ' +
+            'trusted projects only.',
+          buttons: ['Enable full access', 'Cancel'],
+        }
+    Object.assign(options, { defaultId: 1, cancelId: 1, noLink: true })
+    const win = windowFromEvent(event) ?? mainWindow
+    const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+    if (response !== 0) return false
+    readPolicyArmed = true
+    return true
+  })
+
+  // Switching the session OUT of full access withdraws the session-wide read
+  // policy so 手动确认 truly asks again. Disarming is always the safe
+  // direction — no dialog, and a compromised renderer can only make itself
+  // MORE restricted by calling it.
+  ipcMain.handle('trust:disarmReadPolicy', async () => {
+    readPolicyArmed = false
+    return true
+  })
+
+  ipcMain.handle('trust:status', async (_event, path: string) => {
+    return { trusted: !!path && !!trust?.isTrusted(path) }
+  })
+
+  // Withdraw trust: forget the durable grant, drop it from the session
+  // allowlist, stop watching it, and take down the MCP servers it started.
+  ipcMain.handle('trust:revoke', async (_event, path: string) => {
+    if (!path || !isAbsolute(path)) return false
+    trust?.revoke(path)
+    const canonical = normalizePath(path)
+    allowedRoots.delete(canonical)
+    try {
+      fileSystem.unwatch(path)
+    } catch {
+      /* not watched — nothing to stop */
+    }
+    if (mcp && normalizePath(mcp.loadedRoot || '') === canonical) mcp.stopAll()
+    return true
   })
 
   ipcMain.handle('fs:openInFinder', async (_event, path: string) => {
-    assertPathAllowed(path)
+    assertPathReadable(path)
     shell.showItemInFolder(path)
   })
 
@@ -889,14 +1433,14 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('fs:copy', async (_event, src: string, dest: string) => {
-    assertPathAllowed(src)
-    assertPathAllowed(dest)
+    assertPathWritable(src)
+    assertPathWritable(dest)
     return fileSystem.copy(src, dest)
   })
 
   ipcMain.handle('fs:move', async (_event, src: string, dest: string) => {
-    assertPathAllowed(src)
-    assertPathAllowed(dest)
+    assertPathWritable(src)
+    assertPathWritable(dest)
     return fileSystem.move(src, dest)
   })
 
@@ -924,7 +1468,7 @@ function registerIpcHandlers(): void {
   // LSP: start a language server for a document, push diagnostics back
   ipcMain.handle('lsp:start', async (_event, uri: string, command: string, args: string[], cwd: string, languageId: string, text: string) => {
     await lspStop(uri)
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     const server = new LspServer()
     server.onDiagnostics = (params) => {
       broadcast('lsp:diagnostics', { uri: params.uri, diagnostics: params.diagnostics })
@@ -954,7 +1498,7 @@ function registerIpcHandlers(): void {
   // DAP: single debug session
   ipcMain.handle('debug:start', async (_event, command: string, args: string[], cwd: string, launchConfig: Record<string, unknown>, breakpoints: Array<{ path: string; line: number }>) => {
     await stopDebugSession()
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     const client = new DebugAdapterClient()
     client.onStopped = (body) => emitDebugEvent('stopped', body)
     client.onOutput = (body) => emitDebugEvent('output', body)
@@ -1042,8 +1586,8 @@ function registerIpcHandlers(): void {
     return store.getCrypto().decryptForImport(encryptedData, password)
   })
 
-  ipcMain.handle('store:getSessions', async () => {
-    return store.getSessions()
+  ipcMain.handle('store:getSessions', async (_event, mode?: 'main' | 'office') => {
+    return store.getSessions(mode)
   })
 
   ipcMain.handle('store:saveSession', async (_event, session) => {
@@ -1052,6 +1596,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('store:deleteSession', async (_event, id: string) => {
     return store.deleteSession(id)
+  })
+
+  // Sub-agent run records (durable twin of the renderer's subagentProgress)
+  ipcMain.handle('store:getSubagentRuns', async (_event, sessionIds: string[]) => {
+    if (!Array.isArray(sessionIds)) return []
+    return store.getSubagentRuns(sessionIds.filter((x) => typeof x === 'string' && !!x).slice(0, 2000))
+  })
+
+  ipcMain.handle('store:saveSubagentRun', async (_event, toolCallId: string, record: any) => {
+    if (typeof toolCallId !== 'string' || !toolCallId || !record || typeof record !== 'object') return false
+    return store.saveSubagentRun(toolCallId, record)
   })
 
   ipcMain.handle('store:getPreferences', async () => {
@@ -1079,13 +1634,18 @@ function registerIpcHandlers(): void {
     store.clearResponseCache()
   })
 
-  // Dialog handlers
+  // Dialog handlers — a path the user picked here is trusted by definition, and
+  // remembering it is what lets the next run restore the same workspace without
+  // asking again.
   ipcMain.handle('dialog:openFolder', async (event) => {
     const result = await dialog.showOpenDialog(windowFromEvent(event) ?? mainWindow!, {
       properties: ['openDirectory'],
     })
     const selected = result.canceled ? null : result.filePaths[0]
-    if (selected) registerRoot(selected)
+    if (selected) {
+      trust?.grant(selected)
+      registerRoot(selected)
+    }
     return selected
   })
 
@@ -1094,7 +1654,11 @@ function registerIpcHandlers(): void {
       properties: ['openFile'],
     })
     const selected = result.canceled ? null : result.filePaths[0]
-    if (selected) registerRoot(dirname(selected))
+    if (selected) {
+      const parent = dirname(selected)
+      trust?.grant(parent)
+      registerRoot(parent)
+    }
     return selected
   })
 
@@ -1103,7 +1667,11 @@ function registerIpcHandlers(): void {
       defaultPath,
     })
     const selected = result.canceled ? null : result.filePath
-    if (selected) registerRoot(dirname(selected))
+    if (selected) {
+      const parent = dirname(selected)
+      trust?.grant(parent)
+      registerRoot(parent)
+    }
     return selected
   })
 
@@ -1153,9 +1721,14 @@ function registerIpcHandlers(): void {
     createNewWindow()
   })
 
+  // 「一人公司」：独立窗口（office 模式），见 createOfficeWindow。
+  ipcMain.handle('window:openOfficeWindow', () => {
+    createOfficeWindow()
+  })
+
   // Terminal handlers (each terminal belongs to the window that created it)
   ipcMain.handle('term:create', (event, id: string, cwd?: string) => {
-    if (cwd) assertPathAllowed(cwd)
+    if (cwd) assertPathWritable(cwd)
     const wc = event.sender
     const shellName = process.platform === 'win32' ? 'powershell.exe' : 'bash'
     const term = pty.spawn(shellName, [], {
@@ -1166,16 +1739,28 @@ function registerIpcHandlers(): void {
       env: { ...process.env } as Record<string, string>,
     })
 
+    const session: TerminalSession = {
+      pty: term,
+      webContents: wc,
+      owner: 'view',
+      chunks: [],
+      chars: 0,
+      exitCode: null,
+      command: '',
+    }
+
     term.onData((data) => {
+      captureOutput(session, data)
       if (!wc.isDestroyed()) wc.send(`term:data:${id}`, data)
     })
 
     term.onExit(({ exitCode }) => {
+      session.exitCode = exitCode
       if (!wc.isDestroyed()) wc.send(`term:exit:${id}`, exitCode)
       terminals.delete(id)
     })
 
-    terminals.set(id, { pty: term, webContents: wc })
+    terminals.set(id, session)
   })
 
   ipcMain.handle('term:write', (_event, id: string, data: string) => {
@@ -1188,16 +1773,122 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('term:dispose', (_event, id: string) => {
     const t = terminals.get(id)
-    if (t) {
-      t.pty.kill()
-      terminals.delete(id)
+    // An agent run is not the view's to kill: the terminal tab that shows it is
+    // just a window onto a process the assistant started (and may still read).
+    if (!t || t.owner === 'agent') return
+    t.pty.kill()
+    terminals.delete(id)
+  })
+
+  // ── Agent-run terminal sessions ──────────────────────────────────────────
+  // Long-running commands (dev servers, watchers, `npm install` with a prompt)
+  // can't go through shell:exec — that waits for exit and kills at its timeout.
+  // These run in the same pty layer as the integrated terminal, and their output
+  // is captured in the main process so the assistant can poll it whether or not
+  // a terminal tab is showing the session.
+  ipcMain.handle('term:runAgent', (event, id: string, command: string, cwd?: string) => {
+    if (!id || typeof command !== 'string' || !command.trim()) throw new Error('终端运行参数不完整')
+    if (terminals.has(id)) throw new Error(`终端会话 ${id} 已存在`)
+    if (cwd) assertPathWritable(cwd)
+    pruneAgentRuns()
+    let live = 0
+    for (const session of terminals.values()) {
+      if (session.owner === 'agent' && session.exitCode === null) live++
     }
+    if (live >= MAX_LIVE_AGENT_RUNS) {
+      throw new Error(`已有 ${live} 个后台命令在运行，先用 stop_terminal 停掉不再需要的`)
+    }
+    const wc = event.sender
+    const isWindows = process.platform === 'win32'
+    // Hand the command to the shell as an argument instead of typing it into an
+    // interactive session: the pty's own exit is then the command's exit, so
+    // `running` / `exitCode` mean what the assistant needs them to (an
+    // interactive shell would sit at a prompt forever after finishing).
+    // A login shell (-lc) so the user's rc files put the same tools on PATH as
+    // in their own terminal.
+    const shellArgs = isWindows ? ['-NoLogo', '-Command', command] : ['-lc', command]
+    const term = pty.spawn(isWindows ? 'powershell.exe' : 'bash', shellArgs, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: cwd || process.cwd(),
+      // This is the assistant's command, not the user's shell — keep the
+      // credential scrub shell:exec applies, or anything the model runs could
+      // read the API keys sitting in the app's environment.
+      env: scrubbedSpawnEnv() as Record<string, string>,
+    })
+    const session: TerminalSession = {
+      pty: term,
+      webContents: wc,
+      owner: 'agent',
+      chunks: [],
+      chars: 0,
+      exitCode: null,
+      command,
+    }
+    term.onData((data) => {
+      captureOutput(session, data)
+      if (!wc.isDestroyed()) wc.send(`term:data:${id}`, data)
+    })
+    term.onExit(({ exitCode }) => {
+      session.exitCode = exitCode
+      if (!wc.isDestroyed()) wc.send(`term:exit:${id}`, exitCode)
+    })
+    terminals.set(id, session)
+  })
+
+  /** null when the session is unknown (retired, or never existed) or it is a
+   *  tab the user typed into — that scrollback is theirs, not the model's. */
+  ipcMain.handle('term:output', (_event, id: string, tailChars?: number) => {
+    const session = terminals.get(id)
+    if (!session || session.owner !== 'agent') return null
+    const full = session.chunks.join('')
+    const output = tailChars && tailChars > 0 ? full.slice(-tailChars) : full
+    return {
+      output,
+      truncated: output !== full,
+      running: session.exitCode === null,
+      exitCode: session.exitCode,
+      command: session.command,
+    }
+  })
+
+  ipcMain.handle('term:kill', (_event, id: string) => {
+    const session = terminals.get(id)
+    if (!session || session.owner !== 'agent') return false
+    killProcessTree(session)
+    return true
+  })
+
+  /** Agent runs in start order — the renderer treats this as the truth, so the
+   *  list survives a window reload (the processes live here, not there). */
+  ipcMain.handle('term:list', () => {
+    const listed: { id: string; command: string; running: boolean; exitCode: number | null }[] = []
+    for (const [id, session] of terminals) {
+      if (session.owner !== 'agent') continue
+      listed.push({
+        id,
+        command: session.command,
+        running: session.exitCode === null,
+        exitCode: session.exitCode,
+      })
+    }
+    return listed
+  })
+
+  /** Point an agent run's stream at the requesting window's view. Only agent
+   *  sessions are attachable — a tab the user typed into is theirs, not shareable. */
+  ipcMain.handle('term:attach', (event, id: string) => {
+    const session = terminals.get(id)
+    if (!session || session.owner !== 'agent') return null
+    session.webContents = event.sender
+    return { command: session.command, running: session.exitCode === null, output: session.chunks.join('') }
   })
 
   // Search in files handler — 三级链路：内存索引（毫秒级）→ ripgrep（10-100x 快）
   // → Node 遍历（兜底）。后两级保持原有语义：跳过 hidden / 排除目录、按行匹配。
   ipcMain.handle('search:inFiles', async (_event, dirPath: string, query: string, options?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; filePattern?: string; excludeFolders?: string }) => {
-    assertPathAllowed(dirPath)
+    assertPathReadable(dirPath)
     // 1) 内存代码库索引：watched 根 + 内容就绪 + 简单子串查询 → 毫秒级
     try {
       const fromIndex = await fileIndex.searchContent(dirPath, query, options ?? {})
@@ -1212,7 +1903,7 @@ function registerIpcHandlers(): void {
 
   // Search files by name (used by @-references in the chat input)
   ipcMain.handle('search:files', async (_event, dirPath: string, query: string) => {
-    assertPathAllowed(dirPath)
+    assertPathReadable(dirPath)
     try {
       const fromIndex = await fileIndex.searchFiles(dirPath, query, 50)
       // 空数组不能短路：索引返回空可能只是它答不上（如部分 glob 语义），仍要
@@ -1476,7 +2167,7 @@ function registerIpcHandlers(): void {
     // to persist paths the renderer isn't allowed to touch, so a compromised
     // renderer can't stage an arbitrary-path revert.
     for (const f of checkpoint.files || []) {
-      if (f?.path) assertPathAllowed(f.path)
+      if (f?.path) assertPathWritable(f.path)
     }
     return store.addCheckpoint(checkpoint)
   })
@@ -1492,6 +2183,9 @@ function registerIpcHandlers(): void {
 
   // Revert a checkpoint: restore every snapshotted file (or delete it if it
   // didn't exist at snapshot time), then broadcast so open editors reload.
+  // Before restoring each snapshot the CURRENT (AI-written) state is captured
+  // into the reverted-files record, so the revert can be undone later via
+  // checkpoint:restore (恢复).
   ipcMain.handle('checkpoint:revert', async (_event, checkpointId: string) => {
     const allSessions = store.getSessions()
     let target: import('../shared/types').Checkpoint | null = null
@@ -1503,17 +2197,30 @@ function registerIpcHandlers(): void {
     if (!target) return { ok: false, error: '检查点不存在' }
 
     let restored = 0
+    // Only files that were ACTUALLY reverted get a forward record — a file whose
+    // revert failed keeps its AI content on disk, so restoring it would be a
+    // no-op and must not show up as「已回退」.
+    const forward: Array<{ path: string; content: string; existed: boolean }> = []
     for (const file of target.files) {
       try {
         // Defense in depth: re-validate each path at revert time (the snapshot
         // may predate an allowlist change, or be from an older version).
         if (!file?.path) continue
-        assertPathAllowed(file.path)
+        assertPathWritable(file.path)
+        // Capture the current (AI-written) state BEFORE the revert writes the
+        // pre-edit snapshot back — this is what checkpoint:restore replays.
+        let current: { content: string; existed: boolean }
+        try {
+          current = { content: (await fileSystem.readFile(file.path)).content, existed: true }
+        } catch {
+          current = { content: '', existed: false }
+        }
         if (file.existed) {
           await fileSystem.writeFile(file.path, file.content, 'utf-8', false)
         } else if (existsSync(file.path)) {
           await fileSystem.delete(file.path)
         }
+        forward.push({ path: file.path, ...current })
         restored++
       } catch (error: any) {
         console.error(`回滚 ${file.path} 失败:`, error.message)
@@ -1526,9 +2233,9 @@ function registerIpcHandlers(): void {
     // skip this deletion: a broadcast over a closing window previously threw,
     // leaving the file reverted but the checkpoint alive.
     store.deleteCheckpoint(target.id)
-    // Record the reverted files so the summary can still show them as「已回退」
-    // after the snapshot is gone (display-only, survives restart / re-entry).
-    store.addRevertedFiles(target.sessionId, target.files.map((f) => f.path))
+    // Record the reverted files WITH their AI-written forward snapshot so the
+    // summary can show them as「已回退」and offer「恢复」(survives restart).
+    store.addRevertedFiles(target.sessionId, forward.map((f) => ({ ...f, messageId: target.messageId })))
     // Notify open editors to reload the changed files (best-effort).
     try {
       for (const file of target.files) {
@@ -1538,6 +2245,71 @@ function registerIpcHandlers(): void {
       // Ignore notification failures — the revert itself is already complete.
     }
     return { ok: true, restored }
+  })
+
+  // Restore (undo a revert): write the captured AI version of each file back
+  // (or delete it when the AI version didn't exist), snapshot the current
+  // state into a fresh checkpoint attached to the original message — so the
+  // file can be reverted AGAIN — and drop the reverted-files record.
+  ipcMain.handle('checkpoint:restore', async (_event, sessionId: string, filePaths: string[]) => {
+    const wanted = new Set((Array.isArray(filePaths) ? filePaths : []).map(String).filter(Boolean))
+    const records = store.getRevertedFileRecords(sessionId).filter((r) => wanted.has(r.path))
+    const failed: string[] = []
+    let restored = 0
+    for (const rec of records) {
+      try {
+        assertPathWritable(rec.path)
+        // Legacy rows (reverted before forward snapshots existed) have no
+        // content to restore — refuse instead of writing an empty file over
+        // whatever is on disk now.
+        if (!rec.hasSnapshot) {
+          failed.push(rec.path)
+          console.warn(`无法恢复 ${rec.path}：该回退记录产生于旧版本，未保存可恢复的内容`)
+          continue
+        }
+        // Snapshot the state that will be overwritten so the restored file
+        // stays revertable (回退/恢复 become a round-trip instead of a dead end).
+        let current: { content: string; existed: boolean }
+        try {
+          current = { content: (await fileSystem.readFile(rec.path)).content, existed: true }
+        } catch {
+          current = { content: '', existed: false }
+        }
+        if (rec.existed) {
+          await fileSystem.writeFile(rec.path, rec.content, 'utf-8', false)
+        } else if (existsSync(rec.path)) {
+          await fileSystem.delete(rec.path)
+        }
+        store.addCheckpoint({
+          id: uuidv4(),
+          sessionId,
+          createdAt: Date.now(),
+          label: `恢复 → ${rec.path.split(/[/\\]/).pop() || rec.path}`,
+          messageId: rec.messageId || undefined,
+          files: [{ path: rec.path, ...current }],
+        })
+        store.deleteRevertedFile(sessionId, rec.path)
+        restored++
+      } catch (error: any) {
+        failed.push(rec.path)
+        console.error(`恢复 ${rec.path} 失败:`, error.message)
+      }
+    }
+    try {
+      for (const rec of records) {
+        broadcast('fs:fileChanged', rec.path)
+      }
+    } catch {
+      // Ignore notification failures — the restore itself is already complete.
+    }
+    return { ok: failed.length === 0, restored, failed }
+  })
+
+  // Forward snapshot of one reverted file — used by the file-changes panel to
+  // diff「AI 版本 vs 回退后版本」after a revert.
+  ipcMain.handle('checkpoint:getRevertedRecord', async (_event, sessionId: string, filePath: string) => {
+    const rec = store.getRevertedFileRecords(sessionId).find((r) => r.path === filePath)
+    return rec ?? null
   })
 
   // ───────────────────── MCP (Model Context Protocol) ─────────────────────
@@ -1556,7 +2328,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('mcp:reload', async (_event, rootPath: string) => {
     try {
-      if (rootPath) assertPathAllowed(rootPath)
+      if (rootPath) assertPathWritable(rootPath)
       await mcp.loadConfig(rootPath)
       return { ok: true }
     } catch (error: any) {
@@ -1568,7 +2340,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('mcp:getConfig', (_event, rootPath: string) => {
     try {
       if (!rootPath) return { ok: true, config: { mcpServers: {} }, file: null }
-      assertPathAllowed(rootPath)
+      assertPathWritable(rootPath)
       const candidates = [join(rootPath, 'mcp_config.json'), join(rootPath, '.mcp.json')]
       let raw = ''
       let file: string | null = null
@@ -1598,7 +2370,7 @@ function registerIpcHandlers(): void {
       if (!rootPath) throw new Error('未打开项目，无法保存 MCP 配置')
       // Only write inside the workspace — resolve the target and verify it
       // doesn't escape the project root (blocks ../ traversal and arbitrary paths).
-      assertPathAllowed(rootPath)
+      assertPathWritable(rootPath)
       const target = file ? resolve(rootPath, file) : join(rootPath, 'mcp_config.json')
       const rootResolved = resolve(rootPath)
       const rel = relative(rootResolved, target)
@@ -1614,10 +2386,43 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // ───────────────────── 全局 MCP 配置（所有项目可用）─────────────────────
+  // Lives in <userData>/mcp_config.json — outside any workspace, so no
+  // path-trust assertion applies. A project entry with the same name overrides
+  // the global one (the manager merges the two tiers).
+
+  const globalMcpConfigPath = () => join(app.getPath('userData'), 'mcp_config.json')
+
+  ipcMain.handle('mcp:getGlobalConfig', () => {
+    try {
+      const file = globalMcpConfigPath()
+      let raw = ''
+      if (existsSync(file)) raw = readFileSync(file, 'utf-8')
+      if (!raw) return { ok: true, config: { mcpServers: {} }, file }
+      const parsed = JSON.parse(raw)
+      return { ok: true, config: { mcpServers: parsed.mcpServers || parsed.servers || {} }, file }
+    } catch (error: any) {
+      return { ok: false, error: error.message }
+    }
+  })
+
+  ipcMain.handle('mcp:saveGlobalConfig', async (_event, config: { mcpServers: Record<string, any> }) => {
+    try {
+      const file = globalMcpConfigPath()
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, JSON.stringify({ mcpServers: config?.mcpServers || {} }, null, 2), 'utf-8')
+      await mcp.loadGlobalConfig()
+      return { ok: true, file }
+    } catch (error: any) {
+      return { ok: false, error: error.message }
+    }
+  })
+
   // Used by the renderer to build tool definitions for the LLM
-  ipcMain.handle('mcp:toolDefinitions', async () => {
+  ipcMain.handle('mcp:toolDefinitions', async (_event, rootPath?: string) => {
     // Stale tools (from a disconnected server's last-known list) are filtered —
     // the model must never be offered a tool that would fail with "未连接".
+    await syncMcpToRoot(rootPath)
     const tools = (await mcp.listTools()).filter((t) => !t.stale)
     return tools.map((t) => toMcpToolDefinition(t))
   })
@@ -1651,9 +2456,32 @@ function registerIpcHandlers(): void {
   })
 
   // Per-server connection state for the MCP management UI (MCP 管理中心)
-  ipcMain.handle('mcp:status', async () => {
+  // Per-server connection state for the management UI (MCP 管理中心)
+  ipcMain.handle('mcp:status', async (_event, rootPath?: string) => {
+    await syncMcpToRoot(rootPath)
     return mcp.getStatus()
   })
+
+  /**
+   * Keep the MCP manager on the ACTIVE project. The manager normally loads a
+   * workspace's servers on fs:watch (file-tree mount), which can lag behind —
+   * or never match — the project the active conversation belongs to. Callers
+   * that know their project (MCP 面板、每轮发送前的工具刷新) pass it here;
+   * when it differs from the loaded root, reload before answering. Failed
+   * servers are retried by the reload (see MCPManager.applyEffectiveConfig),
+   * so this doubles as the panel's manual "启动/重试" trigger.
+   */
+  const syncMcpToRoot = async (rootPath?: string) => {
+    if (!rootPath) return
+    if (normalizePath(mcp.loadedRoot || '') === normalizePath(rootPath)) return
+    try {
+      assertPathWritable(rootPath)
+      await mcp.loadConfig(rootPath)
+    } catch {
+      // Untrusted or unloadable path — answer with whatever is loaded; the
+      // panel surfaces its own error via mcp:getConfig.
+    }
+  }
 
   // ───────────────────── Usage statistics ─────────────────────
   ipcMain.handle(IPC_CHANNELS.USAGE_RECORD, (_event, events: UsageEvent[]) => {
@@ -1674,33 +2502,99 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
-  // Git handler
-  ipcMain.handle('git:exec', async (_event, cwd: string, args: string[], input?: string) => {
+  // Git handler — argv goes through checkVcsArgs: the renderer (and the model
+  // through it) must not be able to reach `git -c core.pager=…`, `--exec-path`,
+  // `ext::` transports or `--output`, all of which are command execution or file
+  // writes dressed up as git arguments. `input` stays supported: the central diff
+  // editor applies per-hunk patches through stdin.
+  const gatedGit = async (
+    cwd: string,
+    args: unknown,
+    input?: string,
+    raw = false,
+  ): Promise<{ success: boolean; output: string; error?: string }> => {
+    const checked = checkVcsArgs('git', args)
+    if (!checked.ok) return { success: false, output: '', error: checked.error }
     try {
-      if (cwd) assertPathAllowed(cwd)
-      const result = await gitExec(cwd, args, input)
+      if (cwd) assertPathWritable(cwd)
+      const result = raw
+        ? await gitExecRaw(cwd, checked.args, input)
+        : await gitExec(cwd, checked.args, input)
       return { success: true, output: result }
     } catch (error: any) {
       return { success: false, output: '', error: error.message }
     }
-  })
+  }
+
+  ipcMain.handle('git:exec', (_event, cwd: string, args: unknown, input?: string) => gatedGit(cwd, args, input))
 
   // Git handler returning untrimmed stdout (byte-exact blob reads)
-  ipcMain.handle('git:execRaw', async (_event, cwd: string, args: string[], input?: string) => {
+  ipcMain.handle('git:execRaw', (_event, cwd: string, args: unknown, input?: string) =>
+    gatedGit(cwd, args, input, true))
+
+  // GitHub CLI — the hosting layer (PR list / create / review comments).
+  // Same shape and same argv gate as git:exec.
+  ipcMain.handle('gh:exec', async (_event, cwd: string, args: unknown) => {
+    const checked = checkVcsArgs('gh', args)
+    if (!checked.ok) return { success: false, output: '', error: checked.error }
     try {
-      if (cwd) assertPathAllowed(cwd)
-      const result = await gitExecRaw(cwd, args, input)
-      return { success: true, output: result }
+      if (cwd) assertPathWritable(cwd)
+      return { success: true, output: await runGh(cwd, checked.args) }
     } catch (error: any) {
       return { success: false, output: '', error: error.message }
     }
   })
 
+  // Is `gh` installed and authenticated for this repo's host? Probed here (not in
+  // the renderer) because both answers come from process exit codes + stderr.
+  ipcMain.handle('gh:status', async (_event, cwd: string) => {
+    try {
+      if (cwd) assertPathWritable(cwd)
+    } catch (error: any) {
+      return { installed: false, authed: false, error: error.message }
+    }
+    let installed = false
+    try {
+      await runGh(cwd || process.cwd(), ['--version'])
+      installed = true
+    } catch (error: any) {
+      // `--version` is not in the subcommand allowlist — execFile still ran, so
+      // anything other than ENOENT means the binary exists.
+      installed = !/ENOENT/.test(String(error?.message || ''))
+    }
+    if (!installed) return { installed: false, authed: false }
+    let text = ''
+    try {
+      text = await runGh(cwd || process.cwd(), ['auth', 'status'])
+    } catch (error: any) {
+      text = String(error?.message || '')
+    }
+    return { installed: true, ...parseGhAuthStatus(text), raw: text.slice(0, 2000) }
+  })
+
+  // ── Agent browser session ────────────────────────────────────────────────
+  // One hidden http(s)-only page that the assistant drives and the Browser
+  // panel mirrors. The tools (browser_navigate / browser_read_console /
+  // browser_screenshot / browser_act) call the same IPC from the renderer.
+  initBrowserSession({
+    broadcast: (payload) => broadcast(IPC_CHANNELS.BROWSER_EVENT, payload),
+  })
+  ipcMain.handle(IPC_CHANNELS.BROWSER_NAVIGATE, (_event, url: string) => browserNavigate(String(url ?? '')))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_STATE, () => browserState())
+  ipcMain.handle(IPC_CHANNELS.BROWSER_CONSOLE, (_event, clear?: boolean) => browserConsole(clear === true))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_PAGE_TEXT, (_event, maxChars?: number) => browserPageText(maxChars))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SCREENSHOT, () => browserScreenshot())
+  ipcMain.handle(IPC_CHANNELS.BROWSER_ACT, (_event, action: BrowserAction, opts?: BrowserActOptions) =>
+    browserAct(action, opts))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY, (_event, step: 'back' | 'forward' | 'reload') => browserHistory(step))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_VISIBLE, (_event, visible: boolean) => browserSetVisible(visible === true))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_CLOSE, () => browserClose())
+
   // Shell exec handler (for run_command tool)
-  ipcMain.handle('shell:exec', async (_event, command: string, cwd?: string, options?: { timeoutMs?: number }) => {
+  ipcMain.handle(IPC_CHANNELS.SHELL_EXEC, async (_event, command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => {
     return new Promise((resolve) => {
       try {
-        if (cwd) assertPathAllowed(cwd)
+        if (cwd) assertPathWritable(cwd)
       } catch (error: any) {
         resolve({ success: false, output: '', error: error.message })
         return
@@ -1708,28 +2602,49 @@ function registerIpcHandlers(): void {
       // 默认 30s 超时，允许 run_command 的 timeoutMs 覆盖（构建/测试等长命令
       // 传更大值）；上限 10 分钟防失控。
       const timeoutMs = Math.max(1000, Math.min(Math.floor(options?.timeoutMs || 30000), 600_000))
-      exec(command, {
+      // requestId lets the renderer cancel THIS run via shell:kill. Without it
+      // a stop could only drop the result while the build kept burning CPU.
+      const requestId = typeof options?.requestId === 'string' && options.requestId ? options.requestId : uuidv4()
+      const child = exec(command, {
         cwd: cwd || undefined,
         timeout: timeoutMs,
         maxBuffer: 5 * 1024 * 1024,
         shell: process.platform === 'win32' ? 'powershell.exe' : 'bash',
         env: scrubbedSpawnEnv(),
       }, (error: any, stdout: string, stderr: string) => {
+        shellRuns.delete(requestId)
+        const stoppedByUser = shellStopped.delete(requestId)
         if (error) {
           // exec 超时会把子进程杀掉并置 killed=true（signal='SIGTERM'）。超时
           // 必须明确标注 [超时]——否则 agent 无法区分「命令超时」与「命令本身
           // 失败」，会把超时误判成环境/参数问题，陷入反复换姿势重试（曾见
-          // build 超时被当成构建环境坏了，多烧 6 分钟调试）。
-          const timedOut = error.killed === true || error.signal === 'SIGTERM'
-          const msg = timedOut
-            ? `[超时] 命令执行超过 ${Math.round(timeoutMs / 1000)} 秒被终止。若是构建/测试/安装等长命令，请在 run_command 的 timeoutMs 参数中加大超时（如 120000），或改用异步方式等待，不要重复执行同一命令。`
-            : (stderr || error.message)
+          // build 超时被当成构建环境坏了，多烧 6 分钟调试）。用户终止同理要单独
+          // 标注：它既不是超时也不是失败，重试反而不是用户要的。
+          const timedOut = !stoppedByUser && (error.killed === true || error.signal === 'SIGTERM')
+          const msg = stoppedByUser
+            ? '[已终止] 用户停止了任务，这条命令及其子进程已被结束。不要重试它；如需要可先向用户确认。'
+            : timedOut
+              ? `[超时] 命令执行超过 ${Math.round(timeoutMs / 1000)} 秒被终止。若是构建/测试/安装等长命令，请在 run_command 的 timeoutMs 参数中加大超时（如 120000），或改用异步方式等待，不要重复执行同一命令。`
+              : (stderr || error.message)
           resolve({ success: false, output: stdout || '', error: msg })
         } else {
           resolve({ success: true, output: stdout.trim() })
         }
       })
+      shellRuns.set(requestId, child)
     })
+  })
+
+  // Cancel an in-flight shell:exec (the user hit Stop). Returns false when the
+  // command already finished — the renderer's abort listener may fire late.
+  ipcMain.handle(IPC_CHANNELS.SHELL_KILL, (_event, requestId: string) => {
+    if (typeof requestId !== 'string' || !requestId) return false
+    const child = shellRuns.get(requestId)
+    if (!child) return false
+    shellRuns.delete(requestId)
+    shellStopped.add(requestId)
+    killChildTree(child)
+    return true
   })
 
   // Tool-output spill store — oversized tool results page through read_file
@@ -1742,6 +2657,26 @@ function registerIpcHandlers(): void {
     await spillStore.deleteSession(sessionId)
   })
 
+  // Model wire log — the renderer emits one JSON line per request event; the
+  // main process appends it to <userData>/wire-logs/<session>.jsonl. Best-
+  // effort by design: a logging failure never affects the request path.
+  ipcMain.handle('log:wireAppend', async (_event, sessionId: string, line: string) => {
+    if (typeof sessionId !== 'string' || typeof line !== 'string') return false
+    return wireLog.append(sessionId, line)
+  })
+  ipcMain.handle('log:deleteSession', async (_event, sessionId: string) => {
+    if (typeof sessionId !== 'string') return
+    await wireLog.deleteSession(sessionId)
+  })
+  ipcMain.handle('log:openDir', async () => {
+    const dir = wireLog.root
+    try {
+      await mkdirSync(dir, { recursive: true })
+    } catch { /* the open below still targets the same path */ }
+    const err = await shell.openPath(dir)
+    return err === ''
+  })
+
   // App handlers
   ipcMain.handle('app:getPath', (_event, name: string) => {
     return app.getPath(name as any)
@@ -1751,11 +2686,13 @@ function registerIpcHandlers(): void {
   // agent conversation before opening any real folder. Created lazily under the
   // user's Documents directory (idempotent); reusing an existing folder of the
   // same name is harmless.
-  ipcMain.handle('app:ensureDefaultProject', async () => {
+  // 按窗口模式分目录：对话窗口与一人公司窗口各自独立的默认项目，两边项目列表
+  // 互不「一致」——一人公司项目/工作区与对话模式彻底分开。
+  ipcMain.handle('app:ensureDefaultProject', async (_event, mode?: string) => {
     const base = (() => {
       try { return app.getPath('documents') } catch { /* ignore */ }
     })()
-    const dir = join(base || app.getPath('home'), 'OurCode')
+    const dir = join(base || app.getPath('home'), mode === 'office' ? 'OurCode-office' : 'OurCode')
     try { mkdirSync(dir, { recursive: true }) } catch { /* ignore */ }
     return dir
   })
@@ -1849,6 +2786,21 @@ function registerIpcHandlers(): void {
   })
 }
 
+// OURCODE_USER_DATA lets tests / multi-instance runs point the app at a
+// throwaway data dir instead of the real userData. Redirect the FULL Chromium
+// profile too (localStorage — editor session, recent projects, UI state —
+// lives there, not in the app's own stores), so the isolation is complete.
+// Must happen before the app is ready / Chromium initializes the profile.
+//
+// It must also happen BEFORE the single-instance lock below: Electron keys that
+// lock on the userData path, so acquiring it first makes every launch — sandboxed
+// or not — contend for the REAL profile's lock. An isolated instance would then
+// quit on startup whenever any other instance was alive (a stray test process, or
+// the developer's own app), which is exactly what broke rapid e2e relaunches.
+if (process.env.OURCODE_USER_DATA) {
+  app.setPath('userData', process.env.OURCODE_USER_DATA)
+}
+
 // Only one instance may run at a time. A second launch (double-click while the
 // dev server is up, or a stray `npm run dev`) would fight for the same GPU/disk
 // cache in userData — Chromium logs "Unable to move the cache" / "Unable to
@@ -1866,15 +2818,6 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 // App lifecycle
-
-// OURCODE_USER_DATA lets tests / multi-instance runs point the app at a
-// throwaway data dir instead of the real userData. Redirect the FULL Chromium
-// profile too (localStorage — editor session, recent projects, UI state —
-// lives there, not in the app's own stores), so the isolation is complete.
-// Must happen before the app is ready / Chromium initializes the profile.
-if (process.env.OURCODE_USER_DATA) {
-  app.setPath('userData', process.env.OURCODE_USER_DATA)
-}
 
 app.whenReady().then(() => {
   // Local file preview protocol (ourcode-file://) — must be registered after
@@ -1896,19 +2839,33 @@ app.whenReady().then(() => {
   fileSystem = new FileSystemService()
   fileIndex = new FileIndexService(fileSystem)
   store = new SQLiteStore(userDataPath)
+  // Trust needs the store for its durable grants, so it can only exist here.
+  // The userData dir is the app's own and never needs asking about.
+  trust = new WorkspaceTrust({
+    load: () => store.listTrustedWorkspaces(),
+    add: (p) => store.trustWorkspace(p),
+    remove: (p) => store.untrustWorkspace(p),
+  })
+  trust.addAppOwned(userDataPath)
   backup = new BackupService(join(userDataPath, 'backups'))
   // Tool-output spill store: full outputs of oversized tool results live under
   // userData/spill/<session>/ (read_file can page them back). Sweep the TTL on
   // every startup — spills are cache, not user data.
   spillStore = new SpillStore(join(userDataPath, 'spill'))
   void spillStore.sweep()
+  // Model wire log: replayable request/response lines under userData/wire-logs
+  // (swept on startup like spills — logs are diagnostics, not user data).
+  wireLog = new WireLogService(join(userDataPath, 'wire-logs'))
+  void wireLog.sweep()
   // Bundled MCP servers (e.g. the git-server) ship inside the package via
   // extraResources → <resources>/mcp-servers (outside app.asar, so a plain
   // Node child can read them); in dev they live in the repo root.
   const bundledMcpDir = app.isPackaged
     ? join(process.resourcesPath, 'mcp-servers')
     : join(app.getAppPath(), 'mcp-servers')
-  mcp = new MCPManager({ bundledNodeDir: bundledMcpDir })
+  mcp = new MCPManager({ bundledNodeDir: bundledMcpDir, globalConfigPath: join(userDataPath, 'mcp_config.json') })
+  // 全局 MCP 服务器在启动时即加载——它们不依赖任何已打开的项目。
+  void mcp.loadGlobalConfig()
 
   // Per-group TLS bypass for intranet / self-signed certificates
   refreshTlsSkippedHosts()
@@ -1943,10 +2900,13 @@ app.whenReady().then(() => {
   })
 
   registerIpcHandlers()
+  installNavigationGuards()
   createWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // allWindows, not BrowserWindow.getAllWindows(): the hidden browser session
+    // is a real window and would otherwise make the dock icon do nothing.
+    if (allWindows.size === 0) {
       createWindow()
     }
   })
@@ -1966,5 +2926,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  browserClose()
   store.close()
 })

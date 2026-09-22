@@ -38,6 +38,7 @@ function detectSoftwareRenderer(): boolean {
 
 /**
  * 创建场景宿主。container 必须已有布局尺寸（clientWidth/clientHeight > 0）。
+ * 取景（推近/裁边）由 OfficeScene.setCameraFraming 按容器宽高比自动处理。
  */
 export function createOfficeSceneHost(
   container: HTMLElement,

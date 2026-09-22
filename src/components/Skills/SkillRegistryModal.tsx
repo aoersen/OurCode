@@ -446,14 +446,14 @@ export default function SkillRegistryModal() {
                           {s.enabled ? t('skillRegistry.installed') : t('plugin.statusDisabled')}
                         </span>
                         <span
-                          className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-nova-hover text-nova-text-muted"
+                          className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-nova-hover text-nova-text-muted"
                           title={s.source === 'global' ? undefined : s.projectPath}
                         >
                           {s.source === 'global' ? t('skillRegistry.globalTag') : s.projectPath?.split(/[/\\]/).pop() || t('skillRegistry.projectTag')}
                         </span>
                         {s.builtin && (
                           <span
-                            className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-[var(--accent)]/15 text-[var(--accent)]"
+                            className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-[var(--accent)]/15 text-[var(--accent)]"
                             title={t('skillRegistry.builtinProtected')}
                           >
                             {t('skillRegistry.builtinTag')}
@@ -461,7 +461,7 @@ export default function SkillRegistryModal() {
                         )}
                         {s.importedFrom && (
                           <span
-                            className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-nova-bg border border-nova-border text-nova-text-muted"
+                            className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-nova-bg border border-nova-border text-nova-text-muted"
                             title={t('skillRegistry.importedFrom', { origin: SKILL_ORIGIN_LABELS[s.importedFrom] })}
                           >
                             {SKILL_ORIGIN_LABELS[s.importedFrom]}
@@ -549,7 +549,7 @@ export default function SkillRegistryModal() {
                             <div className="flex items-baseline gap-2">
                               <span className="font-mono text-[13px] font-bold truncate" style={{ color: 'var(--accent)' }}>{s.name}</span>
                               <span
-                                className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-nova-bg border border-nova-border text-nova-text-muted"
+                                className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-nova-bg border border-nova-border text-nova-text-muted"
                                 title={s.path}
                               >
                                 {SKILL_ORIGIN_LABELS[s.origin]}

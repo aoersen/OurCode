@@ -50,10 +50,14 @@ export const IPC_CHANNELS = {
   LLM_CACHE_PUT: 'llmCache:put',
   LLM_CACHE_CLEAR: 'llmCache:clear',
 
-  // Encryption
-  CRYPTO_SET_MASTER_KEY: 'crypto:setMasterKey',
-  CRYPTO_UNLOCK: 'crypto:unlock',
-  CRYPTO_IS_LOCKED: 'crypto:isLocked',
+  // Workspace trust — answered by a native dialog the main process opens, so a
+  // compromised renderer can neither grant itself access nor forge the answer.
+  TRUST_REQUEST: 'trust:request',
+  TRUST_REQUEST_FILE: 'trust:requestFile',
+  TRUST_ARM_READ_POLICY: 'trust:armReadPolicy',
+  TRUST_DISARM_READ_POLICY: 'trust:disarmReadPolicy',
+  TRUST_STATUS: 'trust:status',
+  TRUST_REVOKE: 'trust:revoke',
 
   // App
   APP_GET_PATH: 'app:getPath',
@@ -86,6 +90,13 @@ export const IPC_CHANNELS = {
   TERM_DATA: 'term:data',
   TERM_EXIT: 'term:exit',
   TERM_DISPOSE: 'term:dispose',
+  // Agent-owned pty runs: same layer as the integrated terminal, but the
+  // assistant starts them, reads their output and can stop them.
+  TERM_RUN_AGENT: 'term:runAgent',
+  TERM_OUTPUT: 'term:output',
+  TERM_KILL: 'term:kill',
+  TERM_ATTACH: 'term:attach',
+  TERM_LIST: 'term:list',
 
   // Search
   SEARCH_IN_FILES: 'search:inFiles',
@@ -96,12 +107,30 @@ export const IPC_CHANNELS = {
   // content (`git show :file` / `git show HEAD:file`) is byte-exact for diffs.
   GIT_EXEC_RAW: 'git:execRaw',
 
+  // GitHub CLI — the PR layer (list / create / read review comments). Drives the
+  // local `gh` binary, so it inherits whatever account `gh auth login` set up.
+  GH_EXEC: 'gh:exec',
+  GH_STATUS: 'gh:status',
+
   // Shell
   SHELL_EXEC: 'shell:exec',
+  SHELL_KILL: 'shell:kill',
 
   // File preview (ourcode-file:// live preview buffers)
   PREVIEW_SET: 'preview:set',
   PREVIEW_CLEAR: 'preview:clear',
+
+  // Agent browser session — navigate / read console / screenshot / act
+  BROWSER_NAVIGATE: 'browser:navigate',
+  BROWSER_STATE: 'browser:state',
+  BROWSER_CONSOLE: 'browser:console',
+  BROWSER_PAGE_TEXT: 'browser:pageText',
+  BROWSER_SCREENSHOT: 'browser:screenshot',
+  BROWSER_ACT: 'browser:act',
+  BROWSER_HISTORY: 'browser:history',
+  BROWSER_VISIBLE: 'browser:visible',
+  BROWSER_CLOSE: 'browser:close',
+  BROWSER_EVENT: 'browser:event',
 
   // Auto Update
   UPDATE_CHECK: 'update:check',
@@ -133,15 +162,21 @@ export const DEFAULT_PREFERENCES = {
   showHiddenFiles: false,
   chatPosition: 'right' as const,
   language: 'system' as const,
-  encryptChatData: false,
   chatHistoryEditMode: false,
   aiAutoMemory: true,
   llmResponseCache: true,
   anthropicPromptCache: true,
+  /** Model wire log: append one redacted JSONL line per request event under
+   *  <userData>/wire-logs/<session>.jsonl — the replayable record used to
+   *  debug agent turns (request bytes → retries → response bytes). */
+  wireLogEnabled: true,
   crossSessionInbound: 'accept' as const,
   /** Agent 工具调用轮数上限；0 = 无限（默认）。主流工具不设常态上限，
    *  只在用户主动配置时才加一个防死循环的安全阀。 */
   agentMaxIterations: 0,
+  /** 提问自动继续（ZCode 风格）：Agent 提问默认 5 分钟倒计时，超时未回答
+   *  自动继续；悬停/交互永久暂停。权限审批与计划审批永远等待。 */
+  questionAutoContinue: true,
 }
 
 // Free model keywords
@@ -154,6 +189,15 @@ export const EXHAUSTED_MARKER = '[已达到最大工具调用轮数'
 // localStorage prefix for the per-project "always allow this tool" allowlist.
 // Key = TOOL_ALLOWLIST_PREFIX + projectPath, value = JSON array of tool names.
 export const TOOL_ALLOWLIST_PREFIX = 'ourcode-tool-allowlist:'
+
+// localStorage prefix for the per-project "always deny this tool" denylist.
+// Key = TOOL_DENYLIST_PREFIX + projectPath, value = JSON array of tool names.
+// 命中即拒绝执行（不弹窗）；危险命令不受其影响（始终弹确认）。
+export const TOOL_DENYLIST_PREFIX = 'ourcode-tool-denylist:'
+
+// Agent 提问（ask_user_question / 计划模式防空转提问）的自动继续倒计时。
+// 权限审批与计划审批没有超时（永远等待用户决策）。
+export const QUESTION_AUTO_CONTINUE_MS = 5 * 60_000
 
 // Known model metadata (context window, vision, function call)
 export const MODEL_METADATA: Record<string, { contextWindow: number; vision: boolean; functionCall: boolean }> = {

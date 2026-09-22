@@ -197,14 +197,14 @@ export default function SkillPanel() {
                       <span className="font-mono text-[10px] text-nova-text-muted shrink-0">v{s.version}</span>
                     )}
                     <span
-                      className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-nova-hover text-nova-text-muted"
+                      className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-nova-hover text-nova-text-muted"
                       title={s.source === 'global' ? undefined : s.projectPath}
                     >
                       {s.source === 'global' ? t('skillRegistry.globalTag') : s.projectPath?.split(/[/\\]/).pop() || t('skillRegistry.projectTag')}
                     </span>
                     {s.builtin && (
                       <span
-                        className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-[var(--accent)]/15 text-[var(--accent)]"
+                        className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-[var(--accent)]/15 text-[var(--accent)]"
                         title={t('skillRegistry.builtinProtected')}
                       >
                         {t('skillRegistry.builtinTag')}
@@ -212,7 +212,7 @@ export default function SkillPanel() {
                     )}
                     {s.importedFrom && (
                       <span
-                        className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-nova-bg border border-nova-border text-nova-text-muted"
+                        className="shrink-0 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-nova-bg border border-nova-border text-nova-text-muted"
                         title={t('skillRegistry.importedFrom', { origin: SKILL_ORIGIN_LABELS[s.importedFrom] })}
                       >
                         {SKILL_ORIGIN_LABELS[s.importedFrom]}

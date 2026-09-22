@@ -4,6 +4,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useUIStore } from '@/stores/uiStore'
+import { listAgentRuns, onAgentRunsChanged } from '@/services/terminalRuns'
+import type { AgentTerminalRun } from '@shared/types'
 import { useI18n } from '@/i18n/useI18n'
 import { t as moduleT } from '@/i18n'
 
@@ -16,6 +18,10 @@ interface TerminalTab {
   splitTabId: string | null
   splitRatio: number
 }
+
+/** Sessions the assistant started (`agent-*` ids, see services/terminalRuns).
+ *  Their process lives in the main process, so this view only attaches to it. */
+const isAgentSessionId = (id: string): boolean => id.startsWith('agent-')
 
 /** xterm.js ANSI palettes — follow the app's light/dark theme instead of a
  *  hardcoded dark block (which glared against the light editor surface). */
@@ -90,6 +96,8 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     disposed: boolean
   }>>(new Map())
   const initTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+  const seenAgentRunsRef = useRef<Set<string>>(new Set())
+  const dismissedAgentRunsRef = useRef<Set<string>>(new Set())
   const activeDragRef = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null)
 
   // Debounced fit + rAF coalescing for drag resizes. mousemove fires at 60–120 Hz
@@ -170,6 +178,24 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     return tabId
   }, [t])
 
+  /** A tab per process the assistant started in this pty layer */
+  const openAgentTab = useCallback((run: AgentTerminalRun) => {
+    const command = run.command.split('\n')[0].slice(0, 28)
+    setTabs((prev) => {
+      if (prev.some((tab) => tab.id === run.id)) return prev
+      return [...prev, {
+        id: run.id,
+        title: moduleT('terminal.agentTabTitle', { command }),
+        isReady: false,
+        isActive: prev.length === 0,
+        splitDirection: 'none',
+        splitTabId: null,
+        splitRatio: 0.5,
+      }]
+    })
+    setActiveTabId((current) => (current === null ? run.id : current))
+  }, [])
+
   const disposeTerminal = useCallback((tabId: string) => {
     const entry = terminalsRef.current.get(tabId)
     if (entry) {
@@ -183,6 +209,10 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
   }, [])
 
   const closeTab = useCallback((tabId: string) => {
+    // Closing an agent tab only detaches the view — the process keeps running in
+    // the main process for the assistant to read. Remember it was dismissed so
+    // the sync effect below doesn't hand it back on the next store change.
+    if (isAgentSessionId(tabId)) dismissedAgentRunsRef.current.add(tabId)
     const tab = tabs.find((t) => t.id === tabId)
     // If this tab is part of a split pair, unsplit instead of closing
     if (tab && tab.splitDirection !== 'none' && tab.splitTabId) {
@@ -317,6 +347,28 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     }
   }, [isTerminalVisible, tabs.length, createTab])
 
+  // The assistant's background commands outlive this view (hiding the panel
+  // unmounts it), so re-open a tab for every run that is still registered.
+  useEffect(() => {
+    let cancelled = false
+    const sync = () => {
+      void listAgentRuns().then((runs) => {
+        if (cancelled) return
+        for (const run of runs) {
+          if (seenAgentRunsRef.current.has(run.id) || dismissedAgentRunsRef.current.has(run.id)) continue
+          seenAgentRunsRef.current.add(run.id)
+          openAgentTab(run)
+        }
+      })
+    }
+    sync()
+    const unsubscribe = onAgentRunsChanged(sync)
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [openAgentTab])
+
   // Re-theme live terminals when the app switches light/dark (the theme is
   // applied as a .dark class on <html>, so watch the class attribute).
   useEffect(() => {
@@ -359,6 +411,23 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
       const entry = terminalsRef.current.get(tabId)
       if (!entry || entry.disposed) return
       fitAddon.fit()
+      if (isAgent) {
+        // Attach to a process the assistant started: replay what it has already
+        // produced, then let the live stream through.
+        void window.electronAPI.termAttach(tabId).then((attached) => {
+          const current = terminalsRef.current.get(tabId)
+          if (!current || current.disposed) return
+          replayed = true
+          const heldOutput = held.join('')
+          held.length = 0
+          term.write(
+            (attached?.output ?? '') + heldOutput +
+            (attached && !attached.running ? '\r\n' + moduleT('terminal.processExited') : '')
+          )
+          setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, isReady: true } : t)))
+        })
+        return
+      }
       window.electronAPI.termCreate(tabId, rootPath || undefined).then(() => {
         if (!entry.disposed) {
           setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, isReady: true } : t))
@@ -369,6 +438,11 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
 
     const cleanup: (() => void)[] = []
     let localDisposed = false
+    const isAgent = isAgentSessionId(tabId)
+    // An agent tab joins a stream that was already running: hold live chunks
+    // until the replay is written, otherwise history and live output interleave.
+    let replayed = !isAgent
+    const held: string[] = []
 
     // Batch high-frequency pty output (build logs, recursive listings) into a
     // single term.write per ~30 ms instead of one write per IPC chunk — the main
@@ -389,12 +463,19 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     })
     cleanup.push(window.electronAPI.onTermData(tabId, (data) => {
       if (localDisposed) return
+      if (!replayed) {
+        held.push(data)
+        return
+      }
       pendingWrite += data
       if (writeTimer === null) writeTimer = setTimeout(flushWrite, 30)
     }))
 
     cleanup.push(window.electronAPI.onTermExit(tabId, () => {
       if (localDisposed) return
+      // An agent tab that has not replayed yet would put this banner *above* the
+      // output it belongs to — the attach response renders it in order instead.
+      if (!replayed) return
       // Flush any buffered output before the exit banner so ordering is preserved
       flushWrite()
       term.write('\r\n' + moduleT('terminal.processExited'))
@@ -506,7 +587,7 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     <div className="h-full flex flex-col">
       {/* Drag handle */}
       <div
-        className="h-1 cursor-ns-resize hover:bg-nova-accent/40 transition-colors flex-shrink-0"
+        className="h-1.5 cursor-ns-resize hover:bg-nova-accent/40 transition-colors flex-shrink-0"
         onMouseDown={handleDragStart}
       />
 

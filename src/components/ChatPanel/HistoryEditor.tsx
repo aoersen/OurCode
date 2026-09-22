@@ -1,5 +1,6 @@
 import { useChatStore } from '@/stores/chatStore'
 import { useI18n } from '@/i18n/useI18n'
+import { askText } from '@/components/Common/PromptDialog'
 
 interface HistoryEditorProps {
   sessionId: string
@@ -19,8 +20,8 @@ export default function HistoryEditor({ sessionId, isExpanded, onToggle }: Histo
   // Get user messages for history display
   const userMessages = session.messages.filter((m) => m.role === 'user')
 
-  const handleEdit = (msgId: string, currentContent: string) => {
-    const newContent = prompt(t('chat.editHistoryPrompt'), currentContent)
+  const handleEdit = async (msgId: string, currentContent: string) => {
+    const newContent = await askText({ title: t('chat.editHistoryPrompt'), defaultValue: currentContent, multiline: true })
     if (newContent && newContent !== currentContent) {
       editMessage(sessionId, msgId, newContent)
     }

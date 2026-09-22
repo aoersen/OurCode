@@ -22,6 +22,26 @@ export const DEFAULT_TOOL_OUTPUT_MAX_LINES = 3000
 /** Fraction of the budget given to the head preview (the rest goes to the tail). */
 const HEAD_FRACTION = 0.6
 
+/**
+ * Cut the head/tail without splitting a surrogate pair.
+ *
+ * Emoji and CJK-extension characters are two UTF-16 units; a budget-aligned
+ * `slice` can end on the high surrogate and leave a lone half behind, which
+ * serializes to U+FFFD — visible corruption in the middle of a tool result.
+ */
+function headSlice(text: string, n: number): string {
+  if (n >= text.length) return text
+  const last = text.charCodeAt(n - 1)
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, n - 1) : text.slice(0, n)
+}
+
+function tailSlice(text: string, n: number): string {
+  const from = text.length - n
+  if (from <= 0) return text
+  const first = text.charCodeAt(from)
+  return text.slice(first >= 0xdc00 && first <= 0xdfff ? from + 1 : from)
+}
+
 /** True when the output exceeds the inline budget and should be spilled to
  *  disk (full text saved; preview + locator returned) instead of truncated. */
 export function shouldSpill(text: string, limits?: ToolOutputLimits): boolean {
@@ -34,7 +54,7 @@ export function shouldSpill(text: string, limits?: ToolOutputLimits): boolean {
 export function buildSpillPreview(text: string, locator: string, limits?: ToolOutputLimits): string {
   const maxChars = limits?.maxChars ?? DEFAULT_TOOL_OUTPUT_MAX_CHARS
   const headChars = Math.floor(maxChars * HEAD_FRACTION)
-  const head = text.slice(0, headChars)
+  const head = headSlice(text, headChars)
   const lines = countLines(text)
   return `${head}\n${buildSpillNotice(text.length, lines, locator)}`
 }
@@ -50,8 +70,8 @@ export function truncateToolOutput(text: string, limits?: ToolOutputLimits): str
   if (text.length > maxChars) {
     const headChars = Math.floor(maxChars * HEAD_FRACTION)
     const tailChars = maxChars - headChars
-    const head = text.slice(0, headChars)
-    const tail = text.slice(text.length - tailChars)
+    const head = headSlice(text, headChars)
+    const tail = tailSlice(text, tailChars)
     const lines = countLines(text)
     return `${head}\n${buildNotice(text.length, lines)}\n${tail}`
   }

@@ -64,6 +64,27 @@ report_path: .ourcode/targemode/agents/test_report.md
     expect(env!.model).toBeUndefined()
     expect(env!.reportPath).toBeUndefined()
   })
+
+  it('drops junk model values (template placeholder / undefined / none)', () => {
+    // 监管 LLM 常原样照抄信封模板的 model: 注释、或写 undefined/none 等占位——
+    // 这些一旦当作模型名发出去就是 400 "Unsupported model"，必须清洗掉。
+    expect(parseEnvelope('---\nto: dev\nmodel: <可选，该角色使用的模型>\n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel: undefined\n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel: none\n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel:   \n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel: deepseek-chat\n---\nx')!.model).toBe('deepseek-chat')
+  })
+
+  it('strips quotes / rejects non-id model values in the envelope', () => {
+    // 监管常在信封里给模型名加引号、写 optional、或塞一句中文说明 ——
+    // 这些都会直达 API 造成 400，必须在解析层清洗。
+    expect(parseEnvelope('---\nto: dev\nmodel: "deepseek-chat"\n---\nx')!.model).toBe('deepseek-chat')
+    expect(parseEnvelope('---\nto: dev\nmodel: \'deepseek-chat\'\n---\nx')!.model).toBe('deepseek-chat')
+    expect(parseEnvelope('---\nto: dev\nmodel: optional\n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel: gpt 4o\n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel: 深度求索模型\n---\nx')!.model).toBeUndefined()
+    expect(parseEnvelope('---\nto: dev\nmodel: deepseek-chat  # 用便宜的\n---\nx')!.model).toBe('deepseek-chat')
+  })
 })
 
 describe('envelopeToOverrides (v2 §13.1 — envelope → run_subagent options)', () => {

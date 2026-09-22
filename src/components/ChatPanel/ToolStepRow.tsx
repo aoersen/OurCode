@@ -3,6 +3,7 @@ import { useI18n } from '@/i18n/useI18n'
 import type { TranslationKey } from '@/i18n'
 import SubAgentProgressBlock from './SubAgentProgressBlock'
 import ToolCallDetails from './ToolCallDetails'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 export interface ToolStepRowProps {
   toolCall: { id: string; name: string; arguments: Record<string, any> }
@@ -116,17 +117,11 @@ export default function ToolStepRow({ toolCall, result, rejected, suspended = fa
         {suspended ? (
           <span className="text-nova-text-muted text-[12px] leading-none shrink-0">–</span>
         ) : isPending ? (
-          <span className="material-symbols-outlined text-[14px] leading-none text-nova-accent animate-spin-slow shrink-0" aria-hidden>
-            sync
-          </span>
+          <MSIcon name="sync" className="text-[14px] leading-none text-nova-accent animate-spin-slow shrink-0" />
         ) : isError ? (
-          <span className="material-symbols-outlined text-[14px] leading-none text-nova-text-muted shrink-0" aria-hidden>
-            close
-          </span>
+          <MSIcon name="close" className="text-[14px] leading-none text-nova-text-muted shrink-0" />
         ) : (
-          <span className="material-symbols-outlined text-[14px] leading-none text-nova-text-muted shrink-0" aria-hidden>
-            check
-          </span>
+          <MSIcon name="check" className="text-[14px] leading-none text-nova-text-muted shrink-0" />
         )}
         <span className={`font-mono text-[13px] shrink-0 ${isPending ? 'text-nova-text-primary' : 'text-nova-text-muted'}`}>
           {labelKey ? t(labelKey) : toolCall.name}
@@ -142,12 +137,7 @@ export default function ToolStepRow({ toolCall, result, rejected, suspended = fa
           </span>
         )}
         {/* Chevron — 展开/收起 */}
-        <span
-          className={`material-symbols-outlined text-[14px] leading-none text-nova-text-muted shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
-          aria-hidden
-        >
-          expand_more
-        </span>
+        <MSIcon name="expand_more" className={`text-[14px] leading-none text-nova-text-muted shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
       </button>
 
       {/* Expandable detail: args + full result */}

@@ -110,3 +110,29 @@ describe('shouldSpill / buildSpillPreview', () => {
     expect(preview.startsWith('A'.repeat(Math.floor(DEFAULT_TOOL_OUTPUT_MAX_CHARS * 0.6)))).toBe(true)
   })
 })
+
+describe('surrogate-safe cuts', () => {
+  // A lone high/low surrogate serializes as U+FFFD — visible corruption in the
+  // middle of a tool result, and the reason the budget cut can't be plain slice.
+  const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+  it('does not split an emoji at the head boundary', () => {
+    const text = 'abcde' + '😀'.repeat(60)
+    const out = truncateToolOutput(text, { maxChars: 10, maxLines: 0 })
+    expect(out.startsWith('abcde\n')).toBe(true)
+    expect(out).not.toMatch(loneSurrogate)
+  })
+
+  it('does not split an emoji at the tail boundary', () => {
+    const text = 'a'.repeat(7) + '😀' + 'bbb'
+    const out = truncateToolOutput(text, { maxChars: 10, maxLines: 0 })
+    expect(out.endsWith('\nbbb')).toBe(true)
+    expect(out).not.toMatch(loneSurrogate)
+  })
+
+  it('keeps spill previews surrogate-safe', () => {
+    const text = 'abcde' + '😀'.repeat(60)
+    const out = buildSpillPreview(text, 'C:/tmp/spill/1.txt', { maxChars: 10 })
+    expect(out).not.toMatch(loneSurrogate)
+  })
+})

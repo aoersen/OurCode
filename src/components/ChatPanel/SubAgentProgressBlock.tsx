@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useI18n } from '@/i18n/useI18n'
 import ToolStepRow from './ToolStepRow'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * 子智能体实时进度面板 —— 渲染在父级 run_subagent 工具胶囊下方。
@@ -27,24 +28,13 @@ export default function SubAgentProgressBlock({ toolCallId }: { toolCallId: stri
 
   const statusIcon =
     isRunning ? (
-      <span
-        className="material-symbols-outlined text-[13px] leading-none text-nova-accent animate-spin-slow shrink-0"
-        aria-hidden
-      >
-        progress_activity
-      </span>
+      <MSIcon name="progress_activity" className="text-[13px] leading-none text-nova-accent animate-spin-slow shrink-0" />
     ) : progress.status === 'done' ? (
-      <span className="material-symbols-outlined text-[13px] leading-none text-success shrink-0" aria-hidden>
-        check
-      </span>
+      <MSIcon name="check" className="text-[13px] leading-none text-success shrink-0" />
     ) : progress.status === 'error' ? (
-      <span className="material-symbols-outlined text-[13px] leading-none text-error shrink-0" aria-hidden>
-        close
-      </span>
+      <MSIcon name="close" className="text-[13px] leading-none text-error shrink-0" />
     ) : (
-      <span className="material-symbols-outlined text-[13px] leading-none text-nova-text-muted shrink-0" aria-hidden>
-        stop
-      </span>
+      <MSIcon name="stop" className="text-[13px] leading-none text-nova-text-muted shrink-0" />
     )
 
   const contextLine = progress.description || progress.task
@@ -54,11 +44,9 @@ export default function SubAgentProgressBlock({ toolCallId }: { toolCallId: stri
     <div className="ml-2.5 pl-2.5 border-l-2 border-nova-border/70 flex flex-col gap-1.5 py-0.5">
       {/* 头部：角色名 + 状态 + 统计 */}
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="material-symbols-outlined text-[14px] leading-none text-nova-accent shrink-0" aria-hidden>
-          smart_toy
-        </span>
-        <span className="font-mono text-[11.5px] text-nova-text-primary font-medium shrink-0">{progress.name}</span>
-        <span className="text-[10.5px] text-nova-text-muted shrink-0">{t('chat.subagentTitle')}</span>
+        <MSIcon name="smart_toy" className="text-[14px] leading-none text-nova-accent shrink-0" />
+        <span className="font-mono text-[12px] text-nova-text-primary font-medium shrink-0">{progress.name}</span>
+        <span className="text-[11px] text-nova-text-muted shrink-0">{t('chat.subagentTitle')}</span>
         {statusIcon}
         <span className="ml-auto shrink-0 font-mono text-[10px] text-nova-text-muted">
           {t('chat.subagentToolCalls', { n: progress.toolCallCount })}
@@ -85,18 +73,13 @@ export default function SubAgentProgressBlock({ toolCallId }: { toolCallId: stri
             onClick={() => setThinkingOpen(!thinkingOpen)}
             className="inline-flex items-center gap-1 text-left select-none cursor-pointer group w-fit"
           >
-            <span className="text-[10.5px] font-medium text-nova-text-muted group-hover:text-nova-text-secondary">
+            <span className="text-[11px] font-medium text-nova-text-muted group-hover:text-nova-text-secondary">
               {t('chat.subagentThinking')}
             </span>
-            <span
-              className={`material-symbols-outlined text-[12px] leading-none text-nova-text-muted transition-transform duration-200 ${thinkingOpen ? 'rotate-180' : ''}`}
-              aria-hidden
-            >
-              expand_more
-            </span>
+            <MSIcon name="expand_more" className={`text-[12px] leading-none text-nova-text-muted transition-transform duration-200 ${thinkingOpen ? 'rotate-180' : ''}`} />
           </button>
           {thinkingOpen && (
-            <div className="text-[11.5px] leading-[1.6] text-nova-text-muted whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+            <div className="text-[12px] leading-[1.6] text-nova-text-muted whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
               {progress.thinking}
             </div>
           )}

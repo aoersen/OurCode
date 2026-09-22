@@ -17,13 +17,18 @@ const mockApi = {
   checkpointListReverted: vi.fn(async () => []),
   checkpointSave: vi.fn(async () => {}),
   checkpointDelete: vi.fn(async () => {}),
+  checkpointRevert: vi.fn(async () => ({ ok: true, restored: 1 })),
   spillDeleteSession: vi.fn(async () => {}),
+  wireLogDeleteSession: vi.fn(async () => {}),
   saveConfigGroup: vi.fn(async () => ({})),
   getConfigGroups: vi.fn(async () => []),
+  getSubagentRuns: vi.fn(async () => []),
+  saveSubagentRun: vi.fn(async () => true),
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession } from '@/stores/chatStore'
+import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
+import type { MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { createToolRegistry } from '@/services/tools/ToolRegistry'
@@ -836,12 +841,24 @@ describe('chatStore agent run state', () => {
     useChatStore.getState().queueMessage('s1', '第一条')
     useChatStore.getState().queueMessage('s1', '第二条')
     useChatStore.getState().queueMessage('s2', '另一条')
-    const q = useChatStore.getState().queuedMessagesBySession
-    expect(q['s1']).toEqual(['第一条', '第二条'])
-    expect(q['s2']).toEqual(['另一条'])
+    const contents = (id: string) => (useChatStore.getState().queuedMessagesBySession[id] || []).map((q) => q.content)
+    expect(contents('s1')).toEqual(['第一条', '第二条'])
+    expect(contents('s2')).toEqual(['另一条'])
     useChatStore.getState().clearQueue('s1')
     expect(useChatStore.getState().queuedMessagesBySession['s1']).toBeUndefined()
-    expect(useChatStore.getState().queuedMessagesBySession['s2']).toEqual(['另一条'])
+    expect(contents('s2')).toEqual(['另一条'])
+  })
+
+  it('queueMessage carries image attachments and accepts an image-only entry', () => {
+    const img = { id: 'a1', name: 'shot.png', mimeType: 'image/png', dataBase64: 'AAA' }
+    useChatStore.getState().queueMessage('s1', '看图', [img])
+    useChatStore.getState().queueMessage('s1', '', [img])
+    const q = useChatStore.getState().queuedMessagesBySession['s1']
+    expect(q.map((x) => x.content)).toEqual(['看图', ''])
+    expect(q[0].attachments).toEqual([img])
+    // Nothing at all (no text, no image) is not a message.
+    useChatStore.getState().queueMessage('s2', '   ')
+    expect(useChatStore.getState().queuedMessagesBySession['s2']).toBeUndefined()
   })
 
   it('removeQueuedMessage deletes only the given index and keeps order', () => {
@@ -849,12 +866,13 @@ describe('chatStore agent run state', () => {
     useChatStore.getState().queueMessage('s1', 'B')
     useChatStore.getState().queueMessage('s1', 'C')
     useChatStore.getState().removeQueuedMessage('s1', 1)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['A', 'C'])
+    const contents = () => (useChatStore.getState().queuedMessagesBySession['s1'] || []).map((q) => q.content)
+    expect(contents()).toEqual(['A', 'C'])
     // Invalid index / unknown session are no-ops
     useChatStore.getState().removeQueuedMessage('s1', 5)
     useChatStore.getState().removeQueuedMessage('s1', -1)
     useChatStore.getState().removeQueuedMessage('s2', 0)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['A', 'C'])
+    expect(contents()).toEqual(['A', 'C'])
   })
 
   it('sendQueuedNow stops the run and promotes the picked message to the front', () => {
@@ -866,7 +884,9 @@ describe('chatStore agent run state', () => {
     const abortSpy = vi.spyOn(ac, 'abort')
     useChatStore.getState().sendQueuedNow('s1', 2)
     // The picked message is now first (drained next by the aborted run's finally)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['C', 'A', 'B'])
+    expect(
+      useChatStore.getState().queuedMessagesBySession['s1'].map((q) => q.content)
+    ).toEqual(['C', 'A', 'B'])
     // stopGeneration aborted the controller and dropped it from the map
     expect(abortSpy).toHaveBeenCalledTimes(1)
     expect(useChatStore.getState().abortControllers['s1']).toBeUndefined()
@@ -879,7 +899,9 @@ describe('chatStore agent run state', () => {
     const abortSpy = vi.spyOn(ac, 'abort')
     useChatStore.getState().sendQueuedNow('s1', 3)
     useChatStore.getState().sendQueuedNow('s1', -1)
-    expect(useChatStore.getState().queuedMessagesBySession['s1']).toEqual(['A'])
+    expect(
+      useChatStore.getState().queuedMessagesBySession['s1'].map((q) => q.content)
+    ).toEqual(['A'])
     expect(abortSpy).not.toHaveBeenCalled()
   })
 
@@ -1326,5 +1348,513 @@ describe('checkpoint reload across session switches (issue: box disappears on re
       expect(useChatStore.getState().checkpoints.length).toBe(1)
     })
     expect(useChatStore.getState().checkpoints[0].id).toBe('cp1')
+  })
+})
+
+describe('chatStore window-mode isolation (一人公司与普通 agent 模式)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      ...initialState,
+      sessions: [],
+      activeSessionId: null,
+      undoStack: [],
+      queuedMessagesBySession: {},
+    })
+  })
+
+  it('importSession stamps the CURRENT window mode, ignoring the file mode', () => {
+    // 测试环境 WINDOW_MODE='main'：导入一个 mode='office' 的备份，会话必须落到
+    // 当前窗口的命名空间，否则同一对话会同时出现在两个窗口（交融/重复的根源）。
+    const imported = {
+      id: 'imported-id',
+      title: '备份对话',
+      configGroupId: 'cfg-1',
+      model: 'm',
+      modelParams: {},
+      mode: 'office',
+      messages: [{ id: 'm1', role: 'user', content: 'hi', sortOrder: 0, createdAt: 1 }],
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    useChatStore.getState().importSession(JSON.stringify(imported))
+    const session = useChatStore.getState().getActiveSession()!
+    expect(session.mode).toBe('main')
+    // 落盘时同样按当前窗口 mode 写入（SQLite 侧按 mode 过滤）
+    const saved = mockApi.saveSession.mock.calls[0][0]
+    expect(saved.mode).toBe('main')
+    expect(saved.messages).toHaveLength(1)
+  })
+
+  it('createBranchFromMessage carries the source session window mode', () => {
+    makeSession('s1')
+    addUser('s1', 'a')
+    addAssistant('s1', 'b')
+    // 模拟办公室会话（office 模式）在主流程之外被分叉的场景
+    useChatStore.setState((st) => ({
+      sessions: st.sessions.map((x) => (x.id === 's1' ? { ...x, mode: 'office' } : x)),
+    }))
+    const msgId = useChatStore.getState().getActiveSession()!.messages[1].id
+    useChatStore.getState().createBranchFromMessage('s1', msgId)
+    const forked = useChatStore.getState().getActiveSession()!
+    expect(forked.id).not.toBe('s1')
+    expect(forked.mode).toBe('office')
+    // 落盘 payload 同样带 office mode——否则 saveSession 会把它写成 main
+    const saved = mockApi.saveSession.mock.calls[0][0]
+    expect(saved.mode).toBe('office')
+  })
+
+  it('saveSession never persists a never-used ghost session (no DB accumulation)', async () => {
+    makeSession('s1') // 新建的空会话
+    await useChatStore.getState().saveSession('s1')
+    expect(mockApi.saveSession).not.toHaveBeenCalled()
+  })
+
+  it('saveSession persists once the session has real content, and keeps persisting after clear', async () => {
+    makeSession('s1')
+    addUser('s1', 'hello')
+    await useChatStore.getState().saveSession('s1')
+    expect(mockApi.saveSession).toHaveBeenCalledTimes(1)
+    // 清空全部消息后仍要落盘——「删除全部消息」必须跨重启生效（clearMessages
+    // 自身会保存一次，这里再显式保存也绝不能因会话变空而被跳过）
+    useChatStore.getState().clearMessages('s1')
+    await useChatStore.getState().saveSession('s1')
+    expect(mockApi.saveSession).toHaveBeenCalledTimes(3)
+    const lastSaved = mockApi.saveSession.mock.calls[2][0]
+    expect(lastSaved.messages).toHaveLength(0)
+  })
+})
+
+describe('loop guard: truncated tool-call arguments', () => {
+  it('flags arguments cut off mid-stream instead of throwing', () => {
+    // A response that hits max_tokens leaves trailing tool calls with partial
+    // JSON. The loop used to call JSON.parse directly, which threw and killed
+    // the whole run.
+    expect(parseToolArguments('{"path":"a.ts","content":"half')).toEqual({ args: {}, ok: false })
+  })
+
+  it('accepts complete arguments', () => {
+    expect(parseToolArguments('{"path":"a.ts"}')).toEqual({ args: { path: 'a.ts' }, ok: true })
+  })
+
+  it('treats missing/empty arguments as a valid empty call', () => {
+    expect(parseToolArguments(undefined)).toEqual({ args: {}, ok: true })
+    expect(parseToolArguments('')).toEqual({ args: {}, ok: true })
+  })
+
+  it('does not execute non-object payloads as arguments', () => {
+    expect(parseToolArguments('"just a string"')).toEqual({ args: {}, ok: true })
+    expect(parseToolArguments('null')).toEqual({ args: {}, ok: true })
+  })
+})
+
+describe('loop guard: identical-call detection', () => {
+  const sig = (name: string, args: Record<string, unknown>) =>
+    toolCallSignature({ id: 'x', name, arguments: args } as any)
+
+  it('signatures of the same call match', () => {
+    expect(sig('read_file', { path: 'a.ts' })).toBe(sig('read_file', { path: 'a.ts' }))
+  })
+
+  it('key order does not change the signature', () => {
+    // Providers stream argument properties in arbitrary order; a naive
+    // JSON.stringify would call these two distinct and never detect the loop.
+    expect(sig('edit_file', { path: 'a.ts', oldText: 'x', newText: 'y' })).toBe(
+      sig('edit_file', { newText: 'y', oldText: 'x', path: 'a.ts' }),
+    )
+  })
+
+  it('different tool or different argument produces a different signature', () => {
+    expect(sig('read_file', { path: 'a.ts' })).not.toBe(sig('read_file', { path: 'b.ts' }))
+    expect(sig('read_file', { path: 'a.ts' })).not.toBe(sig('list_directory', { path: 'a.ts' }))
+  })
+
+  it('nested and array arguments compare structurally, not by reference', () => {
+    expect(sig('multi_edit_file', { path: 'a', edits: [{ oldText: 'x' }, { oldText: 'y' }] })).toBe(
+      sig('multi_edit_file', { edits: [{ oldText: 'x' }, { oldText: 'y' }], path: 'a' }),
+    )
+    expect(sig('multi_edit_file', { edits: [{ oldText: 'x' }] })).not.toBe(
+      sig('multi_edit_file', { edits: [{ oldText: 'z' }] }),
+    )
+  })
+})
+
+describe('vision input: attachments → request images', () => {
+  const img = (over: Partial<MessageAttachment> = {}): MessageAttachment => ({
+    id: 'a1',
+    name: 'shot.png',
+    mimeType: 'image/png',
+    dataBase64: 'iVBORw0KGgo=',
+    ...over,
+  })
+
+  beforeEach(() => {
+    useChatStore.setState({ ...initialState, sessions: [], activeSessionId: null, queuedMessagesBySession: {} })
+    mockApi.saveSession.mockClear()
+  })
+
+  it('images become request image parts; non-images and empty payloads are dropped', () => {
+    expect(toRequestImages([img(), img({ id: 'a2', name: 'b.jpg', mimeType: 'image/jpeg' })])).toEqual([
+      { mimeType: 'image/png', dataBase64: 'iVBORw0KGgo=' },
+      { mimeType: 'image/jpeg', dataBase64: 'iVBORw0KGgo=' },
+    ])
+    // A text file attached as an image would be rejected by every provider.
+    expect(toRequestImages([img({ mimeType: 'application/pdf' })])).toBeUndefined()
+    expect(toRequestImages([img({ dataBase64: '' })])).toBeUndefined()
+    expect(toRequestImages(undefined)).toBeUndefined()
+  })
+
+  it('sendMessage stores attachments on the user message', async () => {
+    const sessionId = makeSession()
+    // No API config here — the loop bails early; we only assert the message.
+    await useChatStore.getState().sendMessage(sessionId, '看图', [], [img()]).catch(() => {})
+    const user = useChatStore.getState().getActiveSession()!.messages.find((m) => m.role === 'user')
+    expect(user?.attachments).toEqual([img()])
+  })
+
+  it('attachment base64 is shipped once, then stripped from later saves', async () => {
+    const sessionId = makeSession()
+    useChatStore.getState().addMessage(sessionId, { role: 'user', content: '看图', attachments: [img()] })
+
+    await useChatStore.getState().saveSession(sessionId)
+    const first = mockApi.saveSession.mock.calls[0][0]
+    expect(first.messages[0].attachments[0].dataBase64).toBe('iVBORw0KGgo=')
+
+    // Every agent round re-saves the whole session; a multi-hundred-KB base64
+    // must not ride along each time (the main process keeps its own copy).
+    await useChatStore.getState().saveSession(sessionId)
+    const second = mockApi.saveSession.mock.calls[1][0]
+    expect(second.messages[0].attachments).toBeUndefined()
+  })
+})
+
+describe('chatStore subagent run persistence (一人公司任务流回看)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      ...initialState,
+      sessions: [],
+      activeSessionId: null,
+      undoStack: [],
+      queuedMessagesBySession: {},
+      subagentProgress: {},
+    })
+  })
+
+  function addSession(id: string, targetMode: boolean) {
+    useChatStore.setState((s) => ({
+      sessions: [...s.sessions, { id, title: id, configGroupId: 'cfg-1', model: 'm', messages: [], targetMode } as any],
+    }))
+    return id
+  }
+
+  const finished = (sessionId: string) => ({
+    status: 'done' as const,
+    sessionId,
+    name: 'tm-developer',
+    task: '实现登录页',
+    startedAt: 1000,
+    thinking: '一大段思考原文',
+    steps: [{ id: 'st1', name: 'edit_file', arguments: { path: 'a.tsx' }, status: 'success' as const }],
+    toolCallCount: 1,
+    tokenCount: 500,
+  })
+
+  it('persists a terminal run of a target-mode session, minus the thinking blob', async () => {
+    const sid = addSession('tm-1', true)
+    useChatStore.getState().updateSubagentProgress('call-1', finished(sid))
+    await vi.waitFor(() => expect(mockApi.saveSubagentRun).toHaveBeenCalledTimes(1))
+
+    const [toolCallId, record] = mockApi.saveSubagentRun.mock.calls[0]
+    expect(toolCallId).toBe('call-1')
+    expect(record.status).toBe('done')
+    expect(record.thinking).toBe('')
+    expect(record.steps[0].arguments.path).toBe('a.tsx')
+  })
+
+  it('never persists agent-mode sessions or still-running records', async () => {
+    const plain = addSession('agent-1', false)
+    useChatStore.getState().updateSubagentProgress('call-plain', finished(plain))
+    const tm = addSession('tm-2', true)
+    useChatStore.getState().updateSubagentProgress('call-live', { ...finished(tm), status: 'running' })
+    await Promise.resolve()
+    expect(mockApi.saveSubagentRun).not.toHaveBeenCalled()
+  })
+
+  it('hydrates persisted runs on load without clobbering the live record', async () => {
+    const sid = addSession('tm-3', true)
+    useChatStore.getState().updateSubagentProgress('live', { ...finished(sid), status: 'running', tokenCount: 7 })
+    mockApi.getSubagentRuns.mockResolvedValueOnce([
+      { toolCallId: 'live', record: finished(sid) },
+      { toolCallId: 'old', record: { ...finished(sid), startedAt: 500, task: '上一轮的任务' } },
+      { toolCallId: 'junk', record: { status: 'done' } },
+      { toolCallId: 'nosteps', record: null },
+    ])
+
+    await useChatStore.getState().hydrateSubagentRuns()
+    const table = useChatStore.getState().subagentProgress
+    expect(table.live.status).toBe('running')
+    expect(table.old.task).toBe('上一轮的任务')
+    expect(table.junk).toBeUndefined()
+    expect(table.nosteps).toBeUndefined()
+  })
+
+  it('survives an older database that has no records yet', async () => {
+    addSession('tm-4', true)
+    mockApi.getSubagentRuns.mockRejectedValueOnce(new Error('no such table: subagent_runs'))
+    await expect(useChatStore.getState().hydrateSubagentRuns()).resolves.toBeUndefined()
+    expect(useChatStore.getState().subagentProgress).toEqual({})
+  })
+})
+
+describe('deleting a session stops its run', () => {
+  const reset = () => {
+    vi.clearAllMocks()
+    useChatStore.setState({ ...initialState, sessions: [], activeSessionId: null })
+  }
+
+  it('aborts the controller and drops every per-session leftover', () => {
+    reset()
+    const id = makeSession('del-1')
+    const controller = new AbortController()
+    useChatStore.setState((s) => ({
+      runningSessionIds: [...s.runningSessionIds, id],
+      abortControllers: { ...s.abortControllers, [id]: controller },
+      queuedMessagesBySession: { ...s.queuedMessagesBySession, [id]: [{ content: '稍后发' } as never] },
+      inboundQueue: [
+        { targetSessionId: id, senderTitle: 'peer', content: '投给它', hold: false },
+        { targetSessionId: 'other', senderTitle: 'peer', content: '别人的', hold: false },
+      ],
+      streamingBySession: { ...s.streamingBySession, [id]: { content: 'x', thinking: '' } },
+      runPhaseBySession: { ...s.runPhaseBySession, [id]: 'tool' as never },
+      activeRuns: { ...s.activeRuns, [id]: { runId: 'r1', sessionId: id } },
+      agentTraces: { ...s.agentTraces, [id]: [] },
+      batchApprovedBySession: { ...s.batchApprovedBySession, [id]: true },
+    }))
+
+    useChatStore.getState().deleteSession(id)
+
+    // The run must be taken down, not orphaned: an un-aborted loop keeps writing
+    // files in a workspace whose checkpoints were deleted with the session.
+    expect(controller.signal.aborted).toBe(true)
+    const st = useChatStore.getState()
+    expect(st.sessions.find((x) => x.id === id)).toBeUndefined()
+    expect(st.runningSessionIds).not.toContain(id)
+    expect(st.queuedMessagesBySession[id]).toBeUndefined()
+    expect(st.streamingBySession[id]).toBeUndefined()
+    expect(st.runPhaseBySession[id]).toBeUndefined()
+    expect(st.activeRuns[id]).toBeUndefined()
+    expect(st.agentTraces[id]).toBeUndefined()
+    expect(st.batchApprovedBySession[id]).toBeUndefined()
+    // Only this session's queued inbound send goes; a peer's still lands.
+    expect(st.inboundQueue.map((m) => m.targetSessionId)).toEqual(['other'])
+    expect(mockApi.checkpointDelete).toHaveBeenCalledWith(id)
+  })
+
+  it('clears only the deleted session’s dialog slot', () => {
+    reset()
+    const gone = makeSession('del-2')
+    useChatStore.setState({ activeSessionId: gone })
+    const keep = makeSession('keep-1')
+    const call = { id: 'c1', name: 'write_file', arguments: {} }
+    useChatStore.setState({
+      pendingApproval: { sessionId: keep, toolCall: call as never, preview: 'p' },
+      pendingQuestion: { sessionId: keep, id: 'q1', question: '还在吗' } as never,
+    })
+
+    useChatStore.getState().deleteSession(gone)
+
+    const st = useChatStore.getState()
+    expect(st.pendingApproval?.sessionId).toBe(keep)
+    expect(st.pendingQuestion?.sessionId).toBe(keep)
+
+    useChatStore.getState().deleteSession(keep)
+    expect(useChatStore.getState().pendingApproval).toBeNull()
+    expect(useChatStore.getState().pendingQuestion).toBeNull()
+  })
+})
+
+describe('reconcileInterruptedRuns (crash recovery)', () => {
+  const run = (id: string, status: string) =>
+    ({ id, task: 't', status, startedAt: 1, toolCallCount: 0, fileChangeCount: 0, stepCount: 0 } as never)
+
+  it('turns a run left in-flight by a crash into a terminal error', () => {
+    const session = { id: 's1', agentRuns: [run('a', 'running'), run('b', 'done')] }
+    const fixed = reconcileInterruptedRuns(session)
+    expect(fixed.agentRuns![0].status).toBe('error')
+    expect(fixed.agentRuns![0].finishedAt).toBeTypeOf('number')
+    expect(fixed.agentRuns![0].lastError).toContain('崩溃')
+    expect(fixed.agentRuns![1].status).toBe('done')
+  })
+
+  it('leaves an already-settled session object untouched', () => {
+    const session = { id: 's1', agentRuns: [run('b', 'stopped')] }
+    expect(reconcileInterruptedRuns(session)).toBe(session)
+    expect(reconcileInterruptedRuns({ id: 's2' })).toEqual({ id: 's2' })
+  })
+})
+
+describe('reverting every snapshot of a path', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({ ...initialState, sessions: [], activeSessionId: null })
+  })
+
+  it('applies newest first so it lands on the pre-AI state', async () => {
+    const id = makeSession('ro-1')
+    const cp = (cid: string, createdAt: number) => ({
+      id: cid, sessionId: id, createdAt, label: '', messageId: '',
+      files: [{ path: 'C:/p/a.ts', content: cid, existed: true }],
+    })
+    // loadCheckpoints returns ASC while an in-flight run prepends DESC — the
+    // order used to decide the outcome, so '回退全部' restored a mid-run state
+    // depending on whether the session had been re-opened.
+    useChatStore.setState({ checkpoints: [cp('old', 1), cp('mid', 2), cp('new', 3)] as never })
+    const applied: string[] = []
+    mockApi.checkpointRevert.mockImplementation(async (cid: string) => {
+      applied.push(cid)
+      return { ok: true, restored: 1 }
+    })
+
+    await expect(useChatStore.getState().revertPathInSession(id, 'C:/p/a.ts')).resolves.toBe(true)
+    expect(applied).toEqual(['new', 'mid', 'old'])
+    expect(useChatStore.getState().checkpoints).toEqual([])
+    expect(useChatStore.getState().revertedFiles).toContain('C:/p/a.ts')
+  })
+})
+
+describe('decision backlog across parallel conversations', () => {
+  const mk = (id: string) => ({ id, title: id, messages: [], configGroupId: 'c', model: 'm', createdAt: 1, updatedAt: 1 })
+  const approval = (sessionId: string, callId: string): never =>
+    ({ kind: 'approval', sessionId, value: { sessionId, toolCall: { id: callId, name: 'write_file', arguments: {} }, preview: callId } }) as never
+  const question = (sessionId: string, q: string): never =>
+    ({ kind: 'question', sessionId, value: { sessionId, id: q, question: q } }) as never
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({ ...initialState, sessions: [mk('A'), mk('B')] as never, activeSessionId: 'A' })
+  })
+
+  it('parks a second decision instead of overwriting the one on screen', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(approval('A', 'call-a'))
+    st().offerDecision(approval('B', 'call-b'))
+
+    // Overwriting used to leave A's run awaiting a dialog that no longer
+    // existed, and B's answer would have been shown in A's conversation.
+    expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['B'])
+  })
+
+  it('swaps slots with the conversation the user switches to', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(approval('A', 'call-a'))
+    st().offerDecision(approval('B', 'call-b'))
+
+    st().setActiveSession('B')
+    expect(st().pendingApproval?.toolCall.id).toBe('call-b')
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['A'])
+
+    st().setActiveSession('A')
+    expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+    // B's approval is still unanswered, so it goes back to the backlog.
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['B'])
+
+    // Switching to B surfaces it; answering B leaves A's own (unanswered)
+    // approval parked rather than hijacking B's now-empty slot.
+    st().setActiveSession('B')
+    expect(st().pendingApproval?.toolCall.id).toBe('call-b')
+    st().approveToolCall()
+    expect(st().pendingApproval).toBeNull()
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual(['A'])
+  })
+
+  it('promotes the next parked decision of the same session once answered', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(question('A', 'q1'))
+    st().offerDecision(question('A', 'q2'))
+    expect(st().pendingQuestion?.question).toBe('q1')
+    expect(st().decisionBacklog).toHaveLength(1)
+
+    st().answerQuestion('答复一')
+    expect(st().pendingQuestion?.question).toBe('q2')
+    expect(st().decisionBacklog).toHaveLength(0)
+
+    st().answerQuestion('答复二')
+    expect(st().pendingQuestion).toBeNull()
+  })
+
+  it('clears only a deleted session’s parked decisions', () => {
+    const st = () => useChatStore.getState()
+    st().offerDecision(approval('A', 'call-a'))
+    st().offerDecision(approval('B', 'call-b'))
+    st().deleteSession('B')
+    expect(st().decisionBacklog.map((d) => d.sessionId)).toEqual([])
+    expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+  })
+
+  it('never auto-rejects an approval that was never shown', () => {
+    vi.useFakeTimers()
+    try {
+      const st = () => useChatStore.getState()
+      st().offerDecision(approval('B', 'call-b'))
+      // 权限请求不超时（权限模式重设计 C6）：无论等多久，未被看到的审批
+      // 都留在后备队列，绝不自动拒绝。
+      vi.advanceTimersByTime(30 * 60_000)
+      expect(st().decisionBacklog).toHaveLength(1)
+      expect(st().pendingApproval).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps waiting on a shown approval — permission requests never time out', () => {
+    vi.useFakeTimers()
+    try {
+      const st = () => useChatStore.getState()
+      st().offerDecision(approval('A', 'call-a'))
+      expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+      // 旧行为 60s 自动拒绝；现在对齐 ZCode：权限请求一直等待用户决策
+      vi.advanceTimersByTime(30 * 60_000)
+      expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+      // 用户仍可正常决策
+      st().approveToolCall()
+      expect(st().pendingApproval).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('MCP 与技能安装指南（stable 提示词前缀）', () => {
+  // 这段指南存在的意义：告诉模型本 IDE 自己的 MCP / 技能配置机制，防止它
+  // 按 Claude Code 的惯例（claude mcp add / .claude.json / .claude/skills）
+  // 把配置写进别的工具。任何一条关键约束被改没了，测试都应该报警。
+  it('说明本 IDE 的 MCP 配置入口与格式', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('mcp_config.json')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('工作区根目录')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('所有项目可用')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('覆盖全局')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('"mcpServers"')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('serverUrl')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('bundled-node')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('mcp__<server>__<tool>')
+  })
+
+  it('明确禁止把配置写进 Claude Code 等外部工具', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('claude mcp add')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('~/.claude.json')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('.claude/')
+  })
+
+  it('说明技能只能装到本 IDE 的技能目录', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('.ourcode/skills')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('.claude/skills')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('SKILL.md')
+  })
+
+  it('要求密钥只写配置文件、不落正文不提交', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('API Key')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('不要提交进 git')
   })
 })

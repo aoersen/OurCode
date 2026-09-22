@@ -1,6 +1,7 @@
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore, type ContextMenuItem } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+import { askText } from '@/components/Common/PromptDialog'
 
 /** A session only needs the fields the menu inspects. */
 export interface SessionMenuTarget {
@@ -18,6 +19,7 @@ export interface SessionMenuTarget {
 export function useSessionMenu() {
   const t = useI18n()
   const deleteSession = useChatStore((s) => s.deleteSession)
+  const runningSessionIds = useChatStore((s) => s.runningSessionIds)
   const renameSession = useChatStore((s) => s.renameSession)
   const exportSession = useChatStore((s) => s.exportSession)
   const togglePin = useChatStore((s) => s.togglePin)
@@ -25,15 +27,18 @@ export function useSessionMenu() {
   const showContextMenu = useUIStore((s) => s.showContextMenu)
 
   const handleDelete = (sessionId: string) => {
-    if (confirm(t('chat.deleteSessionConfirm'))) {
+    // Deleting stops the run — the user must know the file edits it already made
+    // lose their rollback snapshots along with the conversation.
+    const running = runningSessionIds.includes(sessionId)
+    if (confirm(t(running ? 'chat.deleteSessionConfirmRunning' : 'chat.deleteSessionConfirm'))) {
       deleteSession(sessionId)
     }
   }
 
-  const handleRename = (sessionId: string) => {
-    const title = prompt(t('chat.renameSessionPrompt'))
-    if (title?.trim()) {
-      renameSession(sessionId, title.trim())
+  const handleRename = async (sessionId: string) => {
+    const title = await askText({ title: t('chat.renameSessionPrompt') })
+    if (title) {
+      renameSession(sessionId, title)
     }
   }
 

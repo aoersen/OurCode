@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { AgentTerminalRun, TerminalRunSnapshot } from '../shared/types'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -26,6 +27,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authorize: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_AUTHORIZE, path),
   watch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_WATCH, path),
   unwatch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_UNWATCH, path),
+  // Workspace trust. authorize() now reports whether the path was accepted;
+  // trustRequest() is what raises the native confirmation.
+  trustRequest: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REQUEST, path),
+  // One-time READ permission for a chat attachment outside the workspace —
+  // same native-dialog consent as trustRequest, but scoped to one file/folder
+  // (or the session, via the dialog's own choices). `mode` is the session's
+  // project edit mode and only shapes which dialog is shown.
+  requestFileTrust: (path: string, mode?: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REQUEST_FILE, path, mode),
+  // Session-wide read policy for 完全访问 — armed ONLY by a native confirmation.
+  armReadPolicy: () => ipcRenderer.invoke(IPC_CHANNELS.TRUST_ARM_READ_POLICY),
+  // Withdraw the session-wide read policy when the session leaves full access.
+  disarmReadPolicy: () => ipcRenderer.invoke(IPC_CHANNELS.TRUST_DISARM_READ_POLICY),
+  trustStatus: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_STATUS, path),
+  trustRevoke: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.TRUST_REVOKE, path),
   openInFinder: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_OPEN_IN_FINDER, path),
   copyPath: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_COPY_PATH, path),
   copy: (src: string, dest: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_COPY, src, dest),
@@ -85,9 +100,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getConfigGroups: () => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_CONFIG_GROUPS),
   saveConfigGroup: (group: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_CONFIG_GROUP, group),
   deleteConfigGroup: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.STORE_DELETE_CONFIG_GROUP, id),
-  getSessions: () => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_SESSIONS),
+  getSessions: (mode?: 'main' | 'office') => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_SESSIONS, mode),
   saveSession: (session: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_SESSION, session),
   deleteSession: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.STORE_DELETE_SESSION, id),
+  getSubagentRuns: (sessionIds: string[]) => ipcRenderer.invoke('store:getSubagentRuns', sessionIds),
+  saveSubagentRun: (toolCallId: string, record: any) => ipcRenderer.invoke('store:saveSubagentRun', toolCallId, record),
   getPreferences: () => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_PREFERENCES),
   savePreferences: (prefs: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_PREFERENCES, prefs),
   resetAll: () => ipcRenderer.invoke('store:resetAll'),
@@ -123,6 +140,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isMaximized: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_IS_MAXIMIZED),
   openDevTools: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_OPEN_DEV_TOOLS),
   openNewWindow: () => ipcRenderer.invoke('window:openNewWindow'),
+  // 「一人公司」：打开独立办公室窗口（office 模式）。
+  openOfficeWindow: () => ipcRenderer.invoke('window:openOfficeWindow'),
+  // 本窗口是否为办公室模式：主进程通过 webPreferences.additionalArguments
+  // 注入 '--office-mode'（沙箱 preload 可读 process.argv，同步可用）。
+  isOfficeMode: process.argv.includes('--office-mode'),
   onMaximized: (callback: (isMaximized: boolean) => void) => {
     const listener = (_event: any, isMaximized: boolean) => callback(isMaximized)
     ipcRenderer.on('window:maximized', listener)
@@ -140,6 +162,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   termWrite: (id: string, data: string) => ipcRenderer.invoke(IPC_CHANNELS.TERM_WRITE, id, data),
   termResize: (id: string, cols: number, rows: number) => ipcRenderer.invoke(IPC_CHANNELS.TERM_RESIZE, id, cols, rows),
   termDispose: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TERM_DISPOSE, id),
+  // Agent-owned runs: started/inspected/stopped through the same pty layer the
+  // integrated terminal uses, so a dev server survives past one tool call.
+  termRunAgent: (id: string, command: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERM_RUN_AGENT, id, command, cwd),
+  termOutput: (id: string, tailChars?: number): Promise<TerminalRunSnapshot | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERM_OUTPUT, id, tailChars),
+  termKill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TERM_KILL, id),
+  termAttach: (id: string): Promise<{ command: string; running: boolean; output: string } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERM_ATTACH, id),
+  termList: (): Promise<AgentTerminalRun[]> => ipcRenderer.invoke(IPC_CHANNELS.TERM_LIST),
   onTermData: (id: string, callback: (data: string) => void) => {
     const channel = `${IPC_CHANNELS.TERM_DATA}:${id}`
     const listener = (_event: any, data: string) => callback(data)
@@ -163,12 +195,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Git with untrimmed stdout (byte-exact blob reads for the central diff)
   gitExecRaw: (cwd: string, args: string[], input?: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_EXEC_RAW, cwd, args, input),
 
+  // GitHub CLI — PR workflow through the locally installed `gh` (its own
+  // credentials, no account built into the app)
+  ghExec: (cwd: string, args: string[]) => ipcRenderer.invoke(IPC_CHANNELS.GH_EXEC, cwd, args),
+  ghStatus: (cwd: string) => ipcRenderer.invoke(IPC_CHANNELS.GH_STATUS, cwd),
+
+  // Agent browser session — one shared http(s) page the assistant can drive
+  browserNavigate: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_NAVIGATE, url),
+  browserState: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_STATE),
+  browserConsole: (clear?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CONSOLE, clear),
+  browserPageText: (maxChars?: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PAGE_TEXT, maxChars),
+  browserScreenshot: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SCREENSHOT),
+  browserAct: (action: string, opts?: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_ACT, action, opts),
+  browserHistory: (step: 'back' | 'forward' | 'reload') => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY, step),
+  browserSetVisible: (visible: boolean) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_VISIBLE, visible),
+  browserClose: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CLOSE),
+  onBrowserEvent: (callback: (payload: unknown) => void) => {
+    const listener = (_event: any, payload: any) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.BROWSER_EVENT, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_EVENT, listener) }
+  },
+
   // Shell
-  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number }) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_EXEC, command, cwd, options),
+  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_EXEC, command, cwd, options),
+  shellKill: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_KILL, requestId),
 
   // Tool-output spill store — oversized tool results page through read_file
   spillSave: (sessionId: string, text: string) => ipcRenderer.invoke('spill:save', sessionId, text),
   spillDeleteSession: (sessionId: string) => ipcRenderer.invoke('spill:deleteSession', sessionId),
+
+  // Model wire log (renderer emits, main process appends)
+  wireLogAppend: (sessionId: string, line: string) => ipcRenderer.invoke('log:wireAppend', sessionId, line),
+  wireLogDeleteSession: (sessionId: string) => ipcRenderer.invoke('log:deleteSession', sessionId),
+  wireLogOpenDir: () => ipcRenderer.invoke('log:openDir'),
 
   // Web fetch (web_search / read_url tools)
   webFetch: (url: string, options?: { timeoutMs?: number; maxBytes?: number }) =>
@@ -225,6 +285,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkpointDelete: (sessionId: string) => ipcRenderer.invoke('checkpoint:delete', sessionId),
   checkpointRevert: (checkpointId: string) => ipcRenderer.invoke('checkpoint:revert', checkpointId),
   checkpointListReverted: (sessionId: string) => ipcRenderer.invoke('checkpoint:listReverted', sessionId),
+  checkpointRestore: (sessionId: string, filePaths: string[]) => ipcRenderer.invoke('checkpoint:restore', sessionId, filePaths),
+  checkpointGetRevertedRecord: (sessionId: string, filePath: string) => ipcRenderer.invoke('checkpoint:getRevertedRecord', sessionId, filePath),
 
   // MCP
   mcpListTools: () => ipcRenderer.invoke('mcp:listTools'),
@@ -234,17 +296,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mcpGetConfig: (rootPath: string) => ipcRenderer.invoke('mcp:getConfig', rootPath),
   mcpSaveConfig: (rootPath: string, config: { mcpServers: Record<string, any> }, file?: string | null) =>
     ipcRenderer.invoke('mcp:saveConfig', rootPath, config, file),
-  mcpToolDefinitions: () => ipcRenderer.invoke('mcp:toolDefinitions'),
+  mcpGetGlobalConfig: () => ipcRenderer.invoke('mcp:getGlobalConfig'),
+  mcpSaveGlobalConfig: (config: { mcpServers: Record<string, any> }) =>
+    ipcRenderer.invoke('mcp:saveGlobalConfig', config),
+  mcpToolDefinitions: (rootPath?: string) => ipcRenderer.invoke('mcp:toolDefinitions', rootPath),
   mcpListResources: () => ipcRenderer.invoke('mcp:listResources'),
   mcpReadResource: (server: string, uri: string) => ipcRenderer.invoke('mcp:readResource', server, uri),
   mcpListPrompts: () => ipcRenderer.invoke('mcp:listPrompts'),
   mcpGetPrompt: (server: string, name: string, args?: Record<string, any>) =>
     ipcRenderer.invoke('mcp:getPrompt', server, name, args),
-  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  mcpStatus: (rootPath?: string) => ipcRenderer.invoke('mcp:status', rootPath),
 
   // App
   getPath: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_PATH, name),
-  ensureDefaultProject: () => ipcRenderer.invoke('app:ensureDefaultProject'),
+  ensureDefaultProject: (mode?: string) => ipcRenderer.invoke('app:ensureDefaultProject', mode),
   getPlatform: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_PLATFORM),
   resolveEnvVar: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.APP_RESOLVE_ENV_VAR, name),
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_VERSION),

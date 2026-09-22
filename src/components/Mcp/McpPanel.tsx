@@ -9,11 +9,16 @@ import McpConfigSection from '../Settings/McpConfigSection'
  * marketplace used), opened from the activity bar like the other panels.
  *
  * Five tabs:
- *  - 服务器: configured servers from <root>/mcp_config.json with live
- *    connection state (connecting/ready/failed/restarting/disabled) and an
- *    enable/disable toggle (persisted via mcp:saveConfig + reload).
- *  - 配置: the full server editor (add / edit / delete, stdio + HTTP) —
- *    reuses the Settings form so configuring never requires leaving the panel.
+ *  - 服务器: configured servers with live connection state
+ *    (connecting/ready/failed/restarting/disabled) and an enable/disable
+ *    toggle. Servers come from two tiers: 全局 (<userData>/mcp_config.json,
+ *    every project) and 项目 (<root>/mcp_config.json, this project only) —
+ *    a project entry with the same name overrides the global one, and the
+ *    list shows only the effective entries. The toggle persists to whichever
+ *    tier the entry belongs to.
+ *  - 配置: the full server editor (add / edit / delete, stdio + HTTP, 全局 +
+ *    项目 groups) — reuses the Settings form so configuring never requires
+ *    leaving the panel.
  *  - 工具: every tool exposed by connected servers (mcp__<server>__<tool>)
  *    with its description and input schema.
  *  - 资源: resources/list → resources/read preview.
@@ -77,8 +82,10 @@ export default function McpPanel() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Servers
-  const [servers, setServers] = useState<Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; file: string | null }>>([])
+  // Servers — effective view: project entries (which override same-name global
+  // ones) plus the global entries that are not shadowed.
+  const [servers, setServers] = useState<Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; scope: 'global' | 'project'; file: string | null }>>([])
+  const [shadowedCount, setShadowedCount] = useState(0)
   // Tools / resources / prompts
   const [tools, setTools] = useState<ToolDefinition[]>([])
   const [resources, setResources] = useState<McpResourceItem[]>([])
@@ -88,28 +95,42 @@ export default function McpPanel() {
 
   const refreshServers = useCallback(async () => {
     setError(null)
-    const [cfgRes, statusRes] = await Promise.all([
+    const [cfgRes, globalRes, statusRes] = await Promise.all([
       currentProjectPath ? window.electronAPI.mcpGetConfig(currentProjectPath) : Promise.resolve({ ok: false as const, error: 'NO_PROJECT' }),
-      window.electronAPI.mcpStatus(),
+      window.electronAPI.mcpGetGlobalConfig(),
+      // 带上项目路径：主进程发现管理器还挂在别的项目上时会先重载，状态才不会
+      // 一直停留在「未启动」的兜底值上。
+      window.electronAPI.mcpStatus(currentProjectPath ?? undefined),
     ])
-    if (!cfgRes.ok) {
-      if (cfgRes.error === 'NO_PROJECT') {
-        setServers([])
-        return
-      }
-      setError(cfgRes.error || '加载配置失败')
+    if (!cfgRes.ok && cfgRes.error !== 'NO_PROJECT') {
+      // Raw "路径不在允许范围内" from the main process — show a user-friendly
+      // message instead of the internal path-validation string.
+      const friendly = cfgRes.error?.includes('路径不在允许范围内')
+        ? t('mcpCenter.pathNotAllowed')
+        : (cfgRes.error || '加载配置失败')
+      setError(friendly)
       return
     }
+    const projectEntries = (cfgRes.ok ? cfgRes.config.mcpServers : {}) || {}
+    const projectFile = cfgRes.ok ? cfgRes.file : null
+    const globalEntries = (globalRes.ok ? globalRes.config.mcpServers : {}) || {}
     const statusMap = new Map((statusRes || []).map((s) => [s.name, s]))
-    setServers(
-      Object.entries(cfgRes.config.mcpServers || {}).map(([name, entry]) => ({
-        name,
-        entry: entry as McpServerConfigEntry,
-        status: statusMap.get(name),
-        file: cfgRes.file,
-      })),
-    )
-  }, [currentProjectPath])
+    const items: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; scope: 'global' | 'project'; file: string | null }> = []
+    for (const [name, entry] of Object.entries(projectEntries)) {
+      items.push({ name, entry: entry as McpServerConfigEntry, status: statusMap.get(name), scope: 'project', file: projectFile ?? null })
+    }
+    // 与主进程的合并规则一致：同名时项目条目覆盖全局，列表中只显示生效条目。
+    let shadowed = 0
+    for (const [name, entry] of Object.entries(globalEntries)) {
+      if (name in projectEntries) {
+        shadowed += 1
+        continue
+      }
+      items.push({ name, entry: entry as McpServerConfigEntry, status: statusMap.get(name), scope: 'global', file: globalRes.file ?? null })
+    }
+    setServers(items)
+    setShadowedCount(shadowed)
+  }, [currentProjectPath, t])
 
   const refreshTools = useCallback(async () => {
     setError(null)
@@ -153,15 +174,16 @@ export default function McpPanel() {
   }, [activeTab])
 
   // Live status polling while the panel is open — lets a reconnected server
-  // show up without manual refreshes
+  // show up without manual refreshes. Paused when an error is showing so the
+  // banner doesn't reappear immediately after the user dismisses it.
   useEffect(() => {
-    if (activeTab !== 'servers') return
+    if (activeTab !== 'servers' || error) return
     const timer = setInterval(() => {
       if (document.hidden) return // 窗口隐藏时暂停轮询
       void refreshServers()
     }, 3000)
     return () => clearInterval(timer)
-  }, [activeTab, refreshServers])
+  }, [activeTab, refreshServers, error])
 
   const refreshAll = async () => {
     setLoading(true)
@@ -175,14 +197,35 @@ export default function McpPanel() {
     }
   }
 
-  /** Toggle a server's enabled flag: rewrite its config entry (disabled) and
-   *  reload — same persistence path as the Settings editor. */
-  const toggleServer = async (name: string, enabled: boolean) => {
-    if (!currentProjectPath) return
+  /** 真正的「重新加载」：让主进程重读配置并应用差异（未启动的会启动、
+   *  失败的会重试），再刷新面板数据。 */
+  const reloadServers = async () => {
+    if (currentProjectPath) {
+      const res = await window.electronAPI.mcpReload(currentProjectPath)
+      if (!res.ok && res.error) setError(res.error)
+    }
+    await refreshServers()
+  }
+
+  /** Toggle a server's enabled flag: rewrite its config entry (disabled) in
+   *  whichever tier the server belongs to and reload — same persistence path
+   *  as the Settings editor. */
+  const toggleServer = async (scope: 'global' | 'project', name: string, enabled: boolean) => {
     setError(null)
-    const cfgRes = await window.electronAPI.mcpGetConfig(currentProjectPath)
+    const cfgRes = scope === 'global'
+      ? await window.electronAPI.mcpGetGlobalConfig()
+      : currentProjectPath
+        ? await window.electronAPI.mcpGetConfig(currentProjectPath)
+        : null
+    if (!cfgRes) {
+      setError(t('mcpCenter.pathNotAllowed'))
+      return
+    }
     if (!cfgRes.ok) {
-      setError(cfgRes.error || '读取配置失败')
+      const friendly = cfgRes.error?.includes('路径不在允许范围内')
+        ? t('mcpCenter.pathNotAllowed')
+        : (cfgRes.error || '读取配置失败')
+      setError(friendly)
       return
     }
     const mcpServers = { ...(cfgRes.config.mcpServers || {}) }
@@ -190,7 +233,9 @@ export default function McpPanel() {
     if (enabled) delete entry.disabled
     else entry.disabled = true
     mcpServers[name] = entry
-    const saveRes = await window.electronAPI.mcpSaveConfig(currentProjectPath, { mcpServers }, cfgRes.file)
+    const saveRes = scope === 'global'
+      ? await window.electronAPI.mcpSaveGlobalConfig({ mcpServers })
+      : await window.electronAPI.mcpSaveConfig(currentProjectPath!, { mcpServers }, cfgRes.file)
     if (!saveRes.ok) {
       setError(saveRes.error || '保存配置失败')
       return
@@ -280,9 +325,11 @@ export default function McpPanel() {
           <ServersTab
             servers={servers}
             rootPath={currentProjectPath}
+            shadowedCount={shadowedCount}
             onToggle={toggleServer}
             onEditConfig={() => setActiveTab('config')}
-            onReload={() => refreshServers()}
+            onReload={() => reloadServers()}
+            hasError={!!error}
           />
         )}
 
@@ -319,13 +366,13 @@ export default function McpPanel() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
+                      <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
                       <span className="text-[11px] font-medium text-nova-text-primary truncate">{item.name || item.uri}</span>
                     </div>
-                    <span className="text-[9px] text-nova-accent shrink-0">{t('mcpCenter.resourceRead')}</span>
+                    <span className="text-[11px] text-nova-accent shrink-0">{t('mcpCenter.resourceRead')}</span>
                   </div>
                   {item.description && <p className="text-[10px] text-nova-text-muted mt-1 truncate">{item.description}</p>}
-                  <p className="text-[9px] text-nova-text-muted/60 mt-0.5 font-mono truncate">{item.uri}</p>
+                  <p className="text-[11px] text-nova-text-muted/60 mt-0.5 font-mono truncate">{item.uri}</p>
                 </button>
               ))
             )}
@@ -345,14 +392,14 @@ export default function McpPanel() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
+                      <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
                       <span className="text-[11px] font-medium text-nova-text-primary truncate font-mono">{item.name}</span>
                     </div>
-                    <span className="text-[9px] text-nova-accent shrink-0">{t('mcpCenter.promptGet')}</span>
+                    <span className="text-[11px] text-nova-accent shrink-0">{t('mcpCenter.promptGet')}</span>
                   </div>
                   {item.description && <p className="text-[10px] text-nova-text-muted mt-1">{item.description}</p>}
                   {item.arguments && item.arguments.length > 0 && (
-                    <p className="text-[9px] text-nova-text-muted/60 mt-0.5">
+                    <p className="text-[11px] text-nova-text-muted/60 mt-0.5">
                       {item.arguments.map((a) => (a.required ? `[${a.name}]` : `(${a.name})`)).join(' ')}
                     </p>
                   )}
@@ -393,15 +440,19 @@ export default function McpPanel() {
 function ServersTab({
   servers,
   rootPath,
+  shadowedCount,
   onToggle,
   onEditConfig,
   onReload,
+  hasError,
 }: {
-  servers: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; file: string | null }>
+  servers: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; scope: 'global' | 'project'; file: string | null }>
   rootPath: string | null
-  onToggle: (name: string, enabled: boolean) => void
+  shadowedCount: number
+  onToggle: (scope: 'global' | 'project', name: string, enabled: boolean) => void
   onEditConfig: () => void
   onReload: () => void
+  hasError: boolean
 }) {
   const t = useI18n()
 
@@ -419,31 +470,52 @@ function ServersTab({
 
   return (
     <div className="flex flex-col gap-2">
-      {!rootPath && <EmptyState text={t('mcpCenter.noProject')} />}
-      {rootPath && servers.length === 0 && (
+      {!rootPath && servers.length === 0 && !hasError && <EmptyState text={t('mcpCenter.noProject')} />}
+      {rootPath && servers.length === 0 && !hasError && (
         <EmptyState text={t('mcpCenter.noServers')} />
       )}
-      {servers.map(({ name, entry, status }) => {
-        const state: McpServerState = status?.state || (entry.disabled ? 'disabled' : 'stopped')
+      {shadowedCount > 0 && (
+        <p className="text-[10px] text-nova-text-muted px-1">
+          {t('mcpCenter.shadowedHint', { count: shadowedCount })}
+        </p>
+      )}
+      {servers.map(({ name, entry, status, scope }) => {
+        // 启用勾选以配置里的 disabled 标志为准（运行时连接状态只看徽章），
+        // 避免状态图被其他项目的同名服务器污染时勾选显示错误。
+        const configuredDisabled = entry.disabled === true
+        const state: McpServerState = configuredDisabled
+          ? 'disabled'
+          : (status?.state || 'stopped')
         const isHttp = !!(entry.serverUrl || entry.url)
         return (
           <div key={name} className="bg-nova-card border border-nova-border rounded-lg p-2.5 flex flex-col gap-1.5 hover:border-nova-border-strong transition-colors">
             <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0 flex items-center gap-1.5">
                 <span className="text-[11px] font-semibold text-nova-text-primary font-mono truncate">{name}</span>
-                <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0">
+                <span className={`text-[11px] px-1 py-0.5 rounded shrink-0 ${scope === 'global' ? 'bg-nova-accent/15 text-nova-accent' : 'bg-nova-hover text-nova-text-muted'}`}>
+                  {scope === 'global' ? t('mcpCenter.scopeGlobal') : t('mcpCenter.scopeProject')}
+                </span>
+                <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0">
                   {isHttp ? t('mcpCenter.serverTypeHttp') : t('mcpCenter.serverTypeStdio')}
                 </span>
               </div>
-              <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium shrink-0 ${STATE_BADGES[state]}`}>
+              <span className={`text-[11px] px-1.5 py-0.5 rounded-full border font-medium shrink-0 ${STATE_BADGES[state]}`}>
                 {stateLabel(state)}
                 {state === 'restarting' && status?.retry ? ` (${status.retry})` : ''}
               </span>
+              {(state === 'stopped' || state === 'failed') && (
+                <button
+                  onClick={onReload}
+                  className="text-[10px] px-1.5 py-0.5 rounded-full border border-nova-accent/40 text-nova-accent hover:bg-nova-accent/10 transition-colors shrink-0"
+                >
+                  {state === 'failed' ? t('mcpCenter.retryServer') : t('mcpCenter.startServer')}
+                </button>
+              )}
               <label className="flex items-center gap-1 text-[10px] text-nova-text-secondary cursor-pointer select-none shrink-0">
                 <input
                   type="checkbox"
-                  checked={state !== 'disabled'}
-                  onChange={(e) => onToggle(name, e.target.checked)}
+                  checked={!configuredDisabled}
+                  onChange={(e) => onToggle(scope, name, e.target.checked)}
                   className="accent-nova-accent"
                 />
                 {t('mcpCenter.enable')}
@@ -452,13 +524,13 @@ function ServersTab({
             {(state === 'failed' || state === 'restarting') && status?.error && (
               <p className="text-[10px] text-red-400 truncate">{status.error}</p>
             )}
-            <div className="text-[9px] text-nova-text-muted font-mono truncate">
+            <div className="text-[11px] text-nova-text-muted font-mono truncate">
               {isHttp ? (entry.serverUrl || entry.url) : `${entry.command || ''} ${(entry.args || []).join(' ')}`.trim()}
             </div>
             {entry.disabledTools && entry.disabledTools.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {entry.disabledTools.map((tool) => (
-                  <span key={tool} className="text-[9px] px-1 py-0.5 rounded border border-gray-500/20 bg-gray-500/10 text-gray-400 line-through">
+                  <span key={tool} className="text-[11px] px-1 py-0.5 rounded border border-gray-500/20 bg-gray-500/10 text-gray-400 line-through">
                     {tool}
                   </span>
                 ))}
@@ -510,14 +582,14 @@ function ToolCard({ tool }: { tool: ToolDefinition }) {
       <div className="flex items-center gap-2 p-2.5 cursor-pointer" onClick={() => setExpanded(!expanded)}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{server || '?'}</span>
+            <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{server || '?'}</span>
             <span className="text-[11px] font-semibold text-nova-text-primary font-mono truncate">{toolName}</span>
           </div>
-          <p className="text-[9px] text-nova-text-muted mt-0.5 truncate">{tool.function.description || t('plugin.noDescription')}</p>
+          <p className="text-[11px] text-nova-text-muted mt-0.5 truncate">{tool.function.description || t('plugin.noDescription')}</p>
         </div>
         <button
           onClick={(e) => { e.stopPropagation(); void copyName() }}
-          className="px-1.5 py-1 text-[9px] text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover rounded-md shrink-0 transition-colors"
+          className="px-1.5 py-1 text-[11px] text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover rounded-md shrink-0 transition-colors"
           title={tool.function.name}
         >
           {copied ? t('mcpCenter.copied') : t('mcpCenter.copyName')}
@@ -530,7 +602,7 @@ function ToolCard({ tool }: { tool: ToolDefinition }) {
         <div className="px-3 pb-3 border-t border-nova-border pt-2">
           <div className="flex items-center justify-between mb-1">
             <h4 className="text-[10px] font-medium text-nova-text-muted">Input Schema</h4>
-            <span className="text-[9px] text-nova-text-muted font-mono truncate ml-2">{tool.function.name}</span>
+            <span className="text-[11px] text-nova-text-muted font-mono truncate ml-2">{tool.function.name}</span>
           </div>
           <pre className="text-[10px] text-nova-text-secondary bg-nova-bg border border-nova-border rounded-lg p-2 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
             {JSON.stringify(tool.function.parameters || {}, null, 2)}

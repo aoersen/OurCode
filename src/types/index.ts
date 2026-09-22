@@ -13,7 +13,7 @@ export interface ElectronAPI {
   closeFileStream: (id: number) => Promise<void>
   openWriteStream: (path: string, encoding: string, hasBom?: boolean) => Promise<number>
   writeChunk: (id: number, chunk: string) => Promise<void>
-  closeWriteStream: (id: number) => Promise<void>
+  closeWriteStream: (id: number) => Promise<string | undefined>
   abortWriteStream: (id: number) => Promise<void>
   listDir: (path: string) => Promise<import('@shared/types').FileEntry[]>
   createFile: (path: string) => Promise<void>
@@ -21,9 +21,19 @@ export interface ElectronAPI {
   rename: (oldPath: string, newPath: string) => Promise<void>
   delete: (path: string) => Promise<void>
   stat: (path: string) => Promise<import('@shared/types').FileStat | null>
-  authorize: (path: string) => Promise<void>
-  watch: (path: string) => Promise<void>
+  /** False when the main process refused to register the path (untrusted workspace) */
+  authorize: (path: string) => Promise<boolean>
+  watch: (path: string) => Promise<{ ok: boolean; untrusted?: boolean } | undefined>
   unwatch: (path: string) => Promise<void>
+  trustRequest: (path: string) => Promise<boolean>
+  /** One-time READ permission for a chat attachment outside the workspace (native dialog; `mode` is the session's project edit mode and shapes the dialog) */
+  requestFileTrust: (path: string, mode?: string) => Promise<boolean>
+  /** Session-wide read policy for full-access mode — armed only by a native confirmation */
+  armReadPolicy: () => Promise<boolean>
+  /** Withdraw the session-wide read policy (safe direction; no dialog) */
+  disarmReadPolicy: () => Promise<boolean>
+  trustStatus: (path: string) => Promise<{ trusted: boolean }>
+  trustRevoke: (path: string) => Promise<boolean>
   openInFinder: (path: string) => Promise<void>
   copyPath: (path: string) => Promise<void>
   copy: (src: string, dest: string) => Promise<void>
@@ -57,9 +67,12 @@ export interface ElectronAPI {
   getConfigGroups: () => Promise<import('@shared/types').ApiConfigGroup[]>
   saveConfigGroup: (group: any) => Promise<import('@shared/types').ApiConfigGroup>
   deleteConfigGroup: (id: string) => Promise<void>
-  getSessions: () => Promise<import('@shared/types').ChatSession[]>
+  getSessions: (mode?: 'main' | 'office') => Promise<import('@shared/types').ChatSession[]>
   saveSession: (session: any) => Promise<import('@shared/types').ChatSession>
   deleteSession: (id: string) => Promise<void>
+  /** Durable sub-agent run records (office 任务流 / 代码变更 / 终端 回看) */
+  getSubagentRuns: (sessionIds: string[]) => Promise<Array<{ toolCallId: string; record: import('@shared/types').SubAgentProgress }>>
+  saveSubagentRun: (toolCallId: string, record: import('@shared/types').SubAgentProgress) => Promise<boolean>
   getPreferences: () => Promise<import('@shared/types').UserPreferences>
   savePreferences: (prefs: any) => Promise<void>
   resetAll: () => Promise<void>
@@ -83,6 +96,10 @@ export interface ElectronAPI {
   isMaximized: () => Promise<boolean>
   openDevTools: () => Promise<void>
   openNewWindow: () => Promise<void>
+  /** 打开「一人公司」独立窗口（office 模式）。 */
+  openOfficeWindow: () => Promise<void>
+  /** 本窗口是否为办公室模式（preload 同步注入，主窗口为 false）。 */
+  isOfficeMode: boolean
   onMaximized: (callback: (isMaximized: boolean) => void) => () => void
 
   // OS-level notification (session events while the window is unfocused)
@@ -93,6 +110,11 @@ export interface ElectronAPI {
   termWrite: (id: string, data: string) => Promise<void>
   termResize: (id: string, cols: number, rows: number) => Promise<void>
   termDispose: (id: string) => Promise<void>
+  termRunAgent: (id: string, command: string, cwd?: string) => Promise<void>
+  termOutput: (id: string, tailChars?: number) => Promise<import('@shared/types').TerminalRunSnapshot | null>
+  termKill: (id: string) => Promise<boolean>
+  termAttach: (id: string) => Promise<{ command: string; running: boolean; output: string } | null>
+  termList: () => Promise<import('@shared/types').AgentTerminalRun[]>
   onTermData: (id: string, callback: (data: string) => void) => () => void
   onTermExit: (id: string, callback: (code: number) => void) => () => void
 
@@ -105,12 +127,37 @@ export interface ElectronAPI {
   /** gitExec variant whose stdout is returned untrimmed (byte-exact blob reads). */
   gitExecRaw: (cwd: string, args: string[], input?: string) => Promise<{ success: boolean; output: string; error?: string }>
 
+  // GitHub CLI (PR workflow) — runs the user's own `gh`, allowlisted subcommands only
+  ghExec: (cwd: string, args: string[]) => Promise<{ success: boolean; output: string; error?: string }>
+  ghStatus: (cwd: string) => Promise<{
+    installed: boolean; authed: boolean; host?: string; user?: string; error?: string; raw?: string
+  }>
+
+  // Agent browser session
+  browserNavigate: (url: string) => Promise<{ ok: boolean; state: import('@shared/types').BrowserSessionState; error?: string }>
+  browserState: () => Promise<import('@shared/types').BrowserSessionState>
+  browserConsole: (clear?: boolean) => Promise<{ entries: import('@shared/types').BrowserConsoleEntry[]; text: string }>
+  browserPageText: (maxChars?: number) => Promise<{ ok: boolean; error?: string; title?: string; url?: string; text?: string }>
+  browserScreenshot: () => Promise<{ ok: boolean; error?: string; url?: string; dataUrl?: string; mimeType?: string }>
+  browserAct: (action: import('@shared/types').BrowserAction, opts?: import('@shared/types').BrowserActOptions) =>
+    Promise<import('@shared/types').BrowserActResult & { state: import('@shared/types').BrowserSessionState }>
+  browserHistory: (step: 'back' | 'forward' | 'reload') => Promise<import('@shared/types').BrowserSessionState>
+  browserSetVisible: (visible: boolean) => Promise<import('@shared/types').BrowserSessionState>
+  browserClose: () => Promise<void>
+  onBrowserEvent: (callback: (payload: import('@shared/types').BrowserEvent) => void) => () => void
+
   // Shell
-  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number }) => Promise<{ success: boolean; output: string; error?: string }>
+  shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => Promise<{ success: boolean; output: string; error?: string }>
+  shellKill: (requestId: string) => Promise<boolean>
 
   // Tool-output spill store — oversized tool results page through read_file
   spillSave: (sessionId: string, text: string) => Promise<string | null>
   spillDeleteSession: (sessionId: string) => Promise<void>
+
+  // Model wire log (renderer emits, main process appends)
+  wireLogAppend: (sessionId: string, line: string) => Promise<boolean>
+  wireLogDeleteSession: (sessionId: string) => Promise<void>
+  wireLogOpenDir: () => Promise<boolean>
 
   // Web fetch (web_search / read_url tools)
   webFetch: (url: string, options?: { timeoutMs?: number; maxBytes?: number }) => Promise<{
@@ -149,6 +196,8 @@ export interface ElectronAPI {
   checkpointDelete: (sessionId: string) => Promise<void>
   checkpointRevert: (checkpointId: string) => Promise<{ ok: boolean; restored: number; error?: string }>
   checkpointListReverted: (sessionId: string) => Promise<string[]>
+  checkpointRestore: (sessionId: string, filePaths: string[]) => Promise<{ ok: boolean; restored: number; failed?: string[]; error?: string }>
+  checkpointGetRevertedRecord: (sessionId: string, filePath: string) => Promise<import('@shared/types').RevertedFileRecord | null>
 
   // MCP (Model Context Protocol)
   mcpListTools: () => Promise<Array<{ server: string; name: string; description?: string; inputSchema?: Record<string, any> }>>
@@ -156,8 +205,10 @@ export interface ElectronAPI {
   mcpReload: (rootPath: string) => Promise<{ ok: boolean; error?: string }>
   mcpGetConfig: (rootPath: string) => Promise<{ ok: boolean; config: { mcpServers: Record<string, any> }; file: string | null; error?: string }>
   mcpSaveConfig: (rootPath: string, config: { mcpServers: Record<string, any> }, file?: string | null) => Promise<{ ok: boolean; file?: string; error?: string }>
-  mcpToolDefinitions: () => Promise<import('@shared/types').ToolDefinition[]>
-  mcpStatus: () => Promise<Array<{ name: string; state: 'connecting' | 'ready' | 'failed' | 'restarting' | 'disabled' | 'stopped'; retry?: number; error?: string }>>
+  mcpGetGlobalConfig: () => Promise<{ ok: boolean; config: { mcpServers: Record<string, any> }; file: string | null; error?: string }>
+  mcpSaveGlobalConfig: (config: { mcpServers: Record<string, any> }) => Promise<{ ok: boolean; file?: string; error?: string }>
+  mcpToolDefinitions: (rootPath?: string) => Promise<import('@shared/types').ToolDefinition[]>
+  mcpStatus: (rootPath?: string) => Promise<Array<{ name: string; state: 'connecting' | 'ready' | 'failed' | 'restarting' | 'disabled' | 'stopped'; retry?: number; error?: string; bundled?: boolean }>>
   mcpListResources: () => Promise<Array<{ server: string; uri: string; name?: string; mimeType?: string; description?: string }>>
   mcpReadResource: (server: string, uri: string) => Promise<{ ok: boolean; result?: string; error?: string }>
   mcpListPrompts: () => Promise<Array<{ server: string; name: string; description?: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }>>
@@ -170,8 +221,9 @@ export interface ElectronAPI {
 
   // App
   getPath: (name: string) => Promise<string>
-  /** Ensure the app-owned default empty project exists and return its path. */
-  ensureDefaultProject: () => Promise<string>
+  /** Ensure the app-owned default empty project exists and return its path.
+   *  按窗口模式分目录：office（一人公司窗口）与 main（对话窗口）各自独立。 */
+  ensureDefaultProject: (mode?: 'main' | 'office') => Promise<string>
   getPlatform: () => Promise<string>
   resolveEnvVar: (name: string) => Promise<string>
   getVersion: () => Promise<string>

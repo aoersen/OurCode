@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useChatStore } from '@/stores/chatStore'
+import { useChatStore, QueuedMessage } from '@/stores/chatStore'
+import { MessageAttachment } from '@/types'
 import { useConfigStore } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
 import { filterSlashCommands, buildSlashPrompt, getEditorSlashContext, getAllSlashCommands, SLASH_COMMANDS, SlashCommand } from '@/services/commands/slashCommands'
@@ -8,7 +9,10 @@ import { useI18n } from '@/i18n/useI18n'
 import type { TranslationKey } from '@/i18n'
 import { dragSource } from '../Sidebar/FileTreeNode'
 import FileChip from './FileChip'
-import { isPathInside, makeFileLink, extractPathsFromUriList } from '@/utils/fileRefs'
+import { isPathInside, makeFileLink, extractPathsFromUriList, basename } from '@/utils/fileRefs'
+import { isComposingEvent } from '@/utils/composition'
+import { fileToImageAttachment, imageAttachmentDataUrl, isImageFile, MAX_IMAGES_PER_MESSAGE } from '@/utils/imageAttach'
+import { v4 as uuidv4 } from 'uuid'
 
 /** Localized description for a slash command (falls back to the stored text). */
 const slashDescription = (cmd: SlashCommand, t: (key: TranslationKey, vars?: Record<string, string | number>) => string) =>
@@ -17,7 +21,7 @@ const slashDescription = (cmd: SlashCommand, t: (key: TranslationKey, vars?: Rec
 /** Stable empty-queue reference — a fresh [] from the selector would re-render
  *  ChatInput on every store update (e.g. each streaming chunk of a parallel
  *  conversation), since zustand compares with Object.is. */
-const EMPTY_QUEUE: string[] = []
+const EMPTY_QUEUE: QueuedMessage[] = []
 
 /**
  * Resolve the absolute path of a dropped File. Prefers the preload's
@@ -97,7 +101,16 @@ function dragHasFiles(dt: DataTransfer | null): boolean {
   return Array.from(dt.types).includes('Files') || dt.files.length > 0 || Array.from(dt.items).some((i) => i.kind === 'file')
 }
 
-export default function ChatInput() {
+export default function ChatInput({
+  // Office 模式专用按钮文案覆盖：默认空字符串时沿用 i18n 默认（发送/结束）。
+  // OfficeChatPane 在 IS_OFFICE=true 时传「发布任务 / 终止任务」，与一人公司
+  // 的"派活"语义对齐；agent 模式不传 → 行为完全保持不变。
+  idleLabelOverride,
+  runningLabelOverride,
+}: {
+  idleLabelOverride?: string
+  runningLabelOverride?: string
+} = {}) {
   const [input, setInput] = useState('')
   const [contextFiles, setContextFiles] = useState<string[]>([])
   /** path → isDirectory, resolved lazily via fs:stat (in-workspace only) so
@@ -114,6 +127,10 @@ export default function ChatInput() {
   const [queuedHint, setQueuedHint] = useState(false)
   const [listening, setListening] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  /** 随消息发送的图片（视觉输入）。与 contextFiles 不同：附件是路径引用，
+   *  图片是真正的多模态内容，会编码进 LLM 请求。 */
+  const [images, setImages] = useState<MessageAttachment[]>([])
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<{ stop: () => void } | null>(null)
   const t = useI18n()
 
@@ -161,6 +178,8 @@ export default function ChatInput() {
   const removeQueuedMessage = useChatStore((s) => s.removeQueuedMessage)
   const sendQueuedNow = useChatStore((s) => s.sendQueuedNow)
   const clearQueue = useChatStore((s) => s.clearQueue)
+  // 权限模式 Shift+Tab 循环切换（ZCode 风格）
+  const cycleEditMode = useChatStore((s) => s.cycleEditMode)
   // Loading/stop state is per session: while THIS conversation generates the
   // send button turns into stop; other conversations running in parallel keep
   // their own buttons (and stopping here must never abort them).
@@ -176,10 +195,17 @@ export default function ChatInput() {
 
   // Auto-resize textarea
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px'
+    const resize = () => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+        textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px'
+      }
     }
+    resize()
+    // 面板宽度变化会改变换行数 —— 不重算的话，变窄时内容被裁进滚动条，
+    // 变宽时盒子里留下多余空行。
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
   }, [input])
 
   // Listen for "run skill" actions from the usage panel: inject the skill
@@ -279,12 +305,35 @@ export default function ChatInput() {
   )
 
   /** Attach files as chips. Folder-ness is resolved lazily via fs:stat so
-   *  chips can show a folder icon and links get a trailing slash. */
-  const addContextFiles = useCallback((paths: string[]) => {
+   *  chips can show a folder icon and links get a trailing slash. Files
+   *  outside the workspace first need a one-time read permission (native
+   *  dialog) — refused files never become chips, so the AI never gets an
+   *  attachment it is not allowed to read. */
+  const addContextFiles = useCallback(async (paths: string[]) => {
     const unique = [...new Set(paths)]
-    setContextFiles((prev) => [...new Set([...prev, ...unique])])
     const root = effectiveRoot()
-    for (const p of unique) {
+    // The session's project edit mode shapes the native permission dialog
+    // (per-file vs. with a session-wide option); it never grants anything.
+    const editMode = useChatStore.getState().getActiveSession()?.projectEditMode || 'confirm_before_change'
+    const external = unique.filter((p) => p && !isPathInside(p, root))
+    const granted = new Set<string>()
+    for (const p of external) {
+      let ok = false
+      try {
+        ok = await window.electronAPI.requestFileTrust(p, editMode)
+      } catch {
+        ok = false
+      }
+      if (!ok) {
+        useUIStore.getState().showNotification(t('chat.fileTrustDenied', { name: basename(p) }), 'warning')
+        continue
+      }
+      granted.add(p)
+    }
+    const keep = unique.filter((p) => isPathInside(p, root) || granted.has(p))
+    if (keep.length === 0) return
+    setContextFiles((prev) => [...new Set([...prev, ...keep])])
+    for (const p of keep) {
       if (!isPathInside(p, root)) continue
       window.electronAPI
         .stat(p)
@@ -294,7 +343,55 @@ export default function ChatInput() {
         })
         .catch(() => { /* unreadable — stays a file chip */ })
     }
-  }, [effectiveRoot])
+  }, [effectiveRoot, t])
+
+  /** Read image files (button / paste / drop) into `images`. Oversized or
+   *  undecodable files are reported instead of silently vanishing; the count is
+   *  capped so one message can't carry a megabyte-per-image slideshow. */
+  const attachImageFiles = useCallback(async (files: File[]): Promise<MessageAttachment[]> => {
+    const picked = files.filter(isImageFile)
+    if (picked.length === 0) return []
+    const attached: MessageAttachment[] = []
+    for (const file of picked) {
+      try {
+        attached.push(await fileToImageAttachment(file, uuidv4()))
+      } catch {
+        useUIStore.getState().showNotification(t('chat.imageReadFailed', { name: file.name || 'image' }), 'error')
+      }
+    }
+    if (attached.length === 0) return []
+    setImages((prev) => {
+      const next = [...prev, ...attached]
+      if (next.length > MAX_IMAGES_PER_MESSAGE) {
+        useUIStore.getState().showNotification(t('chat.imageTooMany', { max: MAX_IMAGES_PER_MESSAGE }), 'warning')
+        return next.slice(0, MAX_IMAGES_PER_MESSAGE)
+      }
+      return next
+    })
+    return attached
+  }, [t])
+
+  const handleAddImages = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    await attachImageFiles(Array.from(files))
+  }, [attachImageFiles])
+
+  /** Take the images out of a drop into the attachment row, returning their
+   *  names so the caller can keep them out of the path-reference list. */
+  const absorbDroppedImages = useCallback(async (dt: DataTransfer | null): Promise<Set<string>> => {
+    const files = Array.from(dt?.files || []).filter(isImageFile)
+    if (files.length === 0) return new Set()
+    const attached = await attachImageFiles(files)
+    return new Set(attached.map((a) => a.name))
+  }, [attachImageFiles])
+
+  /** Ctrl/Cmd+V with a screenshot on the clipboard attaches it as an image. */
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files || []).filter(isImageFile)
+    if (files.length === 0) return
+    e.preventDefault()
+    void attachImageFiles(files)
+  }, [attachImageFiles])
 
   const insertFileReference = useCallback((filePath: string) => {
     // @-picker selection: drop the dangling "@query" and attach the file as a
@@ -305,7 +402,7 @@ export default function ChatInput() {
     const atMatch = textBeforeCursor.match(/@(\S*)$/)
     const atIndex = atMatch ? cursorPos - atMatch[1].length - 1 : cursorPos
     setInput(input.slice(0, atIndex) + input.slice(cursorPos))
-    addContextFiles([filePath])
+    void addContextFiles([filePath])
     setShowFileSearch(false)
     requestAnimationFrame(() => {
       textarea?.focus()
@@ -350,17 +447,20 @@ export default function ChatInput() {
     setIsDragOver(false)
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragOver(false)
+    const dt = e.dataTransfer
 
+    const imageNames = await absorbDroppedImages(dt)
     // 1) External drag from the OS file manager — resolve paths through every
-    //    DataTransfer channel (files / items / uri-list).
-    const paths = extractDroppedPaths(e.dataTransfer)
+    //    DataTransfer channel (files / items / uri-list). Images that just went
+    //    into the attachment row are excluded: they travel as content, not path.
+    const paths = extractDroppedPaths(dt).filter((p) => !imageNames.has(p.split(/[/\\]/).pop() || ''))
     // 2) Internal drag from the file tree via custom MIME type (more reliable
     //    than the module-level dragSource which can get stale after HMR).
     if (paths.length === 0) {
-      const treePath = e.dataTransfer.getData('application/x-ourcode-path')
+      const treePath = dt.getData('application/x-ourcode-path')
       if (treePath) paths.push(treePath)
     }
     // 3) Fallback: module-level dragSource (kept for backward compatibility)
@@ -371,14 +471,14 @@ export default function ChatInput() {
       // Never fail silently: if the drop carried file data we couldn't resolve
       // (empty dataTransfer.files, stale preload, exotic drag source), tell the
       // user instead of looking like the input ignored the drag.
-      if (dragHasFiles(e.dataTransfer)) {
+      if (imageNames.size === 0 && dragHasFiles(dt)) {
         useUIStore.getState().showNotification(t('chat.dropPathUnavailable'), 'warning')
       }
       return
     }
 
     // Attach every dropped path as a chip — nothing goes into the textarea.
-    addContextFiles([...new Set(paths)])
+    void addContextFiles([...new Set(paths)])
     // Clear a dangling "@" (in-progress query) the user typed before the drop.
     const textarea = textareaRef.current
     const cursorPos = textarea?.selectionStart ?? input.length
@@ -414,21 +514,23 @@ export default function ChatInput() {
       // safely lands in the chat input.
       if ((e.target as HTMLElement)?.closest?.('[data-chat-drop]')) return
       e.preventDefault()
-      const paths = extractDroppedPaths(dt)
-      // Internal file-tree drags carry the path in a custom MIME type.
-      if (paths.length === 0) {
-        const treePath = dt?.getData('application/x-ourcode-path')
-        if (treePath) paths.push(treePath)
-      }
-      if (paths.length === 0) {
-        // Files arrived but none resolved to a path — say so instead of making
-        // the drop look like it was ignored.
-        if (dragHasFiles(dt)) {
-          useUIStore.getState().showNotification(t('chat.dropPathUnavailable'), 'warning')
+      void absorbDroppedImages(dt).then((imageNames) => {
+        const paths = extractDroppedPaths(dt).filter((p) => !imageNames.has(p.split(/[/\\]/).pop() || ''))
+        // Internal file-tree drags carry the path in a custom MIME type.
+        if (paths.length === 0) {
+          const treePath = dt?.getData('application/x-ourcode-path')
+          if (treePath) paths.push(treePath)
         }
-        return
-      }
-      addContextFiles([...new Set(paths)])
+        if (paths.length === 0) {
+          // Files arrived but none resolved to a path — say so instead of making
+          // the drop look like it was ignored.
+          if (imageNames.size === 0 && dragHasFiles(dt)) {
+            useUIStore.getState().showNotification(t('chat.dropPathUnavailable'), 'warning')
+          }
+          return
+        }
+        void addContextFiles([...new Set(paths)])
+      })
     }
     document.addEventListener('dragover', onDragOver, true)
     document.addEventListener('drop', onDrop, true)
@@ -436,12 +538,12 @@ export default function ChatInput() {
       document.removeEventListener('dragover', onDragOver, true)
       document.removeEventListener('drop', onDrop, true)
     }
-  }, [t, addContextFiles])
+  }, [t, addContextFiles, absorbDroppedImages])
 
   const handleSubmit = async () => {
     const text = input.trim()
-    // Sending is allowed with only attached files (no typed text).
-    if (!text && contextFiles.length === 0) return
+    // Sending is allowed with only attached files/images (no typed text).
+    if (!text && contextFiles.length === 0 && images.length === 0) return
 
     // Vibe-and-Replace: combine the user's description with the stashed selection
     const vibe = takePendingVibeReplace()
@@ -457,9 +559,10 @@ export default function ChatInput() {
     // While the agent is working, Enter queues the message (type-ahead) —
     // scoped to the active session, so parallel conversations are unaffected.
     if (isThisSessionLoading && activeSessionId) {
-      queueMessage(activeSessionId, content)
+      queueMessage(activeSessionId, content, images)
       setInput('')
       setContextFiles([])
+      setImages([])
       setDirMap({})
       setQueuedHint(true)
       setTimeout(() => setQueuedHint(false), 2000)
@@ -468,10 +571,11 @@ export default function ChatInput() {
 
     setInput('')
     setContextFiles([])
+    setImages([])
     setDirMap({})
 
     if (activeSessionId) {
-      await sendMessage(activeSessionId, content, contextFiles)
+      await sendMessage(activeSessionId, content, contextFiles, images)
     }
   }
 
@@ -494,6 +598,10 @@ export default function ChatInput() {
   }, [input])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME 组合期间（拼音候选词未确认）的按键属于输入法 —— 尤其是 Enter 确认
+    // 候选词，绝不能当作发送/菜单选择。提前放行，让浏览器正常提交组合文本。
+    if (isComposingEvent(e)) return
+
     // Markdown shortcuts (Ctrl+B, Ctrl+I, Ctrl+`)
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       if (e.key === 'b') {
@@ -511,6 +619,14 @@ export default function ChatInput() {
         applyMarkdown('`', '`')
         return
       }
+    }
+
+    // Shift+Tab cycles the permission mode (ZCode-style). Only when no slash
+    // menu / file search is consuming Tab (those take precedence).
+    if (e.key === 'Tab' && e.shiftKey && !showSlashMenu && !showFileSearch) {
+      e.preventDefault()
+      if (activeSessionId) void cycleEditMode(activeSessionId)
+      return
     }
 
     // Slash-command menu navigation
@@ -579,12 +695,15 @@ export default function ChatInput() {
     try {
       const filePath = await window.electronAPI.openFile()
       if (filePath) {
-        addContextFiles([filePath])
+        void addContextFiles([filePath])
       }
     } catch (error) {
       console.error('打开文件失败:', error)
     }
   }
+
+  // 有内容可发（文本 / 附件 / 上下文文件）—— 运行中决定是否同时显示「发送」
+  const hasDraft = !!input.trim() || images.length > 0 || contextFiles.length > 0
 
   return (
     <div className="border-t border-nova-border p-3">
@@ -600,6 +719,29 @@ export default function ChatInput() {
               onRemove={removeContextFile}
               removeLabel={t('chat.removeFile')}
             />
+          ))}
+        </div>
+      )}
+
+      {/* 图片附件 —— 缩略图一行，随消息以多模态内容发送（不是路径引用） */}
+      {images.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          {images.map((img) => (
+            <div key={img.id} className="relative group">
+              <img
+                src={imageAttachmentDataUrl(img)}
+                alt={img.name}
+                title={img.name}
+                className="h-12 w-12 object-cover rounded border border-nova-border"
+              />
+              <button
+                onClick={() => setImages((prev) => prev.filter((x) => x.id !== img.id))}
+                title={t('chat.removeImage')}
+                className="absolute -top-1.5 -right-1.5 hidden group-hover:flex w-4 h-4 items-center justify-center rounded-full bg-nova-surface border border-nova-border text-nova-text-muted hover:text-nova-text-primary text-[10px] leading-none"
+              >
+                ×
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -625,7 +767,10 @@ export default function ChatInput() {
           <div className="max-h-32 overflow-y-auto px-2 pb-2 space-y-1">
             {queuedMessages.map((msg, i) => (
               <div key={i} className="flex items-center gap-1.5 text-xs rounded px-2 py-1 hover:bg-nova-hover transition-colors">
-                <span className="flex-1 min-w-0 truncate">{msg}</span>
+                <span className="flex-1 min-w-0 truncate">{msg.content || t('chat.imageOnly')}</span>
+                {msg.attachments?.length ? (
+                  <span className="shrink-0 text-[10px] text-nova-text-muted">🖼 {msg.attachments.length}</span>
+                ) : null}
                 <button
                   onClick={() => sendQueuedNow(activeSessionId, i)}
                   title={t('chat.queueSendNow')}
@@ -734,9 +879,9 @@ export default function ChatInput() {
               </svg>
             </button>
             <button
-              onClick={handleAddFile}
+              onClick={() => imageInputRef.current?.click()}
               className="p-1 text-nova-text-muted hover:text-nova-text-primary rounded transition-colors hover:bg-nova-hover shrink-0"
-              title={t('chat.addAttachment')}
+              title={t('chat.attachImage')}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -744,6 +889,19 @@ export default function ChatInput() {
                 <polyline points="21 15 16 10 5 21" />
               </svg>
             </button>
+            {/* 图片选择走渲染进程的 File（FileReader），不用 fs IPC：那条路径
+                经 iconv 文本解码，二进制会被破坏。 */}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void handleAddImages(e.target.files)
+                e.target.value = ''
+              }}
+            />
           </div>
 
           {/* Auto-grow textarea */}
@@ -752,11 +910,12 @@ export default function ChatInput() {
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={targetMode ? t('chat.targetModePlaceholder') : t('chat.inputPlaceholder')}
             rows={1}
             disabled={!activeConfigGroupId}
             data-ai-input
-            className="w-full bg-transparent resize-none text-nova-text-primary text-sm outline-none max-h-[150px] placeholder:text-nova-text-muted disabled:opacity-50 px-3 pt-2 pb-1"
+            className="w-full bg-transparent resize-none text-nova-text-primary text-sm outline-none max-h-[200px] placeholder:text-nova-text-muted disabled:opacity-50 px-3 pt-2 pb-1"
           />
 
           {/* Footer: hints left, voice + send/stop right */}
@@ -782,23 +941,24 @@ export default function ChatInput() {
                   <line x1="8" y1="23" x2="16" y2="23" />
                 </svg>
               </button>
-              {/* While the agent works the button is "结束" — typing turns it
-                  into "发送" so Enter/click queues the message (type-ahead);
-                  sending or clearing the input flips it back to "结束". */}
-              {isThisSessionLoading && !input.trim() ? (
+              {/* 运行中「结束」常驻：之前一打字它就变成「发送」，等于把中止能力
+                  藏起来了（想停手必须先清空输入框）。现在两者并存 —— 有草稿时
+                  「发送」同时出现，Enter/点击走排队。 */}
+              {isThisSessionLoading && (
                 <button
                   onClick={() => activeSessionId && stopGeneration(activeSessionId)}
                   className="px-3.5 py-1.5 text-xs text-white font-medium rounded-md transition-colors bg-error hover:opacity-90"
                 >
-                  {t('chat.stop')}
+                  {runningLabelOverride || t('chat.stop')}
                 </button>
-              ) : (
+              )}
+              {(!isThisSessionLoading || hasDraft) && (
                 <button
                   onClick={handleSubmit}
-                  disabled={(!input.trim() && contextFiles.length === 0) || !activeConfigGroupId}
+                  disabled={(!input.trim() && contextFiles.length === 0 && images.length === 0) || !activeConfigGroupId}
                   className="text-white text-xs font-medium px-4 py-1.5 rounded-md transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed bg-nova-accent"
                 >
-                  {t('chat.send')}
+                  {idleLabelOverride || t('chat.send')}
                 </button>
               )}
             </div>

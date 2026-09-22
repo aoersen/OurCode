@@ -9,6 +9,7 @@ import type { UsageEvent, UsageEventCategory } from '@/types'
 import { truncateToolOutput, ToolOutputLimits, shouldSpill, buildSpillPreview } from './truncate'
 import { runWithTimeout } from './withTimeout'
 import { redactSecrets, type RedactSecretsOptions } from '@/services/llm/redact'
+import { writeToolPaths } from './writePaths'
 
 /** Execution context for one tool call (falls back to the shared session context) */
 export interface ToolExecuteContext {
@@ -20,6 +21,10 @@ export interface ToolExecuteContext {
   /** Abort signal of the enclosing agent run — forwarded into the tool's own
    *  context so long-running tools can be cancelled by the user's Stop button. */
   abortSignal?: AbortSignal
+  /** The session's project edit mode (手动确认 / 自动编辑 / 计划模式 / 完全访问),
+   *  forwarded by the agent loop so tool helpers can shape permission dialogs.
+   *  Advisory only — it never grants anything by itself. */
+  projectEditMode?: string
 }
 
 // Tool-output truncation limits (wired from chatStore so every executor
@@ -82,11 +87,24 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase()
 }
 
+/** The tool call currently executing (set for the duration of execute()) —
+ *  lets tool helpers resolve the session's edit mode without importing the
+ *  heavy chat store. Null outside a run. */
+let activeToolContext: ToolExecuteContext | null = null
+
+/** Read the in-flight tool call's context (null outside execute()). */
+export function getActiveToolContext(): ToolExecuteContext | null {
+  return activeToolContext
+}
+
 export class ToolExecutor {
   private tools: Tool[]
   private toolMap: Map<string, Tool>
   /** Dynamic tools from MCP servers (fetched via IPC, merged into definitions) */
   private dynamicTools: ToolDefinition[] = []
+  /** MCP servers that run the app's own packaged code — the only ones whose
+   *  tools skip approval (everything else executes third-party code). */
+  private bundledMcpServers: Set<string> = new Set()
   /** Dynamic skill tools (skill__<name>) from the workspace skill manager */
   private skillTools: ToolDefinition[] = []
   /** Session context for usage attribution (set by the agent loop) */
@@ -157,11 +175,7 @@ export class ToolExecutor {
     // enforced when a session context exists.
     this.registerGuard(async (toolCall, ctx) => {
       if (!READ_GUARD_TOOLS.has(toolCall.name) || !ctx.sessionId) return undefined
-      const targets = toolCall.name === 'multi_edit_file'
-        ? (Array.isArray(toolCall.arguments?.edits) ? toolCall.arguments.edits : [])
-            .map((e: any) => String(e?.path || '').trim())
-            .filter(Boolean)
-        : [String(toolCall.arguments?.path || '')]
+      const targets = writeToolPaths(toolCall.name, toolCall.arguments)
       for (const targetPath of targets) {
         if (targetPath && !this.hasReadFile(ctx.sessionId, targetPath) && await this.fileExists(targetPath)) {
           return `Error: File has not been read yet. Read it first before writing to it.（文件尚未读取，请先调用 read_file 读取后再写入）: ${targetPath}`
@@ -260,13 +274,31 @@ export class ToolExecutor {
     }
   }
 
-  /** Refresh MCP tool definitions from the main process */
-  async refreshMcpTools(): Promise<void> {
+  /** Refresh MCP tool definitions from the main process. `projectPath` (the
+   *  running session's project) keeps the manager loaded on the ACTIVE project
+   *  — the main process reloads first when the file tree's mount point differs. */
+  async refreshMcpTools(projectPath?: string | null): Promise<void> {
     try {
-      this.dynamicTools = await window.electronAPI.mcpToolDefinitions()
+      this.dynamicTools = await window.electronAPI.mcpToolDefinitions(projectPath ?? undefined)
     } catch {
       this.dynamicTools = []
     }
+    // Which servers are app-shipped is read from the same snapshot as the tool
+    // list, so switching workspaces can't leave the previous one's exemption
+    // behind — an unreadable status means nothing is exempt.
+    try {
+      const status = await window.electronAPI.mcpStatus(projectPath ?? undefined)
+      this.bundledMcpServers = new Set((status || []).filter((s) => s.bundled).map((s) => s.name))
+    } catch {
+      this.bundledMcpServers = new Set()
+    }
+  }
+
+  /** Server an `mcp__<server>__<tool>` name belongs to (same split as usage). */
+  private mcpServerOf(toolName: string): string {
+    const rest = toolName.slice('mcp__'.length)
+    const sep = rest.indexOf('__')
+    return sep === -1 ? rest : rest.slice(0, sep)
   }
 
   /** Refresh skill tool definitions from the workspace SkillManager. `projectPath`
@@ -305,8 +337,11 @@ export class ToolExecutor {
 
   /** Check if a tool requires user approval */
   requiresApproval(toolName: string): boolean {
-    // MCP tools are user-configured servers — their calls run without extra approval
-    if (toolName.startsWith('mcp__')) return false
+    // An MCP server runs third-party code the user installed, so its tools are
+    // approval-gated like any other side effect. Only servers that execute the
+    // app's own packaged code skip it — otherwise the bundled git MCP would nag
+    // on every status check.
+    if (toolName.startsWith('mcp__')) return !this.bundledMcpServers.has(this.mcpServerOf(toolName))
     // Skill tools are read-only (they only load instructions)
     if (toolName.startsWith('skill__')) return false
     const tool = this.toolMap.get(toolName)
@@ -365,6 +400,21 @@ export class ToolExecutor {
    *  context explicitly. */
   async execute(toolCall: ToolCall, context?: ToolExecuteContext): Promise<ToolResult> {
     const ctx = context || this.sessionContext || {}
+    // Expose the in-flight call's context to tool helpers (session edit mode
+    // etc.) without them importing the heavy chat store. Nesting (a subagent
+    // tool spawned from a parent tool) restores the outer context on exit.
+    const previous = activeToolContext
+    activeToolContext = ctx
+    try {
+      return await this.executeStages(toolCall, ctx)
+    } finally {
+      activeToolContext = previous
+    }
+  }
+
+  /** Stages 1–5 of a tool call (see execute) — split out so the active-tool
+   *  context can wrap the whole pipeline in one try/finally. */
+  private async executeStages(toolCall: ToolCall, ctx: ToolExecuteContext): Promise<ToolResult> {
     this.startedAtByCall.set(toolCall.id, Date.now())
 
     // Stage 1 — guards (deny-only, monotonic). First denial is terminal; no
@@ -490,13 +540,17 @@ export class ToolExecutor {
     try {
       // The around-hook stage already composed the deadline + Stop signal into
       // ctx.abortSignal for tools with a timeoutMs; forward it unchanged.
-      const result = await tool.execute(toolCall.arguments, {
+      const raw = await tool.execute(toolCall.arguments, {
         sessionId: ctx.sessionId,
         projectPath: ctx.projectPath,
         toolCallId: ctx.toolCallId ?? toolCall.id,
         abortSignal: ctx.abortSignal,
       })
-      return { toolCallId: toolCall.id, name: toolCall.name, result }
+      // A tool may return { text, images } instead of a string (browser_screenshot).
+      if (typeof raw === 'string') {
+        return { toolCallId: toolCall.id, name: toolCall.name, result: raw }
+      }
+      return { toolCallId: toolCall.id, name: toolCall.name, result: raw.text, images: raw.images }
     } catch (error: any) {
       return {
         toolCallId: toolCall.id,
@@ -540,7 +594,7 @@ export class ToolExecutor {
       case 'delete_file':
         return `Delete: ${args.path}`
       case 'run_command':
-        return `Run: ${args.command}\nIn: ${args.cwd || '(project root)'}`
+        return `Run: ${args.command}\nIn: ${args.cwd || '(project root)'}${args.background ? '\n（在集成终端后台运行，不会等待它退出）' : ''}`
       case 'git_add':
         return `git add ${args.path ? `-- ${args.path}` : '-A (全部变更)'}`
       case 'git_commit':

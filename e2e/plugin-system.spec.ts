@@ -1,5 +1,5 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, launchApp } from './helpers'
 
 /**
  * Finds the main app window (not DevTools) the same way the branding test does —
@@ -21,14 +21,13 @@ async function mainWindow(app: import('@playwright/test').ElectronApplication): 
     if (!page) await new Promise((r) => setTimeout(r, 500))
   }
   if (!page) throw new Error('main window not found')
+  await dismissOnboarding(page)
   return page
 }
 
 test.describe('Plugin System', () => {
   test('installs and activates a plugin over the RPC bridge (no DataCloneError)', async () => {
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main.js')],
-    })
+    const { app } = await launchApp()
     const window = await mainWindow(app)
 
     // Install flow asks for permission via window.confirm

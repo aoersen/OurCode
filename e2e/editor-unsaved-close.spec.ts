@@ -1,5 +1,5 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, launchApp } from './helpers'
 import { mkdtemp, writeFile, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -7,42 +7,7 @@ import { join } from 'path'
 /** Launch with a throwaway userData — the shared default userData restores
  *  stale tabs (same basenames like a.ts) that skew tab-count assertions. */
 async function launchFreshApp(): Promise<{ app: import('@playwright/test').ElectronApplication; userData: string }> {
-  const userData = await mkdtemp(join(tmpdir(), 'unsaved-ud-'))
-  const app = await electron.launch({
-    args: [path.join(__dirname, '../dist-electron/main.js')],
-    env: { ...process.env, OURCODE_USER_DATA: userData },
-  })
-  return { app, userData }
-}
-
-/** Dismiss the first-run onboarding modal. It mounts only AFTER the app's
- *  async boot completes (which can take several seconds), so wait until the
- *  splash is gone and no dialog shows for a moment before giving up. */
-async function dismissOnboarding(win: Page): Promise<void> {
-  let readyStreak = 0
-  for (let i = 0; i < 60; i++) {
-    const dialog = win.locator('[role="dialog"][aria-label="欢迎使用"]').first()
-    const visible = await dialog.isVisible({ timeout: 300 }).catch(() => false)
-    if (visible) {
-      readyStreak = 0
-      const skip = dialog.locator('button', { hasText: '跳过' }).first()
-      if (await skip.isVisible().catch(() => false)) {
-        await skip.click()
-        await win.waitForTimeout(400)
-        continue
-      }
-      await win.waitForTimeout(300)
-      continue
-    }
-    const splashGone = !(await win.locator('#splash-screen').isVisible().catch(() => false))
-    if (splashGone) {
-      readyStreak += 1
-      if (readyStreak >= 4) return
-    } else {
-      readyStreak = 0
-    }
-    await win.waitForTimeout(400)
-  }
+  return launchApp()
 }
 
 async function mainWindow(app: import('@playwright/test').ElectronApplication): Promise<Page> {

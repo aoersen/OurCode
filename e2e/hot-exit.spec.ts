@@ -1,38 +1,8 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, dropUserData, launchApp } from './helpers'
 import { mkdtemp, writeFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
-/** Dismiss the first-run onboarding modal. It mounts only AFTER the app's
- *  async boot completes (which can take several seconds), so wait until the
- *  splash is gone and no dialog shows for a moment before giving up. */
-async function dismissOnboarding(win: Page): Promise<void> {
-  let readyStreak = 0
-  for (let i = 0; i < 60; i++) {
-    const dialog = win.locator('[role="dialog"][aria-label="欢迎使用"]').first()
-    const visible = await dialog.isVisible({ timeout: 300 }).catch(() => false)
-    if (visible) {
-      readyStreak = 0
-      const skip = dialog.locator('button', { hasText: '跳过' }).first()
-      if (await skip.isVisible().catch(() => false)) {
-        await skip.click()
-        await win.waitForTimeout(400)
-        continue
-      }
-      await win.waitForTimeout(300)
-      continue
-    }
-    const splashGone = !(await win.locator('#splash-screen').isVisible().catch(() => false))
-    if (splashGone) {
-      readyStreak += 1
-      if (readyStreak >= 4) return
-    } else {
-      readyStreak = 0
-    }
-    await win.waitForTimeout(400)
-  }
-}
 
 /** Robustly find the main app window (not DevTools), dismissing the first-run
  *  onboarding modal if it shows. */
@@ -61,9 +31,12 @@ test.describe('Hot Exit', () => {
     const dir = await mkdtemp(join(tmpdir(), 'hotexit-'))
     await writeFile(join(dir, 'hello.ts'), 'hello', 'utf-8')
 
+    let userData: string | undefined
     try {
       // ── Launch #1: open the file, disable autosave, edit, leave unsaved ──
-      const app1 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+      const first = await launchApp()
+      userData = first.userData
+      const app1 = first.app
       const win1 = await mainWindow(app1)
 
       // Clean slate: dismiss any restore modal left by a previous failed run
@@ -124,8 +97,8 @@ test.describe('Hot Exit', () => {
       await app1.close()
       await new Promise((r) => setTimeout(r, 500)) // let the first process exit fully
 
-      // ── Launch #2: the restore prompt lists and restores the file ──
-      const app2 = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+      // ── Launch #2: same profile, so the backup written above is found ──
+      const { app: app2 } = await launchApp({ userData: userData! })
       const win2 = await mainWindow(app2)
       try {
         await expect(win2.locator('text=恢复未保存的更改').first()).toBeVisible({ timeout: 8000 })
@@ -159,6 +132,7 @@ test.describe('Hot Exit', () => {
       }
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {})
+      if (userData) dropUserData(userData)
     }
   })
 })

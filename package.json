@@ -1,6 +1,6 @@
 {
   "name": "ourcode-ide",
-  "version": "0.2.11",
+  "version": "0.2.13",
   "description": "AI-powered code editor with multi-provider support and editable chat history",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -16,7 +16,11 @@
     "lint": "eslint src electron --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "npx playwright test"
+    "test:e2e": "node node_modules/@playwright/test/cli.js test"
+  },
+  "overrides": {
+    "playwright": "$@playwright/test",
+    "playwright-core": "$@playwright/test"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
@@ -75,7 +79,6 @@
     },
     "files": [
       "dist-electron",
-      "dist",
       "build"
     ],
     "extraResources": [

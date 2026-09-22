@@ -290,7 +290,7 @@ function StatCard({ label, value, accent, sub }: { label: string; value: string;
     <div className="bg-white/50 dark:bg-white/5 border border-glass-border p-2.5 flex flex-col gap-1 rounded-md backdrop-blur-xl">
       <span className="text-[11px] text-nova-text-muted font-medium">{label}</span>
       <span className={`font-mono text-[18px] leading-none font-medium ${accent}`}>{value}</span>
-      {sub && <span className="font-mono text-[9px] text-nova-text-muted">{sub}</span>}
+      {sub && <span className="font-mono text-[11px] text-nova-text-muted">{sub}</span>}
     </div>
   )
 }
@@ -382,7 +382,7 @@ function ModelList({ rows }: { rows: UsageRankRow[] }) {
           <div key={r.name} className="flex flex-col gap-1">
             <div className="flex justify-between items-center text-[11px]">
               <span className="text-nova-text-primary font-medium truncate">{r.name}</span>
-              <span className="font-mono text-[9px] text-nova-text-muted shrink-0">
+              <span className="font-mono text-[11px] text-nova-text-muted shrink-0">
                 {t('usage.calls', { count: r.count })} · {formatTokens(total)}
               </span>
             </div>
@@ -482,14 +482,14 @@ function RecentRow({ row }: { row: UsageRecentRow }) {
         <span className="min-w-0 flex-1 text-[11px] text-nova-text-primary truncate">{row.name}</span>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <span className="font-mono text-[9px] text-nova-text-muted">
+        <span className="font-mono text-[11px] text-nova-text-muted">
           {row.tokensIn + row.tokensOut > 0
             ? `${formatTokens(row.tokensIn + row.tokensOut)} t`
             : row.durationMs > 0
               ? formatDuration(row.durationMs)
               : ''}
         </span>
-        <span className="text-[9px] text-nova-text-muted w-10 text-right">{formatClock(row.startedAt)}</span>
+        <span className="text-[11px] text-nova-text-muted w-10 text-right">{formatClock(row.startedAt)}</span>
       </div>
     </div>
   )

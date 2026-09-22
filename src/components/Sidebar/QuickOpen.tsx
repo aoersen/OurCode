@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useI18n } from '@/i18n/useI18n'
+import { isComposingEvent } from '@/utils/composition'
 
 interface QuickOpenFile {
   path: string
@@ -103,7 +104,7 @@ export default function QuickOpen({ rootPath }: { rootPath?: string }) {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelectedIndex((i) => Math.max(i - 1, 0))
-    } else if (e.key === 'Enter') {
+    } else if (e.key === 'Enter' && !isComposingEvent(e)) {
       e.preventDefault()
       const file = filteredFiles[selectedIndex]
       if (file) {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, memo } from 'react'
-import { ChatMessage as ChatMessageType, AgentRun } from '@/types'
+import { ChatMessage as ChatMessageType, AgentRun, MessageAttachment } from '@/types'
 import { useChatStore } from '@/stores/chatStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useMemoryStore } from '@/stores/memoryStore'
@@ -15,7 +15,9 @@ import MemoryPreviewModal from './MemoryPreviewModal'
 import FileChangesSummary from './FileChangesSummary'
 import FileChip from './FileChip'
 import { splitFileLinks } from '@/utils/fileRefs'
+import { imageAttachmentDataUrl } from '@/utils/imageAttach'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 interface ChatMessageProps {
   message: ChatMessageType
@@ -38,17 +40,20 @@ interface ChatMessageProps {
 }
 
 /**
- * User bubble content: plain text with attached files rendered as chips.
+ * User bubble content: plain text with attached files rendered as chips and
+ * attached images rendered inline.
  * Only links that resolve to the message's own contextFiles become chips —
  * pasted text that merely looks like `[name](path)` stays plain text.
  */
 function UserMessageContent({
   content,
   contextFiles,
+  attachments,
   rootPath,
 }: {
   content: string
   contextFiles: string[]
+  attachments?: MessageAttachment[]
   rootPath: string
 }) {
   const segments = useMemo(
@@ -58,6 +63,19 @@ function UserMessageContent({
   const openFile = (p: string) => useEditorStore.getState().openFile(p)
   return (
     <div className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+      {attachments?.length ? (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {attachments.map((att) => (
+            <img
+              key={att.id}
+              src={imageAttachmentDataUrl(att)}
+              alt={att.name}
+              title={att.name}
+              className="max-h-44 max-w-[260px] rounded border border-nova-border object-contain"
+            />
+          ))}
+        </div>
+      ) : null}
       {segments.map((seg, i) =>
         seg.kind === 'file' && seg.path ? (
           <FileChip key={i} path={seg.path} rootPath={rootPath} onOpen={openFile} />
@@ -392,7 +410,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
     setIsRemembering(true)
     try {
       // Condense first, then let the user review/edit before writing to memory.
-      const condensed = await condenseMemory(conversation, projectPath, session?.model)
+      const condensed = await condenseMemory(conversation, projectPath, session?.model, session?.configGroupId)
       setPreviewMemory({ content: condensed, projectPath })
     } catch (error) {
       useUIStore.getState().showNotification(
@@ -532,7 +550,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
             )}
             {run?.status === 'error' && (
               <span className="flex items-center gap-1 text-error">
-                <span className="material-symbols-outlined text-[13px] leading-none" aria-hidden>error</span>
+                <MSIcon name="error" className="text-[13px] leading-none" />
                 {t('agent.runStatus.error')}
               </span>
             )}
@@ -559,6 +577,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
                 <UserMessageContent
                   content={message.content}
                   contextFiles={message.contextFiles || []}
+                  attachments={message.attachments}
                   rootPath={session?.projectPath || useUIStore.getState().rootPath || ''}
                 />
               </div>

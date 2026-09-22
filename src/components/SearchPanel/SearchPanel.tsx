@@ -3,6 +3,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useUIStore } from '@/stores/uiStore'
 import { SearchResult } from '@/types'
 import { useI18n } from '@/i18n/useI18n'
+import { isComposingEvent } from '@/utils/composition'
 
 export default function SearchPanel() {
   const [query, setQuery] = useState('')
@@ -52,7 +53,8 @@ export default function SearchPanel() {
   }, [query, caseSensitive, wholeWord, useRegex, filePattern, excludeFolders])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    // IME 组合期间的回车是确认候选词，不触发搜索
+    if (e.key === 'Enter' && !isComposingEvent(e)) {
       handleSearch()
     }
   }

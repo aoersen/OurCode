@@ -127,7 +127,7 @@ files_to_read: [<参考文件>]
 acceptance: |
   <验收标准（逐条）>
 fix_attempts: <打回次数>
-model: <可选，该角色使用的模型>
+model: <通常省略——省略则自动使用会话模型；确需指定时填写当前配置组支持的模型 id，勿加引号>
 report_path: <可选，全文报告写入路径，如 .ourcode/targemode/agents/test_report.md>
 ---
 ## 任务描述

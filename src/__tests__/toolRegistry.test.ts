@@ -107,6 +107,31 @@ describe('ToolRegistry', () => {
     // 命名避开 mcp__ / skill__ 前缀（否则会被 execute 的动态工具分支劫持）
     for (const name of readOnly) expect(name.startsWith('mcp__')).toBe(false)
   })
+
+  it('registers browser tools, with approval only for the one that mutates the page', () => {
+    const tools = createToolRegistry()
+    const byName = (name: string) => tools.find((t) => t.name === name)
+    for (const name of ['browser_navigate', 'browser_read_console', 'browser_screenshot', 'browser_act']) {
+      expect(byName(name), name).toBeTruthy()
+    }
+    // 读页面/看控制台/截图不改动任何东西；点击与输入可能改动远端状态 → 要审批
+    expect(byName('browser_navigate')!.requiresApproval).toBeFalsy()
+    expect(byName('browser_read_console')!.requiresApproval).toBeFalsy()
+    expect(byName('browser_screenshot')!.requiresApproval).toBeFalsy()
+    expect(byName('browser_act')!.requiresApproval).toBe(true)
+    expect(byName('browser_act')!.parameters.properties.action.enum).toEqual([
+      'click', 'type', 'press', 'scroll', 'wait',
+    ])
+  })
+
+  it('registers PR tools split by read vs write', () => {
+    const tools = createToolRegistry()
+    const byName = (name: string) => tools.find((t) => t.name === name)
+    expect(byName('read_pull_request')!.requiresApproval).toBeFalsy()
+    expect(byName('create_pull_request')!.requiresApproval).toBe(true)
+    expect(byName('read_pull_request')!.parameters.properties.action.enum).toEqual(['list', 'view'])
+    expect(byName('create_pull_request')!.parameters.properties.action.enum).toEqual(['create', 'comment'])
+  })
 })
 
 describe('ToolExecutor', () => {

@@ -32,6 +32,12 @@ export class GeminiAdapter implements LLMAdapter {
       .filter((m) => m.role !== 'system')
       .map((m) => {
         const parts: Array<Record<string, any>> = [{ text: m.content || '' }]
+        // Vision: inline base64 image parts on user turns.
+        if (m.role === 'user' && m.images?.length) {
+          for (const img of m.images) {
+            parts.push({ inlineData: { mimeType: img.mimeType, data: img.dataBase64 } })
+          }
+        }
         // Preserve tool calls in assistant messages
         if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
           for (const tc of m.toolCalls) {

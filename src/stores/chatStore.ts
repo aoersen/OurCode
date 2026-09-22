@@ -1,6 +1,8 @@
 import { create } from 'zustand'
-import { ChatSession, ChatMessage, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
-import { TOOL_ALLOWLIST_PREFIX } from '@shared/constants'
+import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
+import { TOOL_ALLOWLIST_PREFIX, TOOL_DENYLIST_PREFIX, QUESTION_AUTO_CONTINUE_MS, lookupModelMetadata } from '@shared/constants'
+import { kindOf, resolveApproval, targetPathsOf, isPathInScope, MODE_CYCLE, type EditMode } from '@/services/permissions/modePolicy'
+import { IS_OFFICE, WINDOW_MODE, modeKey } from '@/utils/windowMode'
 import { useConfigStore } from './configStore'
 import { useEditorStore } from './editorStore'
 import { useMemoryStore } from './memoryStore'
@@ -11,7 +13,7 @@ import { budgetExceeded, getBudgetUsage, refreshBudgetLimit } from '@/services/t
 import { ensureInitialized, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
 import { t } from '@/i18n'
 import { getFileContent } from '@/editor/modelRegistry'
-import { sendLLMRequest, configureLLMCache, configureLLMRetry } from '@/services/llm/LLMClient'
+import { sendLLMRequest, configureLLMCache, configureLLMRetry, configureWireLog, type WireLogContext } from '@/services/llm/LLMClient'
 import { parseLLMError } from '@/services/llm/errors'
 import { classifyLLMError, isSilentContextOverflow } from '@/services/llm/classify'
 import { redactSecrets } from '@/services/llm/redact'
@@ -19,17 +21,21 @@ import { maybeCompact, runSummarizer, buildSummaryBlock, getContextWindow, DEFAU
 import { djb2Hash, toolSignature, rememberRequestSignature, getPreviousSignature, analyzeCacheBreak, recordCacheRead, hasSeenCacheRead } from '@/services/llm/cacheDiagnostics'
 import { ToolExecutor, configureToolOutput, configureSecretRedaction } from '@/services/tools'
 import { ToolCall, ToolResult } from '@/services/tools/types'
+import { writeToolPaths } from '@/services/tools/writePaths'
 import { createApprovalPreHook } from './approvalHook'
 import { runWithConcurrency } from '@/services/subagents/parallel'
 import {
   extractKeywords,
   scoreAgainstKeywords,
   loadWorkspaceKnowledge,
+  buildActiveFileRulesBlock,
   retrieveRelevantContext,
   getEditorSelectionContext,
 } from '@/services/tools/context'
 import { v4 as uuidv4 } from 'uuid'
 import { captureCheckpoint as captureCheckpointService } from '@/services/checkpointService'
+import { captureRunPreState, buildRunCommandCheckpoint, type RunPreState } from '@/services/runCommandCheckpoint'
+import { parseSessionReferences, buildReferenceBlock, findSessionByIdOrTitle, MAX_REFERENCES_PER_TURN } from '@/services/sessionKnowledge'
 
 // Wire the LLM cache toggles to user preferences (lazily evaluated per
 // request). Every sendLLMRequest caller — chat, agent loop, arena, subagents,
@@ -61,6 +67,30 @@ configureSecretRedaction(() => {
     : undefined
 })
 
+// ── Model wire-log wiring ────────────────────────────────────────────────
+// Every model request (agent loop, subagents, compaction…) writes one JSONL
+// line per event to <userData>/wire-logs/<session>.jsonl — the replayable
+// request/response record the usage dashboard doesn't keep. The context ref
+// below attributes each request to the session/turn currently running.
+const _wireCtxRef: { current: WireLogContext } = { current: {} }
+let _wireTurnSeq = 0
+configureWireLog({
+  enabled: () => useEditorStore.getState().preferences.wireLogEnabled !== false,
+  getContext: () => _wireCtxRef.current,
+})
+
+/** Attribute the NEXT model request(s) to a session/turn. Cleared by the run
+ *  loop when it settles, so stray callers (title gen, connection tests) never
+ *  inherit a stale session. Subagents call this with their parent session. */
+export function setWireContextForRun(ctx: WireLogContext): void {
+  _wireCtxRef.current = ctx
+}
+
+/** Clear the wire-log attribution (run settled / aborted). */
+export function clearWireContextForRun(): void {
+  _wireCtxRef.current = {}
+}
+
 // Cached git info (refreshed via refreshGitBranch)
 let _cachedGitBranch = ''
 let _cachedGitStatus: string[] = []
@@ -79,8 +109,9 @@ const GIT_CACHE_TTL = 5_000
  *  parse budget by an order of magnitude. */
 const STREAM_FLUSH_MS = 50
 
-/** localStorage key for the last active chat session (restored on next launch) */
-const LAST_SESSION_KEY = 'lastActiveSessionId'
+/** localStorage key for the last active chat session (restored on next launch).
+ *  按窗口模式区分 key —— 对话窗口与一人公司窗口各自恢复各自的最后会话。 */
+const LAST_SESSION_KEY = modeKey('lastActiveSessionId')
 
 /** localStorage key that carries the user's last project edit mode (完全访问
  *  etc.) over to newly created sessions and NEW WINDOWS — the same cross-restart
@@ -137,9 +168,11 @@ const TITLE_SYSTEM_PROMPT = `你是对话标题生成器。根据用户的第一
  * config, provider error, empty reply) so callers fall back to the heuristic.
  * Exported for unit tests.
  */
-export async function generateAiSessionTitle(userContent: string, preferredModel?: string): Promise<string> {
+export async function generateAiSessionTitle(userContent: string, preferredModel?: string, configGroupId?: string): Promise<string> {
   try {
-    const group = useConfigStore.getState().getActiveConfigGroup()
+    // 取会话自己的配置组（preferredModel 通常来自该会话）——用活动组会把
+    // 会话组 B 的模型名发到活动组 A 的端点 → 400 "Unsupported model"。
+    const group = useConfigStore.getState().getConfigGroupFor(configGroupId)
     if (!group) return ''
     const model = (preferredModel || group.defaultModel || '').trim()
     if (!model) return ''
@@ -357,9 +390,11 @@ async function buildSystemPrompt(
   // active conversation, not the file tree).
   let stable = buildEnhancedSystemPrompt(basePrompt, projectPath)
   stable += BEHAVIOR_GUIDELINES
+  stable += MCP_AND_SKILLS_GUIDELINES
   stable += OUTPUT_STYLE_GUIDELINES
 
-  // Workspace rules + skills (.ourcoderules, .claude/skills, .ourcode/skills)
+  // Workspace rules + skills (.ourcoderules / AGENTS.md / .cursorrules,
+  // .claude/skills, .ourcode/skills)
   // mtime-cached, so in practice stable per workspace.
   stable += await loadWorkspaceKnowledge(projectPath || getWorkspaceRoot())
 
@@ -370,12 +405,15 @@ async function buildSystemPrompt(
   dynamic += buildCurrentFileBlock()
   // Current editor selection (Vibe-and-Replace style selected-text context)
   dynamic += getEditorSelectionContext()
+  const activeFile = useEditorStore.getState().openFiles.find((f) => f.path === useEditorStore.getState().activeFilePath)
+  // 目录级 AGENTS.md：跟着当前标签页变，放进 stable 会让每次切文件的
+  // provider 端提示词缓存全部失效，所以留在 dynamic。
+  dynamic += await buildActiveFileRulesBlock(projectPath || getWorkspaceRoot(), activeFile?.path)
   // Persistent memories (keyword-matched)
   dynamic += await buildMemoriesBlock(userContent)
   // Auto-retrieved relevant files (pure chat mode skips the project-wide
   // search — no tool loop means the retrieval pays most and benefits least;
   // explicitly @-attached files are still read via retrieveRelevantContext)
-  const activeFile = useEditorStore.getState().openFiles.find((f) => f.path === useEditorStore.getState().activeFilePath)
   dynamic += await retrieveRelevantContext(userContent, contextFiles, projectPath || getWorkspaceRoot(), activeFile?.path, { skipSearch: skipAutoRetrieval })
 
   return { stable, dynamic }
@@ -393,6 +431,23 @@ const BEHAVIOR_GUIDELINES = `
 - 如实报告结果：测试失败要带上输出说明失败；跳过某一步要说跳过；完成并验证过的事要明确说明，不要含糊其辞。
 - 工具调用被拒绝表示用户不认可该操作，应调整方案而不是原样重试。
 - 如果任务是编程任务，交付前必须自行完整检查一遍代码，确保没有 bug；发现 bug 或潜在问题（逻辑错误、边界情况、类型问题、并发隐患等）要主动修复后再交付。`
+
+// MCP 与技能安装指南 —— 告诉模型本 IDE 自己的配置机制。不写这段时，模型
+// 面对「装 MCP / 装技能」只能套用训练数据里 Claude Code / Codex 等工具的惯例
+// （claude mcp add、~/.claude.json、.claude/skills…），把配置写进别的工具。
+// 与 BEHAVIOR_GUIDELINES 同属 stable 前缀（常量文本，不影响 provider 前缀缓存）。
+export const MCP_AND_SKILLS_GUIDELINES = `
+
+# MCP 与技能（本 IDE 专有规则）
+- 你运行在 OurCode IDE 里，不是 Claude Code / Codex / Cursor 等命令行工具。涉及「安装 / 添加 / 配置 MCP 或技能」时，不要套用其他工具的惯例。
+- 本 IDE 的 MCP 服务器配置分两级，格式均为 {"mcpServers": {…}}：全局配置（IDE 数据目录下的 mcp_config.json，所有项目可用）和项目配置（工作区根目录的 mcp_config.json，找不到时用 .mcp.json）；同名时项目配置覆盖全局。用户要求装 MCP 时先问清装到全局还是当前项目（未说明时默认当前项目），再 read_file 对应配置文件（不存在则按 mcp_config.example.json 的格式新建），把新服务器合并进 mcpServers 写回——保留已有条目，不要整体覆盖。
+  - 远程 HTTP 服务：{"serverUrl": "https://…", "headers": {…}, "skipTlsVerify": true|false}；url 是 serverUrl 的别名。
+  - 本地 stdio 服务：{"command": "…", "args": ["…"], "env": {…}}。args 不经 shell 展开，不能用 npx；Windows 上用 node 加本地脚本路径；command 用 bundled-node、args 用 bundled: 前缀可走 IDE 内置 Node 运行时。
+  - 单个服务可加 "disabled": true 临时停用。
+- 明确禁止：执行 claude mcp add 或任何 claude CLI 命令；写 ~/.claude.json、项目下的 .claude.json、.claude/ 目录；把 MCP 配置写进其他工具的配置文件（.cursor/mcp.json 等）；创建带 type/url 字段的 Claude 风格条目。
+- 改完 mcp_config.json 后你无法自行重载：明确告诉用户在左侧 MCP 面板或 设置 → MCP 里刷新（或重启 IDE）；重载后新工具才会以 mcp__<server>__<tool> 形式出现在后续轮次。
+- 技能安装：本 IDE 可用的项目技能只从工作区根的 .ourcode/skills 和 skills/ 目录发现（每个技能一个子目录，内含 SKILL.md）。装进 .claude/skills、~/.claude/skills 等目录不会生效（它们只是导入源）；可调用技能以系统提示词中列出的为准。
+- API Key 等密钥只写进工作区根目录的 mcp_config.json，不要打印进回复正文，不要提交进 git，对外发送前先向用户确认。`
 
 // 输出风格准则 —— 结论先行：工具调用执行完毕后，最终回答必须以高度概括的
 // 结论收尾，而不是复述过程日志。与 BEHAVIOR_GUIDELINES 同属 stable 前缀。
@@ -413,7 +468,7 @@ const PLAN_MODE_INSTRUCTION = `
 规则：
 - 你可以使用只读工具（读取文件、列出目录、搜索文件、搜索内容、Web 搜索、读取 URL）来调研代码库。
 - 不要调用任何会修改文件、删除文件、创建目录或执行命令的工具。
-- 调研完成后，调用 submit_plan 提交你的分步实施计划。
+- 调研完成后，调用 submit_plan 提交你的分步实施计划；必须用 files 字段列出计划将创建或修改的全部最终产物文件（绝对路径或项目相对路径）——批准后只能写这些文件，写其他路径会被拦截。
 - 如果信息不足或任务有歧义，可以调用 ask_user_question 向用户提问。
 - 也可以调用 manage_todo 维护任务列表。`
 
@@ -430,6 +485,7 @@ const AGENT_MODE_INSTRUCTION = `
 - 完成修改后用项目现有的测试 / lint / typecheck 脚本验证（存在的话）。
 - 有专用工具时禁止用 run_command 绕过：git 操作一律用 git_status / git_diff / git_add / git_commit / git_push / git_split_commit，文件操作一律用 read_file / write_file / edit_file / search_in_files。禁止为一次性的 git 操作编写或调试脚本。
 - 用 run_command 时记住：Windows 上是 PowerShell，赋值用 $env:NAME=... 而不是 set NAME=...，没有 &&（连续执行分多次调用）。构建/测试/类型检查等长命令默认 30 秒超时会被中断——调用时要设 timeoutMs（如 120000）。若命令仍返回 [超时]，说明它需要更长时间，直接用更大的 timeoutMs 重试一次或换一种验证方式（如只构建相关模块），不要通过加内存参数、换 shell、重装依赖等方式反复折腾同一命令。
+- 不会自己退出的进程（dev server、watch、需要应答的安装）必须用 run_command 的 background=true 在集成终端里启动：它立即返回 terminalId，之后用 read_terminal_output 读输出（没就绪就隔几秒再读，不要密集轮询），用 stop_terminal 收尾；任务收尾时把你启动的进程停掉，或明确告诉用户它还在运行。
 - 提交前先 git_status + git_diff 确认改动范围；按功能拆分提交时用 git_add 逐组暂存 + git_commit，或 git_split_commit 一次完成分组提交；commit message 遵循仓库风格（feat:/fix:/refactor: 前缀）。
 - 工具结果可能被系统压缩清理：重要的信息（文件内容、命令输出、关键结论）及时写入你的可见回复，不要假设之后还能读到原始工具结果。
 - 修改文件时用 edit_file 尽量精确，不要破坏无关代码。
@@ -440,7 +496,8 @@ function getToolKind(name: string): AgentToolKind {
   if (['read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files'].includes(name)) return 'search'
   if (['web_search', 'read_url'].includes(name)) return 'fetch'
   if (['write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file'].includes(name)) return 'edit'
-  if (['run_command', 'git_split_commit'].includes(name)) return 'execute'
+  if (['run_command', 'git_split_commit', 'stop_terminal'].includes(name)) return 'execute'
+  if (name === 'read_terminal_output') return 'search'
   if (name === 'submit_plan') return 'switch_mode'
   if (name === 'ask_user_question') return 'ask'
   return 'other'
@@ -461,6 +518,7 @@ function summarizeToolCall(tc: ToolCall): string {
     return `${edits.length} edits`
   }
   if (tc.name === 'run_command') return String(a.command || a.cmd || '')
+  if (tc.name === 'read_terminal_output' || tc.name === 'stop_terminal') return String(a.terminalId || '(最近一次后台会话)')
   if (['search_files', 'web_search'].includes(tc.name)) return String(a.query || '')
   if (tc.name === 'search_in_files') return String(a.pattern || a.query || '')
   if (tc.name === 'read_url') return String(a.url || '')
@@ -497,6 +555,33 @@ export function normalizeTodos(raw: unknown): TodoItem[] {
     })
 }
 
+/** Parse a streamed tool call's arguments. `ok` is false when the JSON is
+ *  incomplete — which happens when the response hits max_tokens mid-call. */
+export function parseToolArguments(raw: string | undefined): { args: Record<string, any>; ok: boolean } {
+  if (!raw) return { args: {}, ok: true }
+  try {
+    const parsed = JSON.parse(raw)
+    return { args: parsed && typeof parsed === 'object' ? parsed : {}, ok: true }
+  } catch {
+    return { args: {}, ok: false }
+  }
+}
+
+/** Object keys are sorted so two calls that differ only in key order — which
+ *  streamed providers do freely — compare equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']'
+  return '{' + Object.keys(value)
+    .sort()
+    .map((k) => JSON.stringify(k) + ':' + stableStringify((value as Record<string, unknown>)[k]))
+    .join(',') + '}'
+}
+
+export function toolCallSignature(tc: ToolCall): string {
+  return tc.name + '|' + stableStringify(tc.arguments ?? {})
+}
+
 // Tools allowed in plan mode (read-only + agent-control)
 const PLAN_TOOLS = new Set([
   'read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files',
@@ -508,6 +593,28 @@ const PLAN_TOOLS = new Set([
 
 // Write tools get a checkpoint snapshot before they run
 const CHECKPOINT_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'create_directory', 'multi_edit_file'])
+
+// ── 目标模式监管 Agent 工具硬约束（v2 多 Agent 协作）────────────────────────
+// 提示词只说「监管不直接写业务代码」，弱模型会无视并自己 npm install / 改码
+// （团队看板全 IDLE、supervisor.md 无派发记录）。这里是工具层硬约束：
+// 1) 下列工具对监管直接隐藏（不出现在 toolDefinitions）；
+// 2) runAgentLoop 里再挂 guard 兜底（模型幻觉调用时返回引导性错误，
+//    教它改用 run_subagent 派发），guard 只作用于监管会话本身——
+//    子 Agent 用独立 executor 实例，不受影响。
+// 监管保留：读/搜/web/git 只读/manage_todo/ask/run_subagent 等；
+// write_file / create_directory / delete_file 仅限 .ourcode/targemode/ 下的文档。
+const TARGET_MODE_SUPERVISOR_DENIED = new Set([
+  'run_command',            // 安装/构建/测试命令 → tm-developer / tm-tester
+  'edit_file',              // 业务代码修改 → tm-developer / tm-ui-developer
+  'multi_edit_file',
+  'git_add', 'git_commit', 'git_push', 'git_split_commit', // 变更类 git 操作不归监管
+])
+
+/** 监管可写路径门禁：仅允许目标模式状态目录（规划/状态/日志/信封文档）。 */
+function isTargemodePath(p: unknown): boolean {
+  const s = String(p || '').replace(/\\/g, '/').toLowerCase()
+  return s.includes('.ourcode/targemode/')
+}
 
 // 计划模式防空转 — 计划模式只暴露只读工具；当用户请求明显需要写操作/命令
 // （提交/推送/安装/执行…）而 agent 连续多轮纯只读探索（读文件/搜索）且不提交
@@ -532,6 +639,19 @@ const MAX_PARALLEL_TOOLS = 6
 // 防的是 agent 把超时误判成环境问题后无限换姿势自救（曾见 build 超时被当成
 // 构建环境坏了，反复加内存/重装依赖/换 shell 调试 6 分钟）。每个 run 只问一次。
 const COMMAND_FAIL_BREAK_ROUNDS = 2
+
+// 打转守卫 — 模型反复用完全相同的参数调用同一工具时，结果必然相同，继续跑只
+// 是烧轮次和 token（曾见反复重读同一文件而不动手）。达到 NUDGE 先在最后一次
+// 调用的工具结果尾部追加提醒，达到 HALT 直接停止本 run 并说明原因。
+// 提醒写在 tool 结果里而不是插入 user 消息：Anthropic 等 provider 要求
+// user/assistant 交替，连续两条 user 会被拒；tool 结果永远合法。
+const REPEAT_CALL_NUDGE = 3
+const REPEAT_CALL_HALT = 6
+
+/** 守卫的前提是「参数相同 ⇒ 结果相同」，轮询类工具是它的例外：后台进程的
+ *  输出会随时间变长，等 dev server 起来本来就要连着读几次。重复调用照样提醒，
+ *  但不因为次数到了就把这种等待当成打转停掉。 */
+const POLLING_TOOLS = new Set(['read_terminal_output'])
 
 /** Agent 会话默认编辑模式——与 Claude Code 默认一致：直接动手，但改文件前
  *  先征求用户确认。计划模式（plan）改为用户主动选择，不再作为默认。 */
@@ -594,12 +714,12 @@ interface ChatState {
 
   // Tool call state — scoped to the owning session; dialogs only render for
   // the session the user is currently viewing
-  pendingApproval: { sessionId: string; toolCall: ToolCall; preview: string } | null
+  pendingApproval: { sessionId: string; toolCall: ToolCall; preview: string; dangerous?: boolean } | null
   approveToolCall: () => void
   rejectToolCall: () => void
 
   // Ask-user-question state
-  pendingQuestion: (UserQuestion & { sessionId: string }) | null
+  pendingQuestion: (UserQuestion & { sessionId: string; askedAt?: number }) | null
   answerQuestion: (answer: string) => void
 
   /** Per-session gate for the ask_user_question dialog — req: don't pop the
@@ -625,8 +745,26 @@ interface ChatState {
   batchApprovedBySession: Record<string, boolean>
   /** Per-project "always allow this tool" allowlist (projectPath → tool names) */
   toolAllowlist: Record<string, string[]>
+  /** 会话级白名单：本会话内「始终允许」的工具（会话结束失效） */
+  sessionAllowlistBySession: Record<string, string[]>
+  /** Per-project "always deny this tool" denylist (projectPath → tool names) */
+  toolDenylist: Record<string, string[]>
   /** Pending batch-approval dialog (agent mode: first round with write tools) */
   batchApproval: { sessionId: string; runId: string; tools: ToolCall[]; previews: string[] } | null
+  /** 计划外写入拦截卡片（计划模式批准后，写入未声明的路径） */
+  pendingScope: { sessionId: string; toolCall: ToolCall; preview: string; paths: string[] } | null
+  /** Decisions whose session is not on screen (or that lost their slot to a
+   *  peer), kept here instead of overwriting the slot — see offerDecision. */
+  decisionBacklog: ParkedDecision[]
+  /** Present a decision: shows it when its session is foreground and the slot
+   *  is free, otherwise parks it. Never destroys another session's prompt. */
+  offerDecision: (decision: ParkedDecision) => void
+  /** Forget a session's parked decisions without answering them (its run ended,
+   *  was stopped, or the session was deleted). */
+  withdrawDecisions: (sessionId: string) => void
+  /** Re-fill the slots from the backlog for the session on screen, parking
+   *  whatever they currently hold for a different session. */
+  rebalanceDecisions: () => void
 
   // ── Inline decision dock (docked above the mode bar, replaces popups) ──
   /** Pending regenerate / revert-all confirmation rendered inline in the
@@ -643,6 +781,12 @@ interface ChatState {
   revertPathInSession: (sessionId: string, path: string) => Promise<boolean>
   /** Revert a list of file paths; returns ok/failed counts for notifications. */
   revertFilesByPaths: (sessionId: string, paths: string[]) => Promise<{ ok: number; failed: number }>
+  /** Undo a revert for one file path — writes the AI version captured at revert
+   *  time back to disk (a fresh checkpoint is created in the main process so
+   *  the file stays revertable). True when the restore succeeded. */
+  restoreRevertedPath: (sessionId: string, path: string) => Promise<boolean>
+  /** Undo reverts for a list of file paths; returns ok/failed counts. */
+  restoreRevertedPaths: (sessionId: string, paths: string[]) => Promise<{ ok: number; failed: number }>
 
   // Agent run actions
   startAgentRun: (sessionId: string, task: string, opts?: { resumeRunId?: string }) => void
@@ -652,17 +796,33 @@ interface ChatState {
   /** Merge a partial update into a sub-agent's live progress record (keyed by
    *  the parent run_subagent tool call id). Steps are capped to the newest 100. */
   updateSubagentProgress: (toolCallId: string, patch: Partial<SubAgentProgress>) => void
+  /** 从 SQLite 回填子任务终态记录（一人公司任务流的回看数据）。 */
+  hydrateSubagentRuns: () => Promise<void>
   finishAgentRun: (sessionId: string, runId: string, status: AgentRun['status'], extra?: { error?: string; tokensIn?: number; tokensOut?: number; requestCount?: number; cacheHits?: number; cacheTokensSaved?: number; cacheReadTokens?: number; cacheWriteTokens?: number }) => void
   approveBatchRun: (sessionId: string) => void
   decideBatchApproval: (decision: 'confirm' | 'all' | 'reject') => void
   allowToolPermanently: (toolName: string) => void
   loadToolAllowlist: (projectPath: string) => void
   clearToolAllowlist: (projectPath: string) => void
+  /** 会话级「始终允许本会话」：记入 sessionAllowlistBySession 并批准当前卡片。 */
+  allowToolForSession: (toolName: string) => void
+  /** 项目级「始终拒绝」：记入 TOOL_DENYLIST 并拒绝当前卡片。 */
+  denyToolPermanently: (toolName: string) => void
+  loadToolDenylist: (projectPath: string) => void
+  clearToolDenylist: (projectPath: string) => void
+  /** 计划外写入拦截卡片的决策：加入计划并执行 / 切换模式继续 / 拒绝。 */
+  resolveScopeDecision: (decision: 'add_to_plan' | 'switch_mode' | 'reject') => void
+  /** 永久停止当前提问的自动继续倒计时（悬停/任何交互触发）。 */
+  pauseQuestionTimeout: (sessionId: string) => void
+  /** 切换编辑模式（含完全访问的原生确认 + 读策略 arm/disarm）。返回是否成功。 */
+  requestEditModeChange: (sessionId: string, mode: EditMode) => Promise<boolean>
+  /** Shift+Tab 循环切换编辑模式（目标模式开启时只在 手动确认/完全访问 间轮换）。 */
+  cycleEditMode: (sessionId: string) => Promise<void>
   deleteAgentRun: (sessionId: string, runId: string) => void
 
   // Queued messages (type while the agent is working) — per session
-  queuedMessagesBySession: Record<string, string[]>
-  queueMessage: (sessionId: string, content: string) => void
+  queuedMessagesBySession: Record<string, QueuedMessage[]>
+  queueMessage: (sessionId: string, content: string, attachments?: MessageAttachment[]) => void
   removeQueuedMessage: (sessionId: string, index: number) => void
   /** "立即发送" — stop the current run so its finally drains the message next,
    *  or send it right away if nothing is running. */
@@ -723,7 +883,7 @@ interface ChatState {
   clearMessages: (sessionId: string) => void
 
   // Core functionality
-  sendMessage: (sessionId: string, content: string, contextFiles?: string[]) => Promise<void>
+  sendMessage: (sessionId: string, content: string, contextFiles?: string[], attachments?: MessageAttachment[]) => Promise<void>
   regenerateFromMessage: (sessionId: string, msgId: string) => Promise<void>
   stopGeneration: (sessionId: string) => void
 
@@ -759,11 +919,59 @@ function estimateTokens(text: string): number {
   return Math.ceil(chineseChars * 1.2 + otherChars * 0.3)
 }
 
+/** A message typed while its session's agent is running. Images ride along so
+ *  type-ahead with a screenshot doesn't silently drop the attachment when the
+ *  queue drains. */
+export interface QueuedMessage {
+  content: string
+  attachments?: MessageAttachment[]
+}
+
+/**
+ * A run can never still be in flight when the app starts — but its status is
+ * persisted mid-run (the loop saves the session for compaction, and any edit
+ * action saves it too), so a crash or a quit leaves an `agentRuns` row claiming
+ * otherwise. ChatMessage renders live statuses as a spinner, which would then
+ * spin forever over a run that no longer exists. Called on load only, never on
+ * a live session, so a genuinely running loop is untouched.
+ */
+export function reconcileInterruptedRuns<T extends { agentRuns?: AgentRun[] }>(session: T): T {
+  if (!session.agentRuns?.length) return session
+  const live: AgentRun['status'][] = ['running', 'creating_plan', 'approved_running']
+  if (!session.agentRuns.some((r) => live.includes(r.status))) return session
+  return {
+    ...session,
+    agentRuns: session.agentRuns.map((r) =>
+      live.includes(r.status)
+        ? { ...r, status: 'error' as const, finishedAt: r.finishedAt ?? Date.now(), lastError: '应用在该次运行结束前退出或崩溃，运行结果未确认' }
+        : r
+    ),
+  }
+}
+
 type RequestMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   toolCalls?: LLMToolCall[]
   toolCallId?: string
+  images?: Array<{ mimeType: string; dataBase64: string }>
+  /** Request-only message that was never stored on the session — see the same
+   *  field on CompactMessage: compaction must not count it into
+   *  summaryMessageCount. */
+  synthetic?: boolean
+}
+
+/** Attachments that can go into a chat request — images only. Other file types
+ *  stay as context-file paths; a non-image mime type here means the caller
+ *  attached something the providers cannot accept as a content part, so it is
+ *  dropped from the request (it still shows in the transcript). */
+export function toRequestImages(
+  attachments: ChatMessage['attachments']
+): RequestMessage['images'] | undefined {
+  const images = (attachments || [])
+    .filter((a) => a.dataBase64 && a.mimeType.startsWith('image/'))
+    .map((a) => ({ mimeType: a.mimeType, dataBase64: a.dataBase64 }))
+  return images.length ? images : undefined
 }
 
 /**
@@ -1004,6 +1212,39 @@ function formatPlanText(planContent: string): string {
 // Singleton tool executor
 const toolExecutor = new ToolExecutor()
 
+/**
+ * 已经真正写入过磁盘的会话 id。幽灵会话（0 消息、标题未改、未置顶/归档）默认
+ * 不落盘——否则每次开办公室/切换编辑模式/改模型都会在 SQLite 里沉淀一条空白
+ * 「新对话」，重启后全部加载回来（office 窗口的启动兜底会话每次都新建一条）。
+ * 一旦会话真正保存过一次（首条消息、重命名、置顶…），即使之后清空全部消息
+ * 也继续落盘——「删除全部消息」必须跨重启生效，不能因为会话变空而跳过。
+ */
+const _persistedSessionIds = new Set<string>()
+
+/** 已确认写入磁盘的图片附件（messageId → 该消息附件 id 集合的签名）。agent 每
+ *  一轮都会整会话保存一次，而一张截图 base64 就有几百 KB，重复序列化 + 跨 IPC
+ *  传输会白白拖慢长任务；首存之后从保存载荷里剥掉，主进程的 UPSERT 用 COALESCE
+ *  保留既有副本（附件一旦发出就不会变）。 */
+const _durableAttachmentIds = new Map<string, string>()
+
+export function attachmentSignature(msg: Pick<ChatMessage, 'attachments'>): string {
+  return (msg.attachments || []).map((a) => a.id).sort().join(',')
+}
+
+/** Drop the base64 of attachments already on disk. Returns the same object
+ *  (no copy) when the session carries no attachments at all. Exported for tests. */
+export function stripDurableAttachments<T extends Pick<ChatSession, 'messages'>>(session: T): T {
+  if (!session.messages.some((m) => m.attachments?.length)) return session
+  return {
+    ...session,
+    messages: session.messages.map((m) =>
+      m.attachments?.length && _durableAttachmentIds.get(m.id) === attachmentSignature(m)
+        ? { ...m, attachments: undefined }
+        : m
+    ),
+  }
+}
+
 // Pending approval resolves — keyed by session so parallel conversations can
 // each wait on their own dialog without clobbering each other.
 const _approvalResolves = new Map<string, (approved: boolean) => void>()
@@ -1011,6 +1252,60 @@ const _approvalResolves = new Map<string, (approved: boolean) => void>()
 const _batchResolves = new Map<string, (decision: 'confirm' | 'all' | 'reject') => void>()
 // Pending ask-user-question resolves
 const _questionResolves = new Map<string, (answer: string) => void>()
+/** 提问自动继续倒计时（ZCode 风格，5 分钟；可被 pauseQuestionTimeout 永久停止）。 */
+const _questionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+/** 计划外写入拦截卡片的决策 resolve（scopeGate 等待用户决定）。 */
+const _scopeResolves = new Map<string, (allow: boolean) => void>()
+
+/** 给一个提问装上自动继续倒计时：到点按 timeoutAnswer 继续（标记进工具结果）。
+ *  悬停/任意交互会通过 pauseQuestionTimeout 永久停表；设置开关
+ *  questionAutoContinue 关闭时提问一直等待。权限审批与计划审批不受影响。 */
+function armQuestionTimeout(sessionId: string, resolve: (answer: string) => void, timeoutAnswer: string): void {
+  if (useEditorStore.getState().preferences.questionAutoContinue === false) return
+  const timer = setTimeout(() => {
+    _questionTimers.delete(sessionId)
+    if (_questionResolves.get(sessionId) === resolve) {
+      _questionResolves.delete(sessionId)
+      resolve(timeoutAnswer)
+    }
+  }, QUESTION_AUTO_CONTINUE_MS)
+  _questionTimers.set(sessionId, timer)
+}
+
+/** Which single slot renders each kind of decision. The slots keep their exact
+ *  shape and remain the only thing the dialogs read. */
+const DECISION_SLOT = {
+  approval: 'pendingApproval',
+  question: 'pendingQuestion',
+  batch: 'batchApproval',
+  scope: 'pendingScope',
+} as const
+
+export type DecisionKind = keyof typeof DECISION_SLOT
+
+/** An answerable state that has been set (a run is awaiting it) but is not on
+ *  screen — either its session is in the background, or a decision of the same
+ *  kind already holds the slot. Losing one of these strands that run forever:
+ *  its promise has no dialog left to resolve it. */
+export type ParkedDecision =
+  | { kind: 'approval'; sessionId: string; value: NonNullable<ChatState['pendingApproval']> }
+  | { kind: 'question'; sessionId: string; value: NonNullable<ChatState['pendingQuestion']> }
+  | { kind: 'batch'; sessionId: string; value: NonNullable<ChatState['batchApproval']> }
+  | { kind: 'scope'; sessionId: string; value: NonNullable<ChatState['pendingScope']> }
+
+const readSlot = (state: ChatState, kind: DecisionKind): { sessionId: string } | null =>
+  (state[DECISION_SLOT[kind]] as { sessionId: string } | null) ?? null
+
+/** Build the state patch that writes (or clears) one decision slot. Keeps the
+ *  kind→slot mapping in one place instead of repeating a switch at each site. */
+const slotPatch = (kind: DecisionKind, value: unknown): Partial<ChatState> =>
+  kind === 'approval'
+    ? { pendingApproval: value as ChatState['pendingApproval'] }
+    : kind === 'question'
+      ? { pendingQuestion: value as ChatState['pendingQuestion'] }
+      : kind === 'scope'
+        ? { pendingScope: value as ChatState['pendingScope'] }
+        : { batchApproval: value as ChatState['batchApproval'] }
 
 // Inbound-delivery guard: reference count of agent-loop chains (re)launched
 // per session by receiveInboundMessage / the finally-drain. Each launch
@@ -1029,6 +1324,54 @@ function markInboundSettled(sessionId: string): void {
   const next = (_inboundLaunches.get(sessionId) || 1) - 1
   if (next <= 0) _inboundLaunches.delete(sessionId)
   else _inboundLaunches.set(sessionId, next)
+}
+
+/** Core of undoing one reverted file (no store reload) — shared by the single-
+ *  and bulk-restore store actions. Only the ACTIVE session's revertedFiles
+ *  list is touched: the file-changes sidebar restores files of OTHER sessions
+ *  too, and those must not clobber the active view. */
+async function restoreRevertedOne(sessionId: string, path: string): Promise<boolean> {
+  try {
+    const res = await window.electronAPI.checkpointRestore(sessionId, [path])
+    const ok = !!res?.ok && (res?.restored ?? 0) > 0
+    if (ok) {
+      const s = useChatStore.getState()
+      useChatStore.setState({
+        revertedFiles: s.activeSessionId === sessionId
+          ? s.revertedFiles.filter((p) => p !== path)
+          : s.revertedFiles,
+      })
+    }
+    return ok
+  } catch {
+    return false
+  }
+}
+
+/** 落盘的子任务记录瘦身：思考原文对办公室页签没用、又是这条记录里最大的字段，
+ *  丢掉；工具输出留头部一段，够终端页签回看命令结果。 */
+function toPersistedRun(p: SubAgentProgress): SubAgentProgress {
+  return {
+    ...p,
+    thinking: '',
+    steps: p.steps.slice(-60).map((st) =>
+      st.result && st.result.length > 4000 ? { ...st, result: st.result.slice(0, 4000) + '…' } : st,
+    ),
+  }
+}
+
+/**
+ * Persist one terminal sub-agent run. Only target-mode (一人公司) sessions are
+ * written: agent mode's transcript already renders from its own messages, and
+ * resurrecting progress records there would change what a re-opened chat shows.
+ */
+async function persistSubagentRun(toolCallId: string, p: SubAgentProgress): Promise<void> {
+  if (!toolCallId || !p.sessionId) return
+  const session = useChatStore.getState().sessions.find((s) => s.id === p.sessionId)
+  if (session?.targetMode !== true) return
+  try {
+    await window.electronAPI.saveSubagentRun?.(toolCallId, toPersistedRun(p))
+  } catch { /* 回看数据丢了不影响本轮任务 */ }
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -1052,9 +1395,70 @@ export const useChatStore = create<ChatState>((set, get) => ({
   subagentProgress: {},
   batchApprovedBySession: {},
   toolAllowlist: {},
+  sessionAllowlistBySession: {},
+  toolDenylist: {},
   batchApproval: null,
+  pendingScope: null,
+  decisionBacklog: [],
   inlineConfirm: null,
   targetModeStatus: null,
+
+  offerDecision: (decision) => {
+    const state = get()
+    const current = readSlot(state, decision.kind)
+    if (!current && decision.sessionId === state.activeSessionId) {
+      set(slotPatch(decision.kind, decision.value))
+      return
+    }
+    // Parked rather than swapped in: overwriting the slot would strand the other
+    // session's run on a dialog that can no longer be answered.
+    set((s) => ({ decisionBacklog: [...s.decisionBacklog, decision] }))
+  },
+
+  withdrawDecisions: (sessionId) => {
+    // 清理该会话的提问倒计时与计划范围拦截卡（其 run 已结束/停止）。
+    const qTimer = _questionTimers.get(sessionId)
+    if (qTimer) clearTimeout(qTimer)
+    _questionTimers.delete(sessionId)
+    if (_scopeResolves.has(sessionId)) {
+      _scopeResolves.get(sessionId)!(false)
+      _scopeResolves.delete(sessionId)
+    }
+    set((s) => {
+      const kept = s.decisionBacklog.filter((d) => d.sessionId !== sessionId)
+      const patch: Partial<ChatState> = kept.length === s.decisionBacklog.length ? {} : { decisionBacklog: kept }
+      if (s.pendingScope?.sessionId === sessionId) patch.pendingScope = null
+      return patch
+    })
+  },
+
+  rebalanceDecisions: () => {
+    const state = get()
+    const active = state.activeSessionId
+    let backlog = state.decisionBacklog
+    const patch: Partial<ChatState> = {}
+    let changed = false
+    for (const kind of Object.keys(DECISION_SLOT) as DecisionKind[]) {
+      const current = readSlot(state, kind)
+      const index = backlog.findIndex((d) => d.kind === kind && d.sessionId === active)
+      if (index >= 0 && current?.sessionId !== active) {
+        const promoted = backlog[index]
+        backlog = [...backlog.slice(0, index), ...backlog.slice(index + 1)]
+        if (current && current.sessionId !== active) {
+          backlog = [...backlog, { kind, sessionId: current.sessionId, value: current } as ParkedDecision]
+        }
+        Object.assign(patch, slotPatch(kind, promoted.value))
+        changed = true
+      } else if (current && active && current.sessionId !== active) {
+        // A slot showing a background session's decision is unanswerable from
+        // here and hides the one that isn't — park it and leave the slot empty.
+        backlog = [...backlog, { kind, sessionId: current.sessionId, value: current } as ParkedDecision]
+        Object.assign(patch, slotPatch(kind, null))
+        changed = true
+      }
+    }
+    if (changed) set({ ...patch, decisionBacklog: backlog })
+  },
 
   approveToolCall: () => {
     const { pendingApproval } = get()
@@ -1062,6 +1466,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       _approvalResolves.get(pendingApproval.sessionId)?.(true)
       _approvalResolves.delete(pendingApproval.sessionId)
       set({ pendingApproval: null })
+      get().rebalanceDecisions()
     }
   },
 
@@ -1071,12 +1476,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       _approvalResolves.get(pendingApproval.sessionId)?.(false)
       _approvalResolves.delete(pendingApproval.sessionId)
       set({ pendingApproval: null })
+      get().rebalanceDecisions()
     }
   },
 
   answerQuestion: (answer) => {
     const { pendingQuestion } = get()
     if (pendingQuestion) {
+      const timer = _questionTimers.get(pendingQuestion.sessionId)
+      if (timer) clearTimeout(timer)
+      _questionTimers.delete(pendingQuestion.sessionId)
       _questionResolves.get(pendingQuestion.sessionId)?.(answer)
       _questionResolves.delete(pendingQuestion.sessionId)
     }
@@ -1086,6 +1495,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (pendingQuestion) delete questionGate[pendingQuestion.sessionId]
       return { pendingQuestion: null, questionGate }
     })
+    get().rebalanceDecisions()
   },
 
   setQuestionGate: (sessionId, gate) => set((s) => ({
@@ -1130,6 +1540,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeRuns: { ...s.activeRuns, [sessionId]: { runId: finalRunId, sessionId } },
         agentTraces: { ...s.agentTraces, [sessionId]: [] },
         batchApprovedBySession: { ...s.batchApprovedBySession, [sessionId]: false },
+        sessionAllowlistBySession: { ...s.sessionAllowlistBySession, [sessionId]: [] },
       }))
     }
   },
@@ -1188,6 +1599,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (next.steps.length > 100) next.steps = next.steps.slice(-100)
       return { subagentProgress: { ...s.subagentProgress, [toolCallId]: next } }
     })
+    // 终态落盘一次。subagentProgress 是纯内存表，窗口一关就没了——会话本体在
+    // SQLite 里，一人公司的「任务流 / 代码变更 / 终端」却全部回到空白。
+    const settled = get().subagentProgress[toolCallId]
+    if (settled && settled.status !== 'running') {
+      void persistSubagentRun(toolCallId, settled)
+    }
+  },
+
+  hydrateSubagentRuns: async () => {
+    const ids = get().sessions.map((s) => s.id)
+    if (ids.length === 0) return
+    try {
+      const rows = await window.electronAPI.getSubagentRuns?.(ids)
+      if (!rows?.length) return
+      set((s) => {
+        const subagentProgress = { ...s.subagentProgress }
+        let changed = false
+        for (const row of rows) {
+          // 内存里的实时记录优先（正在跑的那次不能被历史副本盖掉）
+          if (!row?.toolCallId || subagentProgress[row.toolCallId]) continue
+          const record = row.record
+          if (!record || typeof record !== 'object' || !Array.isArray(record.steps)) continue
+          subagentProgress[row.toolCallId] = { ...record, thinking: record.thinking ?? '' }
+          changed = true
+        }
+        return changed ? { subagentProgress } : {}
+      })
+    } catch { /* 老库里还没这张表 = 没有可回看的记录，不是错误 */ }
   },
 
   finishAgentRun: (sessionId, runId, status, extra) => {
@@ -1225,13 +1664,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     }))
     set((s) => ({ batchApprovedBySession: { ...s.batchApprovedBySession, [sessionId]: false } }))
+    // 会话级白名单随 run 结束失效
+    set((s) => {
+      if (!s.sessionAllowlistBySession[sessionId]) return {}
+      const next = { ...s.sessionAllowlistBySession }
+      delete next[sessionId]
+      return { sessionAllowlistBySession: next }
+    })
     get().saveSession(sessionId)
   },
 
-  approveBatchRun: (sessionId) => set((s) => ({
-    batchApprovedBySession: { ...s.batchApprovedBySession, [sessionId]: true },
-    batchApproval: s.batchApproval?.sessionId === sessionId ? null : s.batchApproval,
-  })),
+  approveBatchRun: (sessionId) => {
+    set((s) => ({
+      batchApprovedBySession: { ...s.batchApprovedBySession, [sessionId]: true },
+      batchApproval: s.batchApproval?.sessionId === sessionId ? null : s.batchApproval,
+    }))
+    get().rebalanceDecisions()
+  },
 
   decideBatchApproval: (decision) => {
     const { batchApproval } = get()
@@ -1240,6 +1689,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       _batchResolves.delete(batchApproval.sessionId)
     }
     set({ batchApproval: null })
+    get().rebalanceDecisions()
   },
 
   allowToolPermanently: (toolName) => {
@@ -1274,9 +1724,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Read the freshest checkpoints from the store (not a render closure): the
     // previous revert may have consumed a checkpoint that also snapshotted other
     // files, so a later revert must see it already gone.
+    //
+    // Apply newest → oldest, and sort explicitly rather than trusting the list's
+    // order: an in-flight run keeps `checkpoints` newest-first (each capture is
+    // prepended) while loadCheckpoints returns them oldest-first, so relying on
+    // array order made "回退全部" end on whichever snapshot happened to be last —
+    // i.e. a mid-run state instead of the pre-AI state, depending on whether the
+    // session had been re-opened.
     const cps = get().checkpoints
       .filter((cp) => cp.sessionId === sessionId)
       .filter((cp) => (cp.files || []).some((f) => f.path === path))
+      .sort((a, b) => b.createdAt - a.createdAt)
+    // Nothing to revert is success, not failure: the common case is that one
+    // checkpoint covered several files and reverting a sibling already consumed
+    // it, which restored this path too.
     if (cps.length === 0) return true
     let ok = 0
     for (const cp of cps) {
@@ -1293,6 +1754,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (await get().revertPathInSession(sessionId, p)) okFiles++
       else failedFiles++
     }
+    return { ok: okFiles, failed: failedFiles }
+  },
+
+  restoreRevertedPath: async (sessionId, path) => {
+    const ok = await restoreRevertedOne(sessionId, path)
+    // The restore re-created a checkpoint (for re-revert) — refresh so the
+    // message-level rollback button and the summary see it again.
+    if (ok && get().activeSessionId === sessionId) void get().loadCheckpoints(sessionId)
+    return ok
+  },
+
+  restoreRevertedPaths: async (sessionId, paths) => {
+    let okFiles = 0
+    let failedFiles = 0
+    for (const p of paths) {
+      if (await restoreRevertedOne(sessionId, p)) okFiles++
+      else failedFiles++
+    }
+    // Single checkpoint reload AFTER the whole batch — per-path reloads would
+    // race each other (each clears + refetches) and the last stale fetch could
+    // win over the freshest state.
+    if (get().activeSessionId === sessionId) void get().loadCheckpoints(sessionId)
     return { ok: okFiles, failed: failedFiles }
   },
 
@@ -1313,6 +1796,136 @@ export const useChatStore = create<ChatState>((set, get) => ({
       delete next[projectPath]
       return { toolAllowlist: next }
     })
+  },
+
+  allowToolForSession: (toolName) => {
+    const { pendingApproval } = get()
+    const sessionId = pendingApproval?.sessionId || get().activeSessionId
+    if (!sessionId) return
+    set((s) => {
+      const prev = s.sessionAllowlistBySession[sessionId] || []
+      return {
+        sessionAllowlistBySession: {
+          ...s.sessionAllowlistBySession,
+          [sessionId]: Array.from(new Set([...prev, toolName])),
+        },
+      }
+    })
+    get().approveToolCall()
+  },
+
+  denyToolPermanently: (toolName) => {
+    const activeId = get().activeSessionId
+    const active = activeId ? get().activeRuns[activeId] : undefined
+    const session = active
+      ? get().sessions.find((s) => s.id === active.sessionId)
+      : get().sessions.find((s) => s.id === activeId)
+    const rootPath = session?.projectPath || getWorkspaceRoot()
+    if (!rootPath) return
+    const key = TOOL_DENYLIST_PREFIX + rootPath
+    let list: string[] = []
+    try { list = JSON.parse(localStorage.getItem(key) || '[]') } catch { /* ignore */ }
+    const next = Array.from(new Set([...list, toolName]))
+    localStorage.setItem(key, JSON.stringify(next))
+    set((s) => ({ toolDenylist: { ...s.toolDenylist, [rootPath]: next } }))
+    get().rejectToolCall()
+  },
+
+  loadToolDenylist: (projectPath) => {
+    if (!projectPath) return
+    try {
+      const arr = JSON.parse(localStorage.getItem(TOOL_DENYLIST_PREFIX + projectPath) || '[]')
+      set((s) => ({
+        toolDenylist: { ...s.toolDenylist, [projectPath]: Array.isArray(arr) ? arr : [] },
+      }))
+    } catch { /* ignore */ }
+  },
+
+  clearToolDenylist: (projectPath) => {
+    localStorage.removeItem(TOOL_DENYLIST_PREFIX + projectPath)
+    set((s) => {
+      const next = { ...s.toolDenylist }
+      delete next[projectPath]
+      return { toolDenylist: next }
+    })
+  },
+
+  resolveScopeDecision: (decision) => {
+    const { pendingScope } = get()
+    if (!pendingScope) return
+    const resolve = _scopeResolves.get(pendingScope.sessionId)
+    _scopeResolves.delete(pendingScope.sessionId)
+    if (decision === 'add_to_plan') {
+      // 把本次写入的目标路径并入计划声明，作为最终产物放行
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === pendingScope.sessionId
+            ? {
+                ...sess,
+                planDeliverables: Array.from(new Set([...(sess.planDeliverables || []), ...pendingScope.paths])),
+                updatedAt: Date.now(),
+              }
+            : sess
+        ),
+      }))
+      void get().saveSession(pendingScope.sessionId)
+    } else if (decision === 'switch_mode') {
+      // 一键切到自动编辑并放行本次写入（完全访问需原生确认，走自动编辑更轻）
+      get().setProjectEditMode(pendingScope.sessionId, 'auto_edit')
+    }
+    set({ pendingScope: null })
+    resolve?.(decision !== 'reject')
+    get().rebalanceDecisions()
+  },
+
+  pauseQuestionTimeout: (sessionId) => {
+    const timer = _questionTimers.get(sessionId)
+    if (timer) clearTimeout(timer)
+    _questionTimers.delete(sessionId)
+  },
+
+  requestEditModeChange: async (sessionId, mode) => {
+    const session = get().sessions.find((s) => s.id === sessionId)
+    if (!session) return false
+    if (mode === 'full_access') {
+      let armed = false
+      try {
+        armed = await window.electronAPI.armReadPolicy()
+      } catch {
+        armed = false
+      }
+      if (!armed) {
+        useUIStore.getState().showNotification(t('chat.fullAccessReadDenied'), 'warning')
+        return false
+      }
+    } else {
+      try {
+        await window.electronAPI.disarmReadPolicy()
+      } catch { /* disarming is best-effort — a missed call just means fewer dialogs */ }
+    }
+    get().setProjectEditMode(sessionId, mode)
+    return true
+  },
+
+  cycleEditMode: async (sessionId) => {
+    const session = get().sessions.find((s) => s.id === sessionId)
+    if (!session) return
+    const targetMode = session.targetMode === true
+    // 目标模式开启时其自身流程取代 auto_edit/plan，只轮换 手动确认/完全访问
+    const cycle: EditMode[] = targetMode ? ['confirm_before_change', 'full_access'] : MODE_CYCLE
+    const current = session.projectEditMode || 'confirm_before_change'
+    const index = cycle.indexOf(current)
+    const next = cycle[(index + 1) % cycle.length]
+    const ok = await get().requestEditModeChange(sessionId, next)
+    if (ok) {
+      const labels: Record<EditMode, string> = {
+        confirm_before_change: t('chat.projectEditModeConfirm'),
+        auto_edit: t('chat.projectEditModeAuto'),
+        plan: t('chat.projectEditModePlan'),
+        full_access: t('chat.projectEditModeFull'),
+      }
+      useUIStore.getState().showNotification(t('chat.modeCycleToast', { mode: labels[next] }), 'info')
+    }
   },
 
   deleteAgentRun: (sessionId, runId) => {
@@ -1337,13 +1950,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
   },
 
-  queueMessage: (sessionId, content) => {
+  queueMessage: (sessionId, content, attachments) => {
     const trimmed = content.trim()
-    if (!trimmed || !sessionId) return
+    if ((!trimmed && !attachments?.length) || !sessionId) return
+    const item: QueuedMessage = { content: trimmed, ...(attachments?.length ? { attachments } : {}) }
     set((s) => ({
       queuedMessagesBySession: {
         ...s.queuedMessagesBySession,
-        [sessionId]: [...(s.queuedMessagesBySession[sessionId] || []), trimmed],
+        [sessionId]: [...(s.queuedMessagesBySession[sessionId] || []), item],
       },
     }))
   },
@@ -1378,7 +1992,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       get().stopGeneration(sessionId)
     } else {
       // Nothing is generating for this session; send it right away.
-      void get().sendMessage(sessionId, msg)
+      void get().sendMessage(sessionId, msg.content, undefined, msg.attachments)
     }
   },
 
@@ -1458,19 +2072,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadSessions: async () => {
     try {
-      const sessions = await window.electronAPI.getSessions()
+      // 只加载本窗口模式的会话：对话窗口 mode='main'，一人公司窗口 mode='office'。
+      const sessions = await window.electronAPI.getSessions(WINDOW_MODE)
       // 旧数据回填 lastUserMessageAt：从最后一条用户消息推导，避免升级后
       // 排序/显示时间回退到 updatedAt（会被 agent 活动刷新而跳动）。
       // agentMode 也一律归一为 'agent'——chat 模式已移除，升级前的旧会话
       // （可能存着 'chat'）重新加载后同样按 agent 模式运行。
       const normalized = sessions.map((s) => ({
-        ...s,
+        ...reconcileInterruptedRuns(s),
         agentMode: 'agent' as const,
         lastUserMessageAt: s.lastUserMessageAt ?? deriveLastUserMessageAt(s),
       }))
+      // 加载出来的都是已落盘会话——记入集合，后续即使被清空消息也要继续保存
+      // （删除全部消息必须跨重启生效）。
+      for (const s of normalized) _persistedSessionIds.add(s.id)
       set({ sessions: normalized })
-      // Restore the last active session across restarts (only on the first load)
-      if (sessions.length > 0 && !get().activeSessionId) {
+      // 回填子任务的终态记录：一人公司的「任务流 / 代码变更 / 终端」读的是这张
+      // 内存表，不回填的话重启后打开老对话就是一片空白。
+      void get().hydrateSubagentRuns()
+      // Restore the last active session across restarts (only on the first load).
+      // 一人公司窗口不自动恢复上次会话：开公司 = 开一家新公司（白纸），旧对话
+      // 仍在左侧项目/任务列表里可手动点开，避免「开公司把之前的对话带过来」。
+      // 主窗口（对话模式）保持原样恢复上次会话。
+      if (sessions.length > 0 && !get().activeSessionId && !IS_OFFICE) {
         // Sessions of projects removed from the list ("从列表中移除") must not
         // restore as active — that would reopen a conversation of a project the
         // user deliberately hid, and the fallback below could otherwise pick it
@@ -1502,13 +2126,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   createSession: (configGroupId, projectPath) => {
-    const id = uuidv4()
     // The project binding is captured at creation so the session shows up under
     // its project in the left sidebar. Callers may pass an explicit project
     // (e.g. the "新建对话" button on a project list item) — otherwise fall back
     // to the current project (the active session's project, since the current
     // project follows the conversation), then the folder being browsed.
     const rootPath = projectPath || getCurrentProjectPath() || document.getElementById('file-tree-root')?.getAttribute('data-root-path') || useUIStore.getState().rootPath || ''
+    // 一人公司排他：办公室建会话走 targetMode 直置（见下），绕过了 setTargetMode
+    // 的「同项目仅一个目标模式会话」门禁。这里只拦「正在运行」的公司——同项目
+    // 有目标模式会话在运行时，直接激活既有会话而不是再开一家，防止两个监管对
+    // 同一项目双跑（状态文件互相覆盖、预算分别记账）。**未在运行的既有会话不
+    // 占位**：新建任务 = 新会话（干净上下文），旧会话保留在历史区回看；否则会
+    // 出现「我没在跑任务，却提示已有公司在运营」的误导（会话存在 ≠ 在运营）。
+    if (IS_OFFICE && rootPath) {
+      const running = get().sessions.find(
+        (s) =>
+          s.targetMode === true &&
+          s.projectPath === rootPath &&
+          get().runningSessionIds.includes(s.id),
+      )
+      if (running) {
+        set({ activeSessionId: running.id })
+        get().loadCheckpoints(running.id)
+        useUIStore.getState().showNotification(t('office.companyAlreadyRunning'), 'info')
+        return running.id
+      }
+    }
+    const id = uuidv4()
     const session: ChatSession = {
       id,
       title: DEFAULT_SESSION_TITLE,
@@ -1530,6 +2174,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todos: [],
       planStatus: 'none',
       projectPath: rootPath || undefined,
+      // 会话所属窗口模式：一人公司窗口的会话与对话窗口完全隔离（SQLite mode 过滤）。
+      mode: WINDOW_MODE,
+      // 一人公司窗口的会话一律默认进入目标模式：办公室的对话就是「派活给公司」，
+      // 而非普通 agent 对话。此前只有 App 启动兜底会话被置位 targetMode，其余
+      // 入口（双击项目/打开文件夹/新建任务对话）建出的会话都是普通 agent 模式——
+      // 在办公室右下对话区看起来就是一条普通对话（无目标条/无监管调度）。
+      // 主窗口会话保持默认关闭。
+      targetMode: IS_OFFICE || undefined,
     }
 
     set((s) => ({
@@ -1547,6 +2199,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteSession: (sessionId) => {
+    // Stop the run BEFORE anything is torn down. A deleted conversation must not
+    // keep executing tools — those writes land in a workspace whose checkpoints
+    // are deleted two lines below, so the edits would become irreversible while
+    // nothing on screen still shows them. stopGeneration aborts the loop and
+    // resolves the approval/question/batch promise it may be blocked on, so the
+    // run unwinds instead of hanging on a dialog that can never render again.
+    get().stopGeneration(sessionId)
     set((s) => {
       const remaining = s.sessions.filter((sess) => sess.id !== sessionId)
       // Drop transient sub-agent progress belonging to the deleted session
@@ -1554,6 +2213,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       for (const [id, p] of Object.entries(subagentProgress)) {
         if (p.sessionId === sessionId) delete subagentProgress[id]
       }
+      // Everything else keyed by session: the unwinding run reads these in its
+      // finally, so leftovers would let a queued type-ahead message or an
+      // inbound send_message write into a conversation the user threw away.
+      const drop = <T extends Record<string, unknown>>(map: T): T =>
+        Object.fromEntries(Object.entries(map).filter(([k]) => k !== sessionId)) as T
       // 顺带清掉从未用过的幽灵会话（新建后没发消息的空对话）；"下一个激活"绝不
       // 能落到幽灵上——否则删除当前对话后界面会跳到一个不可见的空白会话。若当前
       // 激活会话（可能是用户正在输入的空对话）没被删除则保留它。
@@ -1568,10 +2232,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         checkpoints: s.activeSessionId === sessionId ? [] : s.checkpoints,
         revertedFiles: s.activeSessionId === sessionId ? [] : s.revertedFiles,
         subagentProgress,
+        // stopGeneration only signals the loop; the flag comes down when that
+        // loop unwinds through its finally. A deleted session must not leave a
+        // dangling "running" entry behind in the meantime.
+        runningSessionIds: s.runningSessionIds.filter((id) => id !== sessionId),
+        queuedMessagesBySession: drop(s.queuedMessagesBySession),
+        inboundQueue: s.inboundQueue.filter((m) => m.targetSessionId !== sessionId),
+        streamingBySession: drop(s.streamingBySession),
+        runPhaseBySession: drop(s.runPhaseBySession),
+        streamLastActivityBySession: drop(s.streamLastActivityBySession),
+        agentTraces: drop(s.agentTraces),
+        activeRuns: drop(s.activeRuns),
+        batchApprovedBySession: drop(s.batchApprovedBySession),
       }
     })
     window.electronAPI.deleteSession(sessionId)
     window.electronAPI.checkpointDelete(sessionId)
+    void window.electronAPI.wireLogDeleteSession(sessionId).catch(() => {})
+    _persistedSessionIds.delete(sessionId)
     // Remove the session's spilled tool-output files (best-effort cache cleanup)
     void window.electronAPI.spillDeleteSession(sessionId).catch(() => {})
     // Drop the executor's per-session read-tracking (read-before-write guard)
@@ -1633,8 +2311,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     localStorage.setItem(LAST_SESSION_KEY, sessionId)
     // Re-entering a session with a deferred question re-arms its confirm bar
     // ("later" only defers while the user is away — the bar comes back when
-    // they switch to the session again).
-    if (get().pendingQuestion?.sessionId === sessionId && get().questionGate[sessionId] === 'dismissed') {
+    // they switch to the session again). The question may be parked rather than
+    // in the slot, so check both.
+    const waitingHere = get().pendingQuestion?.sessionId === sessionId
+      || get().decisionBacklog.some((d) => d.kind === 'question' && d.sessionId === sessionId)
+    if (waitingHere && get().questionGate[sessionId] === 'dismissed') {
       get().setQuestionGate(sessionId, 'confirm')
     }
     set((s) => ({
@@ -1643,6 +2324,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 留在内存里只会让列表计数和内存膨胀；首条消息发出后即成为真正会话。
       sessions: s.sessions.filter((x) => x.id === sessionId || !isGhostSession(x)),
     }))
+    // Bring this session's own prompts into the slots (and push out whatever a
+    // background session was holding) — otherwise the dialogs keep asking about
+    // a conversation the user just left.
+    get().rebalanceDecisions()
     get().loadCheckpoints(sessionId)
   },
 
@@ -1737,6 +2422,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
 
     const planText = formatPlanText(session.planContent)
+    // 执行阶段模型需要知道交付范围：把声明的最终产物写进批准后的系统提示。
+    // 未声明时明确告知（fail closed：所有文件写入会被拦截，需补充计划）。
+    const deliverables = session.planDeliverables || []
+    const scopeText = deliverables.length
+      ? `\n\n已声明的最终产物（只能写/改这些文件，写其他路径会被拦截）：\n${deliverables.map((p) => `- ${p}`).join('\n')}`
+      : '\n\n注意：本计划未声明任何最终产物文件，因此所有文件写入都会被拦截。若执行中需要写文件，请先向用户说明并提交补充计划（submit_plan 的 files 清单）。'
     const activeRun = get().activeRuns[sessionId]
     // Plan-approved auto-approval (allowedPrompts-style): when the user opted
     // in on the plan card, the execution phase runs without per-tool dialogs —
@@ -1750,7 +2441,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // lifted via planApproved. Tool approval follows the project edit mode
       // (confirm / auto_edit / full_access) + target mode.
       agentModeOverride: 'agent',
-      extraSystemText: PLAN_APPROVED_PREFIX + planText,
+      extraSystemText: PLAN_APPROVED_PREFIX + planText + scopeText,
       resumeRunId: activeRun?.sessionId === sessionId ? activeRun.runId : undefined,
       planApproved: true,
     })
@@ -1819,10 +2510,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       content: msg.content || '',
       sortOrder: msg.sortOrder ?? session.messages.length,
       contextFiles: msg.contextFiles || [],
+      attachments: msg.attachments,
       tokenCount: estimateTokens(msg.content || ''),
       thinking: msg.thinking,
       toolCalls: msg.toolCalls,
       toolResults: msg.toolResults,
+      error: msg.error,
       createdAt: Date.now(),
       runId: msg.runId,
       requestStartedAt: msg.requestStartedAt,
@@ -1989,14 +2682,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
   },
 
-  sendMessage: async (sessionId, content, contextFiles = []) => {
+  sendMessage: async (sessionId, content, contextFiles = [], attachments = []) => {
     if (!sessionId) return
 
     // One agent loop per session: while it is generating, type-ahead messages
     // queue instead of starting a second loop (ChatInput already queues via
     // the button state; this guard covers API/plugin callers).
     if (get().runningSessionIds.includes(sessionId)) {
-      get().queueMessage(sessionId, content)
+      get().queueMessage(sessionId, content, attachments)
       return
     }
 
@@ -2005,6 +2698,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: 'user',
       content,
       contextFiles,
+      attachments: attachments.length ? attachments : undefined,
     })
 
     // Auto-title on the first message — and only then: a title the user renamed
@@ -2018,7 +2712,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const autoTitle = generateSessionTitle(content)
       if (autoTitle) get().renameSession(sessionId, autoTitle)
       void (async () => {
-        const aiTitle = await generateAiSessionTitle(content, session?.model)
+        const aiTitle = await generateAiSessionTitle(content, session?.model, session?.configGroupId)
         if (!aiTitle) return
         const s = get().sessions.find((x) => x.id === sessionId)
         // Overwrite only if the user hasn't renamed in the meantime.
@@ -2066,7 +2760,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     if (userMsg) {
-      await get().sendMessage(sessionId, userMsg.content, userMsg.contextFiles)
+      await get().sendMessage(sessionId, userMsg.content, userMsg.contextFiles, userMsg.attachments)
     }
   },
 
@@ -2077,6 +2771,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // If the agent is blocked on a dialog for this session, resolve it so the
     // loop can unwind (each session has its own resolve slot).
     if (_questionResolves.has(sessionId)) {
+      const timer = _questionTimers.get(sessionId)
+      if (timer) clearTimeout(timer)
+      _questionTimers.delete(sessionId)
       _questionResolves.get(sessionId)!('（生成已停止，用户取消了提问）')
       _questionResolves.delete(sessionId)
     }
@@ -2087,6 +2784,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (_approvalResolves.has(sessionId)) {
       _approvalResolves.get(sessionId)!(false)
       _approvalResolves.delete(sessionId)
+    }
+    if (_scopeResolves.has(sessionId)) {
+      _scopeResolves.get(sessionId)!(false)
+      _scopeResolves.delete(sessionId)
     }
     set((s) => {
       const abortControllers = { ...s.abortControllers }
@@ -2099,9 +2800,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         pendingQuestion: s.pendingQuestion?.sessionId === sessionId ? null : s.pendingQuestion,
         batchApproval: s.batchApproval?.sessionId === sessionId ? null : s.batchApproval,
         pendingApproval: s.pendingApproval?.sessionId === sessionId ? null : s.pendingApproval,
+        pendingScope: s.pendingScope?.sessionId === sessionId ? null : s.pendingScope,
         inlineConfirm: s.inlineConfirm?.sessionId === sessionId ? null : s.inlineConfirm,
       }
     })
+    // Its parked prompts are now orphaned (the promise they were waiting on is
+    // settled) — dropping them keeps a later promotion from re-opening a dialog
+    // for a run that no longer exists.
+    get().withdrawDecisions(sessionId)
+    get().rebalanceDecisions()
   },
 
   // Branch: fork the conversation into a NEW session. Everything up to and
@@ -2137,6 +2844,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todos: [],
       planStatus: 'none',
       projectPath: session.projectPath,
+      // 分支继承原会话的窗口模式（缺失时按当前窗口）——否则分支会以无 mode 状态
+      // 落盘，sqlite 的 saveSession 会把无 mode 一律写成 'main'，办公室窗口里
+      // 分叉出的会话就静默流入了普通对话窗口。
+      mode: session.mode ?? WINDOW_MODE,
       // Carry over only the agent runs referenced by the carried messages so
       // the token badges on those messages keep working.
       agentRuns: session.agentRuns?.filter((r) => forkMessages.some((m) => m.runId === r.id)),
@@ -2241,6 +2952,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentMode: 'agent',
         todos: [],
         planStatus: 'none',
+        // 导入的会话必须归属当前窗口模式——备份文件里可能混有另一模式的会话
+        // （导出是全量备份），保留文件里的 mode 会让办公室窗口导入的 main 会话
+        // 同时出现在两个窗口（SQLite 按原 mode 落盘），正是「一人公司与普通
+        // agent 模式交融、对话重复」的来源之一。
+        mode: WINDOW_MODE,
       }
 
       set((s) => ({
@@ -2248,6 +2964,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeSessionId: session.id,
       }))
 
+      // 导入是显式操作：直接落盘，并记入已落盘集合（导入的空会话也保持持久化）。
+      _persistedSessionIds.add(session.id)
       window.electronAPI.saveSession(session)
     } catch (error) {
       console.error('导入会话失败:', error)
@@ -2256,8 +2974,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   saveSession: async (sessionId) => {
     const session = get().sessions.find((s) => s.id === sessionId)
-    if (session) {
-      await window.electronAPI.saveSession(session)
+    if (!session) return
+    // 幽灵会话（新建后没发消息的空对话）不落盘：一旦真正写过一次才持续保存。
+    // 见 _persistedSessionIds 注释——这同时堵住了「删除全部消息后重启又回来」
+    // 的隐患（已落盘的会话不受影响）。
+    if (isGhostSession(session) && !_persistedSessionIds.has(sessionId)) return
+    _persistedSessionIds.add(sessionId)
+    await window.electronAPI.saveSession(stripDurableAttachments(session))
+    // Recorded only after the write resolved — a failed save keeps shipping the
+    // attachment payload on the next attempt.
+    for (const m of session.messages) {
+      if (m.attachments?.length) _durableAttachmentIds.set(m.id, attachmentSignature(m))
     }
   },
 
@@ -2301,6 +3028,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       clearInterval(_gitBranchInterval)
       _gitBranchInterval = null
     }
+    _persistedSessionIds.clear()
     localStorage.removeItem(LAST_SESSION_KEY)
     set({
       sessions: [],
@@ -2323,6 +3051,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       batchApprovedBySession: {},
       toolAllowlist: {},
       batchApproval: null,
+      decisionBacklog: [],
       inlineConfirm: null,
     })
   },
@@ -2415,6 +3144,25 @@ async function runAgentLoop(
   // Target mode: the agent runs the autonomous .ourcode/targemode/ workflow
   const targetMode = session.targetMode === true
 
+  // 一人公司防双跑兜底：新建会话已不再被「同项目存在目标模式会话」拦截（见
+  // createSession），同一项目可并存多个目标模式会话（历史 + 新建）。两个监管
+  // 同时跑会互相覆盖 .ourcode/targemode 状态文件、预算分别记账——启动前检查
+  // 同项目是否已有另一个**正在运行**的目标模式会话，有则阻止本次启动。
+  // 仅目标模式路径生效（普通 chat / agent 会话不经过）。
+  if (targetMode && session.projectPath) {
+    const peerRunning = chatStore.sessions.some(
+      (s) =>
+        s.targetMode === true &&
+        s.projectPath === session.projectPath &&
+        s.id !== sessionId &&
+        chatStore.runningSessionIds.includes(s.id),
+    )
+    if (peerRunning) {
+      useUIStore.getState().showNotification(t('chat.targetModePeerRunning'), 'warning')
+      return
+    }
+  }
+
   // Agent mode operates on the workspace, so a *currently selected* project
   // must be open. A session's historical projectPath does NOT count — without a
   // project selected the session must not run tool calls against a stale
@@ -2499,6 +3247,8 @@ async function runAgentLoop(
 
   let runId: string | undefined
   const usageEvents: UsageEvent[] = []
+  // 已增量上报的事件数（目标模式每轮 flush 一次，见循环尾部的增量 flush）
+  let flushedUsageCount = 0
   // Accumulated real token usage for the agent run record (badge shows it once
   // the run finishes). Providers may omit usage — the totals just stay 0.
   let runTokensIn = 0
@@ -2517,12 +3267,43 @@ async function runAgentLoop(
   // finally below can unregister this run's approval/checkpoint hooks.
   let disposeApprovalHook: () => void = () => {}
   let disposeCheckpointHook: () => void = () => {}
+  let disposeRunCmdCheckpointHook: () => void = () => {}
+  let disposeSupervisorGuard: () => void = () => {}
+  // 用户停止标记是否已由 catch 分支写入（AbortError 路径追加 [生成已停止]）——
+  // 循环体在轮次边界干净退出时不会抛错，需要循环后补一条停止标记，但不能重复。
+  let stopMarked = false
+
+  // 目标模式监管 guard（见 TARGET_MODE_SUPERVISOR_DENIED 注释）：工具清单里
+  // 已隐藏禁用工具，这里兜底拦截幻觉调用，并给 write/create/delete 加
+  // targemode 路径门禁。拒绝文案要「教它下一步怎么做」→ 改用 run_subagent。
+  if (targetMode) {
+    disposeSupervisorGuard = toolExecutor.registerGuard((tc, ctx) => {
+      if (ctx.sessionId !== sessionId) return undefined
+      if (TARGET_MODE_SUPERVISOR_DENIED.has(tc.name)) {
+        const dispatch =
+          tc.name === 'run_command'
+            ? 'tm-developer（实现/构建）或 tm-tester（验证/测试）'
+            : 'tm-developer / tm-ui-developer（按改动类型）'
+        return (
+          `目标模式：监管 Agent 不允许直接${tc.name === 'run_command' ? '执行命令' : tc.name.startsWith('git_') ? '做变更类 git 操作' : '修改业务代码'}（系统已拦截）。` +
+          `请改用 run_subagent 派发 ${dispatch}，prompt 按任务信封模板构造（frontmatter 声明 files_to_modify / acceptance）。`
+        )
+      }
+      if ((tc.name === 'write_file' || tc.name === 'create_directory' || tc.name === 'delete_file') && !isTargemodePath(tc.arguments?.path)) {
+        return (
+          `目标模式：监管 Agent 只能写 .ourcode/targemode/ 下的文档（规划/状态/日志/信封），当前路径越界（系统已拦截）。` +
+          `业务代码的新增/修改/删除请通过 run_subagent 派发 tm-developer / tm-ui-developer 完成。`
+        )
+      }
+      return undefined
+    })
+  }
 
   try {
     // Refresh dynamic tools (MCP servers + workspace skills) before building the tool list.
     // Skill tools scope to the RUNNING session's project (global skills always
     // included) — the browsing root would leak other projects' skills in.
-    await timePrepStep('刷新MCP工具', () => toolExecutor.refreshMcpTools())
+    await timePrepStep('刷新MCP工具', () => toolExecutor.refreshMcpTools(session.projectPath || null))
     await timePrepStep('刷新技能', () => toolExecutor.refreshSkillTools(session.projectPath || getWorkspaceRoot()))
 
   // Build the system prompt with memories / rules / skills / retrieved context
@@ -2541,6 +3322,32 @@ async function runAgentLoop(
   ))
   let stableSystemPrompt = stable
   let dynamicContext = dynamic
+  // #sess_<id> references — expand into the request's dynamic context so the
+  // model can continue from another conversation (bounded tail, at most
+  // MAX_REFERENCES_PER_TURN sessions per turn). Unresolved ids get an explicit
+  // note instead of silently vanishing.
+  {
+    const refIds = parseSessionReferences(userContent).slice(0, MAX_REFERENCES_PER_TURN)
+    if (refIds.length > 0) {
+      const all = useChatStore.getState().sessions
+      const blocks: string[] = []
+      const unresolved: string[] = []
+      for (const id of refIds) {
+        const target = findSessionByIdOrTitle(all, id)
+        if (!target) {
+          unresolved.push(id)
+          continue
+        }
+        // Self-reference adds nothing (the history is already in context).
+        if (target.id === session.id) continue
+        blocks.push(buildReferenceBlock(target))
+      }
+      if (blocks.length > 0) dynamicContext += blocks.join('')
+      if (unresolved.length > 0) {
+        dynamicContext += `\n\n（提示：${unresolved.map((id) => `#sess_${id}`).join('、')} 未找到对应会话——可用 search_sessions 工具查找相关历史。）`
+      }
+    }
+  }
   // Mode instructions are static text → stable prefix. Target-mode workflow
   // status is per-run state → dynamic context (appended to the final user turn).
   if (agentMode === 'agent') {
@@ -2567,7 +3374,31 @@ async function runAgentLoop(
     stableSystemPrompt += '\n\n' + opts.extraSystemText
   }
 
-  const model = session.model || configGroup.defaultModel
+  let model = (session.model || configGroup.defaultModel || '').trim()
+
+  // 空模型不发请求：provider 必然回 400 "Unsupported model (model=\"\")"，
+  // 且用户看到的是一张难以理解的错误卡。这里提前给出可操作的失败提示。
+  if (!model) {
+    const msg = '未配置模型，无法开始对话。请在「设置 → API 配置」中为当前配置组填写模型，或使用对话顶部的模型选择器选择模型。'
+    chatStore.addMessage(sessionId, { role: 'assistant', content: msg, error: { type: 'unknown', message: msg } })
+    return
+  }
+
+  // 已知模型列表可用时校验：会话里存着的模型名可能已失效（换过提供商/删过
+  // 自定义模型），直接发出去就是 400 "Unsupported model"。列表命中不了时回退
+  // 到配置组默认模型；默认模型也不在列表则保留原值（列表可能过期，由 API 报错兜底）。
+  {
+    const configState = useConfigStore.getState()
+    const known = Array.from(new Set([
+      ...configState.models.map((m) => m.id),
+      ...configState.customModels.map((m) => m.id),
+      ...(configState.modelsCache[configGroup.id]?.models || []),
+    ])).filter((m) => m.trim())
+    if (known.length > 0 && !known.includes(model)) {
+      const def = (configGroup.defaultModel || '').trim()
+      if (def && known.includes(def)) model = def
+    }
+  }
 
   // Build messages from full history (system + all session messages). When a
   // compaction summary exists, the pre-boundary history is replaced by it in
@@ -2575,6 +3406,13 @@ async function runAgentLoop(
   const summarized = session.summary && session.summaryMessageCount
     ? Math.min(session.summaryMessageCount, session.messages.length)
     : 0
+  // 元数据明确标为非视觉的模型：把图片从请求里剥掉（文字照常）。硬发出去
+  // provider 必然 400，而且每一轮都会重复这个错误。未收录的模型（元数据缺失）
+  // 仍带上图片，由 provider 的错误兜底。
+  const visionCapable = lookupModelMetadata(model)?.vision !== false
+  if (!visionCapable && session.messages.some((m) => toRequestImages(m.attachments))) {
+    useUIStore.getState().showNotification(t('chat.modelNoVision'), 'warning')
+  }
   let messages: RequestMessage[] = [
     { role: 'system', content: stableSystemPrompt },
     ...(summarized > 0 ? [{ role: 'system' as const, content: buildSummaryBlock(session.summary!) }] : []),
@@ -2583,6 +3421,7 @@ async function runAgentLoop(
       content: m.content,
       toolCalls: toRawToolCalls(m.toolCalls),
       toolCallId: m.toolCallId,
+      images: visionCapable ? toRequestImages(m.attachments) : undefined,
     })),
   ]
 
@@ -2598,7 +3437,7 @@ async function runAgentLoop(
         content: dynamicContext + '\n\n' + messages[lastIdx].content,
       }
     } else {
-      messages.push({ role: 'user', content: dynamicContext })
+      messages.push({ role: 'user', content: dynamicContext, synthetic: true })
     }
   }
 
@@ -2746,12 +3585,13 @@ async function runAgentLoop(
   }
 
   // Agent mode: start (or resume) the run record + live trace. Also load the
-  // persisted per-project "always allow" list for the approval checks below.
-  // Attribute tool usage (MCP / skills / subagents) to this session
+  // persisted per-project "always allow" / "always deny" lists for the approval
+  // checks below. Attribute tool usage (MCP / skills / subagents) to this session
   toolExecutor.setSessionContext(sessionId, projectPath)
   if (agentMode === 'agent') {
     const st = useChatStore.getState()
     st.loadToolAllowlist(projectPath)
+    st.loadToolDenylist(projectPath)
     st.startAgentRun(sessionId, lastUserMessage?.content || 'Agent 任务', {
       resumeRunId: opts?.resumeRunId,
     })
@@ -2777,21 +3617,51 @@ async function runAgentLoop(
     }
   }
 
-  // Whether a tool needs manual approval in this run. Order of exemptions:
-  // project edit mode → per-run batch approval → persisted allowlist.
-  const FILE_EDIT_TOOLS = new Set(['write_file', 'edit_file', 'multi_edit_file'])
+  // 是否需要审批 = 权限模式矩阵（kind × mode）。豁免顺序（在 approvalHook 中
+  // 落实）：危险命令 > 黑名单 > 会话白名单 > 项目白名单 > 矩阵。
+  // 黑名单在这里不参与（由 hook 的 isDenied 直接拒绝、不弹窗）。
+  // 计划模式批准后的 file_write 在此按「范围内」计为 auto——范围外的由
+  // scopeGate 拦截（见下方 hook 注册）。
   const needsApproval = (name: string): boolean => {
-    let needs = toolExecutor.requiresApproval(name)
-    if (agentMode === 'agent') {
-      // Read the CURRENT edit mode live — the anti-flail question can switch
-      // it mid-run, and approval rules must follow.
-      const mode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE
-      if (mode === 'full_access') needs = false
-      else if (mode === 'auto_edit' && FILE_EDIT_TOOLS.has(name)) needs = false
-    }
-    if (needs && useChatStore.getState().batchApprovedBySession[sessionId]) needs = false
-    if (needs && (useChatStore.getState().toolAllowlist[projectPath] || []).includes(name)) needs = false
-    return needs
+    if (agentMode !== 'agent') return toolExecutor.requiresApproval(name)
+    // Read the CURRENT edit mode live — the anti-flail question can switch
+    // it mid-run, and approval rules must follow.
+    const mode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE
+    const decision = resolveApproval(kindOf(name), mode, { approved: !!opts?.planApproved }, true)
+    if (decision === 'auto') return false
+    if (decision === 'block') return false // 只读期写入由计划工具面/guard 拦截
+    // 'confirm' 之后再看两个白名单与批量批准
+    const st = useChatStore.getState()
+    if (st.batchApprovedBySession[sessionId]) return false
+    if ((st.sessionAllowlistBySession[sessionId] || []).includes(name)) return false
+    if ((st.toolAllowlist[projectPath] || []).includes(name)) return false
+    return true
+  }
+
+  // 计划模式只读期：写入/命令类工具一律拒绝（模型幻觉兜底；正常情况工具面
+  // 已被 PLAN_TOOLS 过滤）。执行期（planApproved）的 file_write 范围由
+  // scopeGate 拦截。live 读取——防空转提问可能在运行中切换模式。
+  const isPlanReadOnly = () =>
+    agentMode === 'agent' && !opts?.planApproved &&
+    (useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE) === 'plan'
+
+  const scopeGate = async (tc: ToolCall): Promise<boolean> => {
+    if (!opts?.planApproved) return true
+    if (kindOf(tc.name) !== 'file_write') return true
+    const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    const deliverables = session?.planDeliverables || []
+    const paths = targetPathsOf(tc)
+    const inScope = isPathInScope(paths, deliverables, session?.projectPath || getWorkspaceRoot() || '')
+    if (inScope) return true
+    touchActivity() // waiting on the user ≠ model silence
+    return new Promise<boolean>((resolve) => {
+      _scopeResolves.set(sessionId, resolve)
+      useChatStore.getState().offerDecision({
+        kind: 'scope',
+        sessionId,
+        value: { sessionId, toolCall: tc, preview: toolExecutor.getPreview(tc), paths },
+      })
+    })
   }
 
   // ── Tool pipeline hooks (registered per run, disposed in the finally) ──
@@ -2808,13 +3678,20 @@ async function runAgentLoop(
     needsApproval,
     getPreview: (tc) => toolExecutor.getPreview(tc),
     isAborted: () => abortController.signal.aborted,
+    blockedReason: (name) =>
+      isPlanReadOnly() && kindOf(name) !== 'read' && kindOf(name) !== 'interactive'
+        ? '计划模式只读，已拒绝该写入'
+        : null,
+    isDenied: (name) =>
+      (useChatStore.getState().toolDenylist[projectPath] || []).includes(name)
+        ? '已自动拒绝（项目黑名单）'
+        : null,
+    scopeGate,
     // Show the per-tool approval dialog (project edit mode / batch / allowlist
-    // exemptions are all folded into needsApproval above). 60s auto-reject so
-    // the loop never hangs on a dangling dialog.
-    onDialog: async (tc, preview) => {
+    // exemptions are all folded into needsApproval above). 权限请求不超时：
+    // 一直等待用户决策（对齐 ZCode）；后台会话的请求停在后备队列也不超时。
+    onDialog: async (tc, preview, dangerous) => {
       touchActivity() // waiting on the user ≠ model silence
-      useChatStore.setState({ pendingApproval: { sessionId, toolCall: tc, preview } })
-
       // Reject any previous pending approval for this session to prevent
       // dangling promises (each session waits on its own resolve slot)
       if (_approvalResolves.has(sessionId)) {
@@ -2824,15 +3701,21 @@ async function runAgentLoop(
 
       return new Promise<boolean>((resolve) => {
         _approvalResolves.set(sessionId, resolve)
-        setTimeout(() => {
-          if (_approvalResolves.get(sessionId) === resolve) {
-            _approvalResolves.delete(sessionId)
-            resolve(false)
-          }
-        }, 60000)
+        useChatStore.getState().offerDecision({
+          kind: 'approval',
+          sessionId,
+          value: { sessionId, toolCall: tc, preview, dangerous },
+        })
       })
     },
   }))
+
+  // run_command side-effect capture: pre-state (git dirty set + contents) is
+  // taken right before the command runs and keyed by tool call; the post-hook
+  // below diffs the tree afterwards and snapshots whatever the command changed
+  // (formatters / codegen / installers) — the write-tool checkpoint alone
+  // misses those. Best-effort: capture failures just mean no snapshot.
+  const runPreStates = new Map<string, RunPreState>()
 
   disposeCheckpointHook = toolExecutor.registerPreHook(async (tc, ctx) => {
     if (ctx.sessionId !== sessionId) return { allow: true }
@@ -2840,8 +3723,31 @@ async function runAgentLoop(
     // Runs AFTER approval — a rejected call changes nothing, so no snapshot.
     if (CHECKPOINT_TOOLS.has(tc.name)) {
       await captureCheckpoint(sessionId, tc, assistantMsgIdRef.current)
+    } else if (tc.name === 'run_command' && !tc.arguments?.background) {
+      const workDir = String(tc.arguments?.cwd || ctx.projectPath || getWorkspaceRoot() || '')
+      if (workDir) {
+        try {
+          // projectPath is the workspace boundary + host separator hint:
+          // files outside it are never snapshotted, and paths use its spelling.
+          const pre = await captureRunPreState(workDir, ctx.projectPath || undefined)
+          if (pre) runPreStates.set(ctx.toolCallId ?? tc.id, pre)
+        } catch { /* run-command checkpoint is best-effort */ }
+      }
     }
     return { allow: true }
+  })
+
+  // Diff the tree after the command and checkpoint the changed files (runs
+  // regardless of command success — a failed command can still half-write).
+  disposeRunCmdCheckpointHook = toolExecutor.registerPostHook(async (tc, result, ctx) => {
+    if (ctx.sessionId !== sessionId || tc.name !== 'run_command') return result
+    const pre = runPreStates.get(ctx.toolCallId ?? tc.id)
+    if (!pre) return result
+    runPreStates.delete(ctx.toolCallId ?? tc.id)
+    try {
+      await buildRunCommandCheckpoint(pre, String(tc.arguments?.command || ''), sessionId, assistantMsgIdRef.current)
+    } catch { /* best-effort */ }
+    return result
   })
 
   // Agent 工具调用轮数上限（设置里可配，默认 0 = 无限）。主流工具
@@ -2866,6 +3772,10 @@ async function runAgentLoop(
   let consecutiveCommandFailures = 0
   let lastFailedCommand = ''
   let commandFailBreakAsked = false
+  // 打转守卫状态：本 run 内每个 name+arguments 被调用的次数，以及是否已由
+  // 守卫停止（停止时不能再报「已达最大轮数」，两者的原因不同）。
+  const repeatCallCounts = new Map<string, number>()
+  let loopGuardStopped = false
 
   while (iterationsLeft-- > 0) {
       if (abortController.signal.aborted) break
@@ -2885,7 +3795,7 @@ async function runAgentLoop(
       // The auto-memory tool is opt-in — hide it when the user disabled it
       const toolDefinitions = (usePlanTools
         ? toolExecutor.getToolDefinitions((name) => PLAN_TOOLS.has(name))
-        : toolExecutor.getToolDefinitions())
+        : toolExecutor.getToolDefinitions(targetMode ? (name) => !TARGET_MODE_SUPERVISOR_DENIED.has(name) : undefined))
         .filter((d) => useEditorStore.getState().preferences.aiAutoMemory || d.function.name !== 'remember')
 
       // Cache-break diagnostics: sign the byte-stable prefix (system + tools)
@@ -2910,6 +3820,7 @@ async function runAgentLoop(
           content: m.content,
           toolCalls: m.toolCalls,
           toolCallId: m.toolCallId,
+          images: m.images,
         })),
         stream: true,
         temperature: session.modelParams.temperature,
@@ -2932,6 +3843,9 @@ async function runAgentLoop(
       // The LLM request is about to go out — from here until the first token
       // the wait is entirely the provider's time-to-first-token.
       setRunPhase('waiting')
+      // Attribute the upcoming model request(s) to this session/turn in the
+      // wire log (cleared when the run settles in the finally below).
+      setWireContextForRun({ sessionId, turnId: ++_wireTurnSeq })
       const reqStartedAt = Date.now()
       let reqTokensIn = 0
       let reqTokensOut = 0
@@ -2968,7 +3882,10 @@ async function runAgentLoop(
 
       try {
         try {
-          for await (const chunk of sendLLMRequest(req, configGroup)) {
+          // The user's Stop button aborts the in-flight request itself (the
+          // outer signal), not just the chunk loop — a stalled provider can't
+          // hold the run hostage until the idle timeout.
+          for await (const chunk of sendLLMRequest(req, configGroup, undefined, abortController.signal)) {
             if (abortController.signal.aborted) break
             // Accumulate first; any data keeps the idle clock reset, batched
             // into the same set as the content below (no set per token).
@@ -3146,11 +4063,33 @@ async function runAgentLoop(
       }
 
       // Has tool calls - show them and execute
-      const parsedToolCalls: ToolCall[] = toolCalls.map((tc) => ({
-        id: tc.id,
-        name: tc.function.name,
-        arguments: JSON.parse(tc.function.arguments || '{}'),
-      }))
+      //
+      // A response cut off by max_tokens leaves the trailing tool call(s) with
+      // half-written arguments. Executing those would run a truncated
+      // write_file/edit_file, and replaying the raw string in the next request
+      // fails every later turn — so parse defensively, drop the bad JSON from
+      // the outbound history, and refuse those calls below.
+      const parsedToolCalls: ToolCall[] = []
+      const outboundToolCalls: any[] = []
+      const truncatedCallIds = new Set<string>()
+      for (const tc of toolCalls) {
+        const { args, ok } = parseToolArguments(tc.function.arguments)
+        parsedToolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
+        outboundToolCalls.push(ok ? tc : { ...tc, function: { ...tc.function, arguments: '{}' } })
+        if (!ok) truncatedCallIds.add(tc.id)
+      }
+
+      // ── 打转守卫：统计本 run 内重复的 name+arguments ──
+      const repeatCountByCallId = new Map<string, number>()
+      let roundRepeatsHalt = false
+      for (const tc of parsedToolCalls) {
+        if (truncatedCallIds.has(tc.id)) continue
+        const sig = toolCallSignature(tc)
+        const n = (repeatCallCounts.get(sig) || 0) + 1
+        repeatCallCounts.set(sig, n)
+        if (n >= REPEAT_CALL_NUDGE) repeatCountByCallId.set(tc.id, n)
+        if (n >= REPEAT_CALL_HALT && !POLLING_TOOLS.has(tc.name)) roundRepeatsHalt = true
+      }
 
       // ── 计划模式防空转 ──────────────────────────────────────────────────
       // 计划模式只暴露只读工具。若用户请求明显需要写操作/命令（提交/推送/
@@ -3174,21 +4113,17 @@ async function runAgentLoop(
             if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
             _questionResolves.set(sessionId, resolve)
             const onSession = useChatStore.getState().activeSessionId === sessionId
-            useChatStore.setState({
-              pendingQuestion: { sessionId, id: `flail-${Date.now()}`, question, options },
-              questionGate: {
-                ...useChatStore.getState().questionGate,
-                [sessionId]: onSession ? 'auto' : 'confirm',
-              },
+            useChatStore.setState((s) => ({
+              questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+            }))
+            useChatStore.getState().offerDecision({
+              kind: 'question',
+              sessionId,
+              value: { sessionId, id: `flail-${Date.now()}`, question, options, askedAt: Date.now() },
             })
-            // 60s 无人应答按「保持计划模式」继续（与批量审批的兜底一致），
-            // 避免用户离席时整个 run 无限挂起
-            setTimeout(() => {
-              if (_questionResolves.get(sessionId) === resolve) {
-                _questionResolves.delete(sessionId)
-                resolve('保持计划模式（只读）')
-              }
-            }, 60000)
+            // 提问自动继续（默认 5 分钟，可暂停/可在设置关闭）：到点按
+            // 「保持计划模式」继续，避免用户离席时整个 run 无限挂起
+            armQuestionTimeout(sessionId, resolve, '保持计划模式（只读）')
           })
           // 把用户的决定作为 user 消息回喂给模型（user 消息无配对约束）。
           let note = ''
@@ -3235,7 +4170,7 @@ async function runAgentLoop(
       messages.push({
         role: 'assistant',
         content: fullContent,
-        toolCalls: toolCalls,
+        toolCalls: outboundToolCalls,
         toolCallId: undefined,
       })
 
@@ -3248,27 +4183,23 @@ async function runAgentLoop(
 
       let planSubmitted = false
 
-      // Agent mode: offer one batch-approval dialog per round (Windsurf/Cursor
-      // style) instead of interrupting on every write tool. Choosing "全部批准"
-      // sets batchApproved for the rest of this run; "全部拒绝" marks this
-      // round's tools as rejected; "逐个确认" falls through to per-tool dialogs
-      // (handled by the approval pre-hook in ToolExecutor).
-      if (agentMode === 'agent' && !useChatStore.getState().batchApprovedBySession[sessionId]) {
+      // 批量审批只在「自动编辑」模式出现（权限模式差异化）：
+      // 手动确认 = 逐个弹窗（无批量捷径）；计划模式 = 只有计划卡/拦截卡；
+      // 完全访问 = 无弹窗。批量列表只含仍需确认的操作（文件编辑已自动）。
+      // 权限请求不超时：批量审批一直等待用户决策。
+      const batchMode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE
+      if (agentMode === 'agent' && batchMode === 'auto_edit' && !useChatStore.getState().batchApprovedBySession[sessionId]) {
         const batchTools = parsedToolCalls.filter((tc) => needsApproval(tc.name))
         if (batchTools.length > 0) {
           touchActivity() // waiting on the user ≠ model silence
           const decision = await new Promise<'confirm' | 'all' | 'reject'>((resolve) => {
             if (_batchResolves.has(sessionId)) { _batchResolves.get(sessionId)!('reject'); _batchResolves.delete(sessionId) }
             _batchResolves.set(sessionId, resolve)
-            useChatStore.setState({ batchApproval: { sessionId, runId: runId || '', tools: batchTools, previews: batchTools.map((tc) => toolExecutor.getPreview(tc)) } })
-            // Auto-reject if the user never responds (60s), so the agent loop
-            // doesn't hang forever on a dangling batch dialog
-            setTimeout(() => {
-              if (_batchResolves.get(sessionId) === resolve) {
-                _batchResolves.delete(sessionId)
-                resolve('reject')
-              }
-            }, 60000)
+            useChatStore.getState().offerDecision({
+              kind: 'batch',
+              sessionId,
+              value: { sessionId, runId: runId || '', tools: batchTools, previews: batchTools.map((tc) => toolExecutor.getPreview(tc)) },
+            })
           })
           useChatStore.setState((s) => ({
             batchApproval: s.batchApproval?.sessionId === sessionId ? null : s.batchApproval,
@@ -3278,6 +4209,7 @@ async function runAgentLoop(
           } else if (decision === 'reject') {
             batchRejectedRef.current = new Set(batchTools.map((t) => t.id))
           }
+          useChatStore.getState().rebalanceDecisions()
         }
       }
 
@@ -3326,7 +4258,23 @@ async function runAgentLoop(
         }
       }
 
-      const finalizeToolResult = (tc: ToolCall, result: ToolResult): void => {
+      // Images a tool result carries (browser_screenshot) cannot be pushed where
+      // the result lands: providers require EVERY tool message of this round's
+      // tool_calls before any other role, and finalize runs one result at a time
+      // in input order. So they accumulate here and flush after the whole batch.
+      const roundImages: Array<{ mimeType: string; dataBase64: string }> = []
+      const roundImageNotes: string[] = []
+
+      const finalizeToolResult = (tc: ToolCall, incoming: ToolResult): void => {
+        // 打转提醒挂在被重复的那条结果尾部，而不是另插一条消息：provider 对
+        // 角色交替和 tool_call_id 配对都有要求，只有 tool 结果是永远合法的。
+        const repeats = repeatCountByCallId.get(tc.id)
+        const result: ToolResult = repeats
+          ? {
+              ...incoming,
+              result: `${incoming.result}\n\n[系统提醒] 你已第 ${repeats} 次用完全相同的参数调用 ${tc.name}，结果不会改变。请改变做法（换参数/换工具）或直接给出结论，不要重复此调用。`,
+            }
+          : incoming
         // A user-denied call shows 'rejected' (not 'error') in the trace —
         // the pipeline marks denials via result.rejected.
         useChatStore.getState().setTraceStatus(sessionId, tc.id, result.rejected ? 'rejected' : result.isError ? 'error' : 'success')
@@ -3338,12 +4286,24 @@ async function runAgentLoop(
           consecutiveCommandFailures = failed ? consecutiveCommandFailures + 1 : 0
           if (failed) lastFailedCommand = String(tc.arguments?.command || '')
         }
-        // Append the result inline to the assistant message for display
-        chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, result))
+        // Persist/display the result WITHOUT its base64: toolResults are
+        // JSON.stringify'd into SQLite and re-read on every session load, so a
+        // few screenshots would park megabytes in the message and the UI has no
+        // use for them (the image goes to the model, not the transcript).
+        const { images, ...persistable } = result
+        chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, persistable))
         recordToolMessage(tc.id, result.result)
-        // Write tools changed files on disk — notify open editors to reload
-        if (CHECKPOINT_TOOLS.has(tc.name) && tc.arguments?.path) {
-          notifyFileChanged(tc.arguments.path)
+        if (images?.length) {
+          if (lookupModelMetadata(model)?.vision !== false) roundImages.push(...images)
+          // Non-vision model: an image part would be a 400. Say so rather than
+          // silently dropping what the tool claimed it attached.
+          else roundImageNotes.push(`[${tc.name}] 图片已获取但当前模型不支持图片输入，未送达。请改用文本方式判断（页面文本 / 控制台输出）。`)
+        }
+        // Write tools changed files on disk — notify open editors to reload.
+        // multi_edit_file touches one path per entry in its edits array, so it
+        // must notify each of them (its `arguments.path` is undefined).
+        if (CHECKPOINT_TOOLS.has(tc.name)) {
+          for (const changedPath of writeToolPaths(tc.name, tc.arguments)) notifyFileChanged(changedPath)
         }
       }
 
@@ -3366,6 +4326,15 @@ async function runAgentLoop(
           startedAt: toolStartedAt,
         })
 
+        // ── 参数被 max_tokens 截断：拒绝执行，但保留 tool 配对 ──
+        if (truncatedCallIds.has(tc.id)) {
+          const result = 'Error: 工具参数不完整（响应在 max_tokens 处被截断），本次未执行。请把改动拆小后重试，或先说明还剩下哪些步骤。'
+          chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result, isError: true }))
+          recordToolMessage(tc.id, result)
+          useChatStore.getState().setTraceStatus(sessionId, tc.id, 'error')
+          continue
+        }
+
         // ── manage_todo: update the visible todo list ──
         if (tc.name === 'manage_todo') {
           const todos = normalizeTodos(tc.arguments.todos)
@@ -3383,10 +4352,21 @@ async function runAgentLoop(
             title: String(tc.arguments.title || '执行计划'),
             steps: Array.isArray(tc.arguments.steps) ? tc.arguments.steps : [],
           }
+          // 计划声明的最终产物（批准后唯一可写路径）。未声明 = 空清单
+          // （fail closed：批准后所有文件写入都会被拦截，可逐次加入计划）。
+          const deliverables = Array.isArray(tc.arguments.files)
+            ? tc.arguments.files.map((f: unknown) => String(f)).filter(Boolean)
+            : []
           useChatStore.setState((s) => ({
             sessions: s.sessions.map((sess) =>
               sess.id === sessionId
-                ? { ...sess, planContent: JSON.stringify(plan), planStatus: 'pending_approval' as const, updatedAt: Date.now() }
+                ? {
+                    ...sess,
+                    planContent: JSON.stringify(plan),
+                    planStatus: 'pending_approval' as const,
+                    planDeliverables: deliverables,
+                    updatedAt: Date.now(),
+                  }
                 : sess
             ),
           }))
@@ -3411,20 +4391,25 @@ async function runAgentLoop(
             // and confirm via the QuestionConfirmBar ('confirm').
             const onSession = useChatStore.getState().activeSessionId === sessionId
             touchActivity() // waiting on the user ≠ model silence
-            useChatStore.setState({
-              pendingQuestion: {
+            useChatStore.setState((s) => ({
+              questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+            }))
+            useChatStore.getState().offerDecision({
+              kind: 'question',
+              sessionId,
+              value: {
                 sessionId,
                 id: tc.id,
                 question: String(tc.arguments.question || '请确认'),
                 options: Array.isArray(tc.arguments.options) ? tc.arguments.options.map(String) : undefined,
                 multiSelect: tc.arguments.multiSelect === true,
                 preview: Array.isArray(tc.arguments.preview) ? tc.arguments.preview.map(String) : undefined,
-              },
-              questionGate: {
-                ...useChatStore.getState().questionGate,
-                [sessionId]: onSession ? 'auto' : 'confirm',
+                askedAt: Date.now(),
               },
             })
+            // 提问自动继续（默认 5 分钟，悬停/交互永久暂停，设置可关）。
+            // 超时后 agent 按自己的判断继续，结果带「未回答，已自动继续」标记。
+            armQuestionTimeout(sessionId, resolve, '（未回答，已自动继续）')
           })
           const result = `用户回答: ${answer}`
           chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result }))
@@ -3447,6 +4432,9 @@ async function runAgentLoop(
           // parent tool call id) and react to the user's Stop button.
           toolCallId: tc.id,
           abortSignal: abortController.signal,
+          // Tool helpers use this to shape out-of-workspace read-permission
+          // dialogs per mode (advisory — only native dialogs can grant).
+          projectEditMode: useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE,
         }
         const runTool = (tc: ToolCall) => () => toolExecutor.execute(tc, runContext).catch((error: any) => ({
           toolCallId: tc.id,
@@ -3512,8 +4500,43 @@ async function runAgentLoop(
         }
       }
 
+      // 工具批全部落库后，才把图片作为一条 user 消息交给模型（role:'tool' 在
+      // 这里的 adapter 只承载文本）。放在批尾：任何一条 tool 消息之前插入其他
+      // 角色都会让 OpenAI 系以「insufficient tool messages」拒掉整轮。
+      if (roundImages.length || roundImageNotes.length) {
+        messages.push({
+          role: 'user',
+          content: roundImageNotes.length
+            ? roundImageNotes.join('\n')
+            : '以上是本轮工具返回的截图，请据此判断页面状态。',
+          images: roundImages.length ? roundImages : undefined,
+          synthetic: true,
+        })
+      }
+
+      // Commit the round to disk. Until now a run only saved in its finally, so
+      // a crash between rounds lost the transcript of work whose EFFECTS
+      // survived (the files the agent already wrote) — the conversation would
+      // come back without any record of what changed the workspace. The store
+      // upserts messages in place for exactly this per-round write pattern.
+      void chatStore.saveSession(sessionId)
+
       // Plan submitted — pause the loop until the user approves
       if (planSubmitted) break
+
+      // ── 打转守卫：提醒后仍原样重复，停下来 ──
+      // 与「命令连续失败熔断」不同，这里不打断问用户：同样的调用重复到第
+      // REPEAT_CALL_HALT 次已经没有任何信息量，继续跑只会把预算烧光。
+      if (roundRepeatsHalt) {
+        loopGuardStopped = true
+        chatStore.addMessage(sessionId, {
+          role: 'assistant',
+          content: `[已停止：同一个工具调用以完全相同的参数重复了 ${REPEAT_CALL_HALT} 次，结果不会改变。请补充缺失的信息或调整任务描述后重试。]`,
+          runId,
+        })
+        clearStream()
+        break
+      }
 
       // ── 命令连续失败熔断 ──────────────────────────────────────────────
       // 同一 run_command 连续失败/超时达到阈值：停下弹提问让用户决定，而不是
@@ -3532,12 +4555,13 @@ async function runAgentLoop(
           if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
           _questionResolves.set(sessionId, resolve)
           const onSession = useChatStore.getState().activeSessionId === sessionId
-          useChatStore.setState({
-            pendingQuestion: { sessionId, id: `cmdbreak-${Date.now()}`, question, options },
-            questionGate: {
-              ...useChatStore.getState().questionGate,
-              [sessionId]: onSession ? 'auto' : 'confirm',
-            },
+          useChatStore.setState((s) => ({
+            questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+          }))
+          useChatStore.getState().offerDecision({
+            kind: 'question',
+            sessionId,
+            value: { sessionId, id: `cmdbreak-${Date.now()}`, question, options },
           })
           setTimeout(() => {
             if (_questionResolves.get(sessionId) === resolve) {
@@ -3560,6 +4584,14 @@ async function runAgentLoop(
         clearStream()
       }
 
+      // 目标模式：每轮增量上报 token 消耗 —— 此前 usage 只在循环结束时统一
+      // flush，长跑期间预算看板恒显 0.00M、熔断也看不到消耗。增量 flush 后
+      // 预算/触顶熔断实时生效（子 Agent 的消耗本就由 subagentRunner 实时上报）。
+      if (targetMode && usageEvents.length > flushedUsageCount) {
+        flushUsageEvents(usageEvents.slice(flushedUsageCount))
+        flushedUsageCount = usageEvents.length
+      }
+
       // Reset streaming state for next iteration
       set((s) => ({
         streamingBySession: { ...s.streamingBySession, [sessionId]: { content: '', thinking: '' } },
@@ -3572,7 +4604,7 @@ async function runAgentLoop(
     // allowed iteration: iterationsLeft is 0 there too, but a "[已达最大轮数]"
     // message would be misleading. 无限（默认）时 iterationsLeft 恒为 Infinity，
     // 此分支不会触发。
-    if (iterationsLeft <= 0 && maxIterations > 0 && !finishedNaturally && !abortController.signal.aborted && !planWasSubmitted(sessionId)) {
+    if (iterationsLeft <= 0 && maxIterations > 0 && !finishedNaturally && !loopGuardStopped && !abortController.signal.aborted && !planWasSubmitted(sessionId)) {
       chatStore.addMessage(sessionId, {
         role: 'assistant',
         content: `[已达到最大工具调用轮数 (${maxIterations})。点击下方"继续"按钮可继续执行。]`,
@@ -3586,14 +4618,35 @@ async function runAgentLoop(
         setTimeout(() => { useChatStore.getState().continueGeneration(sessionId) }, 150)
       }
     }
+
+    // 用户点击停止：循环在轮次边界（工具批执行中 / 轮间）干净退出时不抛
+    // AbortError，catch 分支的 [生成已停止] 不会触发——这里补一条明确的
+    // 停止标记，保证「点击停止」始终有可见反馈。流式期间被停止的轮次由
+    // catch 追加标记（stopMarked），此处不再重复。
+    if (abortController.signal.aborted && !stopMarked && !loopGuardStopped) {
+      chatStore.addMessage(sessionId, {
+        role: 'assistant',
+        content: '[已停止] 任务已按用户要求终止，已完成的工作与进度均已保留。',
+        runId,
+      })
+      clearStream()
+    }
   } catch (error: any) {
     const stream = useChatStore.getState().streamingBySession[sessionId]
     if (error.name === 'AbortError') {
+      stopMarked = true
       if (stream?.content) {
         chatStore.addMessage(sessionId, {
           role: 'assistant',
           content: stream.content + '\n\n[生成已停止]',
           thinking: stream.thinking || undefined,
+          runId,
+        })
+      } else {
+        // 停止发生在纯思考/首 token 前——没有正文可拼接，同样留下可见标记。
+        chatStore.addMessage(sessionId, {
+          role: 'assistant',
+          content: '[已停止] 任务已按用户要求终止，已完成的工作与进度均已保留。',
           runId,
         })
       }
@@ -3629,6 +4682,11 @@ async function runAgentLoop(
     // sessions, so a stale hook would prompt for another run's tool calls.
     disposeApprovalHook()
     disposeCheckpointHook()
+    disposeRunCmdCheckpointHook()
+    disposeSupervisorGuard()
+    // Drop the wire-log attribution so stray requests (title generation,
+    // connection tests) don't log under a stale session.
+    clearWireContextForRun()
     // Finalize the agent run record (status / counts) for the tasks panel
     if (runId) {
       // Don't let the finally block downgrade an errored run back to 'done' —
@@ -3684,10 +4742,15 @@ async function runAgentLoop(
     _approvalResolves.delete(sessionId)
     _batchResolves.delete(sessionId)
     _questionResolves.delete(sessionId)
+    // Any prompt this run raised — shown or parked — dies with it, and another
+    // conversation's parked prompt may now take the freed slot.
+    useChatStore.getState().withdrawDecisions(sessionId)
+    useChatStore.getState().rebalanceDecisions()
     chatStore.saveSession(sessionId)
 
     // Persist this run's token/timing events into the usage dashboard
-    flushUsageEvents(usageEvents)
+    // （目标模式下循环内已增量上报过，这里只补 flush 尾差，避免重复累计）
+    flushUsageEvents(usageEvents.slice(flushedUsageCount))
 
     // Process queued messages (type-ahead while the agent was working) — the
     // queue is per session, so a queue drain can never send into the session
@@ -3698,7 +4761,7 @@ async function runAgentLoop(
       useChatStore.setState((s) => ({
         queuedMessagesBySession: { ...s.queuedMessagesBySession, [sessionId]: queued.slice(1) },
       }))
-      setTimeout(() => { useChatStore.getState().sendMessage(sessionId, next) }, 50)
+      setTimeout(() => { useChatStore.getState().sendMessage(sessionId, next.content, undefined, next.attachments) }, 50)
     }
 
     // Deliver inbound cross-session messages (send_message from other sessions)

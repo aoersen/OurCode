@@ -5,6 +5,7 @@ import { useConfigStore } from '@/stores/configStore'
 import FileTree from './FileTree'
 import { useI18n } from '@/i18n/useI18n'
 import { useSessionMenu } from '@/components/ChatPanel/sessionMenu'
+import { IS_OFFICE } from '@/utils/windowMode'
 
 /** Project icon tiles — gradient backgrounds cycling per project (Stitch:
  *  brand blue-violet / sunset orange / green), each with a symbol. */
@@ -89,6 +90,7 @@ export default function ProjectListPanel() {
   const removedProjects = useUIStore((s) => s.removedProjects)
   const projectListView = useUIStore((s) => s.projectListView)
   const activeProjectPath = useUIStore((s) => s.activeProjectPath)
+  const rootPath = useUIStore((s) => s.rootPath)
   const enterProject = useUIStore((s) => s.enterProject)
   const backToProjectList = useUIStore((s) => s.backToProjectList)
   const setActiveSidebarTab = useUIStore((s) => s.setActiveSidebarTab)
@@ -96,6 +98,8 @@ export default function ProjectListPanel() {
   const reorderProjects = useUIStore((s) => s.reorderProjects)
   const removeProject = useUIStore((s) => s.removeProject)
   const showContextMenu = useUIStore((s) => s.showContextMenu)
+  const requestProjectTrust = useUIStore((s) => s.requestProjectTrust)
+  const revokeProjectTrust = useUIStore((s) => s.revokeProjectTrust)
   const rollActiveSessionAwayFrom = useChatStore((s) => s.rollActiveSessionAwayFrom)
   const sessions = useChatStore((s) => s.sessions)
   const runningSessionIds = useChatStore((s) => s.runningSessionIds)
@@ -103,6 +107,7 @@ export default function ProjectListPanel() {
   const pendingQuestion = useChatStore((s) => s.pendingQuestion)
   const pendingApproval = useChatStore((s) => s.pendingApproval)
   const batchApproval = useChatStore((s) => s.batchApproval)
+  const decisionBacklog = useChatStore((s) => s.decisionBacklog)
   const setActiveSession = useChatStore((s) => s.setActiveSession)
   const createSession = useChatStore((s) => s.createSession)
   const t = useI18n()
@@ -124,14 +129,17 @@ export default function ProjectListPanel() {
 
   // Sessions waiting on the user (question / tool approval / batch approval /
   // plan approval) — shown as an accent "待处理" pill in the list (需求 3).
+  // Parked decisions count too: that prompt has no dialog anywhere else until
+  // the user opens the conversation that is waiting.
   const attentionSessionIds = useMemo(() => {
     const ids = new Set<string>()
     if (pendingQuestion?.sessionId) ids.add(pendingQuestion.sessionId)
     if (pendingApproval?.sessionId) ids.add(pendingApproval.sessionId)
     if (batchApproval?.sessionId) ids.add(batchApproval.sessionId)
+    for (const parked of decisionBacklog) ids.add(parked.sessionId)
     for (const s of sessions) if (s.planStatus === 'pending_approval') ids.add(s.id)
     return ids
-  }, [pendingQuestion, pendingApproval, batchApproval, sessions])
+  }, [pendingQuestion, pendingApproval, batchApproval, decisionBacklog, sessions])
 
   // Sessions whose last agent run errored — red dot (design: 对话历史状态).
   const errorSessionIds = useMemo(() => {
@@ -302,14 +310,29 @@ export default function ProjectListPanel() {
   }
 
   /** Project-card context menu (right-click or hover ⋯): open the project,
-   *  start a chat in it, or remove it from the list. Removing only hides the
-   *  project — its sessions stay bound and reappear when it's re-opened. */
-  const handleProjectMenu = (e: React.MouseEvent, projectPath: string) => {
+   *  start a chat in it, manage whether it is trusted, or remove it from the
+   *  list. Removing only hides the project — its sessions stay bound and
+   *  reappear when it's re-opened. */
+  const handleProjectMenu = async (e: React.MouseEvent, projectPath: string) => {
     e.preventDefault()
     e.stopPropagation()
-    showContextMenu(e.clientX, e.clientY, [
+    const x = e.clientX
+    const y = e.clientY
+    // Which trust action applies is main's answer, not a renderer-side guess.
+    let trusted = true
+    try {
+      trusted = (await window.electronAPI.trustStatus(projectPath))?.trusted !== false
+    } catch {
+      /* bridge unavailable — offer the grant path, which is the safe default */
+      trusted = false
+    }
+    showContextMenu(x, y, [
       { label: t('project.open'), icon: '📂', action: () => handleEnterProject(projectPath) },
       { label: t('chat.newChat'), icon: '💬', action: () => handleNewSessionForProject(projectPath) },
+      { separator: true, label: '' },
+      trusted
+        ? { label: t('project.untrustWorkspace'), icon: '🛡️', action: () => void revokeProjectTrust(projectPath) }
+        : { label: t('project.trustWorkspace'), icon: '🛡️', action: () => void requestProjectTrust(projectPath) },
       { separator: true, label: '' },
       { label: t('project.removeFromList'), icon: '🗑️', action: () => handleRemoveProject(projectPath) },
     ])
@@ -352,14 +375,30 @@ export default function ProjectListPanel() {
   }
 
   // ───────────── VIEW: Project-internal file tree ─────────────
-  if (projectListView === 'tree' && activeProjectPath) {
+  // 办公室窗口没有「对话面板」项目列表视图：只要有工作区根（rootPath）就直接
+  // 进文件树，绝不误显示下方「任务面板」空壳（双击项目后侧栏必须稳定是文件树）；
+  // 主窗口沿用列表/树视图切换。
+  const treeRoot = projectListView === 'tree' && activeProjectPath
+    ? activeProjectPath
+    : IS_OFFICE
+      ? rootPath
+      : null
+  if (treeRoot) {
     return (
       <div className="h-full flex flex-col">
         {/* Header — back + title + actions in one row (Stitch header pattern, dim off-white) */}
         <header className="px-5 pt-5 pb-4 border-b border-glass-border/50 shrink-0 bg-slate-100/90 dark:bg-white/10">
           <div className="flex items-center justify-between">
             <button
-              onClick={() => { backToProjectList(); setActiveSidebarTab('files') }}
+              onClick={() => {
+                // 办公室窗口：没有「对话面板」项目列表 —— 返回即回到 3D 办公室视图。
+                if (IS_OFFICE) {
+                  useUIStore.getState().setActiveSidebarTab('office')
+                } else {
+                  backToProjectList()
+                  setActiveSidebarTab('files')
+                }
+              }}
               className="flex items-center gap-1.5 text-base font-semibold text-nova-text-primary group transition-colors"
             >
               <svg
@@ -368,7 +407,7 @@ export default function ProjectListPanel() {
               >
                 <polyline points="15 18 9 12 15 6" />
               </svg>
-              项目列表
+              {IS_OFFICE ? '一人公司' : '项目列表'}
             </button>
             <div className="flex items-center gap-0.5">
               <button
@@ -404,7 +443,46 @@ export default function ProjectListPanel() {
         </header>
         {/* File tree */}
         <div className="flex-1 overflow-hidden">
-          <FileTree rootPath={activeProjectPath} refreshSignal={refreshNonce} />
+          <FileTree rootPath={treeRoot} refreshSignal={refreshNonce} />
+        </div>
+      </div>
+    )
+  }
+
+  // ───────────── 办公室窗口：无活动项目（rootPath 为空）→ 项目打开引导 ─────────────
+  // 一人公司窗口的项目文件树在办公室视图左侧栏内就地打开（双击项目卡片即展开），
+  // 这里只是没有工作区根时的兜底引导页；有工作区根时上面的文件树视图接管。
+  if (IS_OFFICE) {
+    return (
+      <div className="h-full flex flex-col">
+        <header className="px-5 pt-5 pb-4 border-b border-glass-border/50 shrink-0 bg-slate-100/90 dark:bg-white/10">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold text-nova-text-primary">项目</h2>
+            <button
+              onClick={() => useUIStore.getState().toggleSidebar()}
+              className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
+              title={t('sidebar.collapse')}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+          </div>
+        </header>
+        <div className="flex-1 overflow-y-auto p-3 pb-6 bg-white/95 dark:bg-black/40">
+          <button
+            onClick={handleOpenFolder}
+            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium text-white transition-opacity hover:opacity-90"
+            style={{ background: '#0058bc' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+            </svg>
+            打开项目
+          </button>
+          <p className="text-xs text-nova-text-muted leading-relaxed mt-3">
+            在办公室视图左侧的「项目/任务」栏双击项目卡片，文件树会在办公室内就地打开。
+          </p>
         </div>
       </div>
     )
@@ -524,12 +602,12 @@ export default function ProjectListPanel() {
                       {project.name}
                     </span>
                     {isCurrent ? (
-                      <span className="bg-nova-accent text-white text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">
+                      <span className="bg-nova-accent text-white text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">
                         当前
                       </span>
                     ) : (
                       project.lastOpened > 0 && (
-                        <span className="bg-slate-200/50 text-slate-500 dark:bg-white/10 dark:text-nova-text-muted text-[9px] font-bold px-2 py-0.5 rounded-full tracking-wider shrink-0">
+                        <span className="bg-slate-200/50 text-slate-500 dark:bg-white/10 dark:text-nova-text-muted text-[11px] font-bold px-2 py-0.5 rounded-full tracking-wider shrink-0">
                           {formatTime(project.lastOpened)}
                         </span>
                       )

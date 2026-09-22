@@ -4,6 +4,7 @@ import { getFileIconHTML } from '@/utils/fileIcons'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useI18n } from '@/i18n/useI18n'
+import { askText } from '@/components/Common/PromptDialog'
 
 // Module-level clipboard for file copy/cut operations
 const fileClipboard: { path: string | null; action: 'copy' | 'cut' | null } = { path: null, action: null }
@@ -64,7 +65,7 @@ function FileTreeNode({
         label: t('common.rename'),
         icon: '',
         action: async () => {
-          const newName = prompt(t('sidebar.renamePrompt'), entry.name)
+          const newName = await askText({ title: t('sidebar.renamePrompt'), defaultValue: entry.name })
           if (newName && newName !== entry.name) {
             await window.electronAPI.rename(entry.path, getDestPath(parentPath, newName))
             onRefresh?.()
@@ -121,7 +122,7 @@ function FileTreeNode({
         label: t('sidebar.newFile'),
         icon: '',
         action: async () => {
-          const name = prompt(t('sidebar.newFileNamePrompt'))
+          const name = await askText({ title: t('sidebar.newFileNamePrompt') })
           if (name) {
             await window.electronAPI.createFile(getDestPath(entry.path, name))
             onRefresh?.()
@@ -132,7 +133,7 @@ function FileTreeNode({
         label: t('sidebar.newFolder'),
         icon: '',
         action: async () => {
-          const name = prompt(t('sidebar.newFolderNamePrompt'))
+          const name = await askText({ title: t('sidebar.newFolderNamePrompt') })
           if (name) {
             await window.electronAPI.createDir(getDestPath(entry.path, name))
             onRefresh?.()

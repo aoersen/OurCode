@@ -48,14 +48,62 @@ export function mergeWriteScopes(
 }
 
 /**
+ * 模型名清洗（信封 `model:` / 会话模型 / 配置默认模型共用）。
+ *
+ * 剥掉 YAML 行尾注释与成对引号，拒绝占位符与任何不可能是真实模型 id 的值
+ * （含空白 / 非可见 ASCII）。监管 LLM 常按信封模板即兴填写
+ * （`model: "deepseek-chat"`、`model: optional`、`model: <可选…>`），
+ * 这些值一旦原样发给 API 就是 HTTP 400 "Unsupported model"。
+ * 返回 undefined 表示「当作没填」，调用方回退到会话/默认模型。
+ */
+export function sanitizeModelName(raw: string | undefined): string | undefined {
+  let v = (raw || '').trim()
+  if (!v) return undefined
+  // 剥掉 YAML 行尾注释（`model: deepseek-chat  # 注释`）
+  const hash = v.indexOf(' #')
+  if (hash >= 0) v = v.slice(0, hash).trim()
+  if (!v) return undefined
+  // 剥掉首尾引号（`"deepseek-chat"` / `'deepseek-chat'`）——引号是 YAML 装饰，
+  // 不是 id 的一部分；连残缺/不平衡的引号也一并剥掉，避免漏网直达 API。
+  v = v.replace(/^["'`]+/, '').replace(/["'`]+$/, '').trim()
+  if (!v) return undefined
+  const lower = v.toLowerCase()
+  if (['undefined', 'null', 'none', 'auto', 'default', 'optional', 'omit', 'n/a', 'na'].includes(lower)) return undefined
+  // 模板占位符（含尖括号/中文说明）不是模型名
+  if (v.includes('<') || v.includes('>') || v.includes('可选') || v.includes('该角色')) return undefined
+  // 真实模型 id 只含可见 ASCII；出现空白或中文/全角字符即视为占位乱填
+  if (/[^\x21-\x7e]/.test(v)) return undefined
+  return v
+}
+
+/**
  * Subagent model resolution (v2 §10.5 / §13.4): the envelope's per-role model
  * override wins, then the session model, then the config group default. Plain
  * runs pass no override → identical to the pre-v2 resolution.
+ *
+ * 所有候选先经 sanitizeModelName 清洗。当调用方提供 knownModels（会话所属
+ * 配置组已知的可用模型 id 列表）时，任何不在列表中的候选都会被跳过——监管
+ * LLM 在信封里写错模型名时回退到会话/默认模型，而不是把错误的名字直接发给
+ * API（HTTP 400 "Unsupported model"）。
+ * 列表为空（模型列表尚未拉取/端点不提供）时，信封覆盖无法验证、一律忽略：
+ * 监管 LLM 自己编的模型名没有渠道核实，放行正是 400 的主要来源；此时只用
+ * 用户配置的会话/默认模型。
+ * Returns '' when nothing valid resolves — callers must guard on that.
  */
 export function resolveSubagentModel(
   override: string | undefined,
   sessionModel: string | undefined,
   defaultModel: string | undefined,
+  knownModels?: string[],
 ): string {
-  return override || sessionModel || defaultModel || ''
+  const envelopeModel = sanitizeModelName(override)
+  // 回落链：会话模型 → 配置组默认模型（均为用户配置，视为可信）
+  const fallbacks = [sanitizeModelName(sessionModel), sanitizeModelName(defaultModel)]
+  if (knownModels && knownModels.length > 0) {
+    // 只在已知列表中挑：写错的信封模型名不再污染请求
+    const known = new Set(knownModels.map((m) => m.trim()).filter(Boolean))
+    return [envelopeModel, ...fallbacks].find((c) => c !== undefined && known.has(c)) ?? ''
+  }
+  // 已知列表为空：信封覆盖不可验证，不用；只用用户配置的会话/默认模型
+  return fallbacks.find((c) => c !== undefined) ?? ''
 }

@@ -6,11 +6,18 @@ const SALT = 'OurCode-IDE-Salt-2024'
 const KEY_LENGTH = 32
 const IV_LENGTH = 16
 const TAG_LENGTH = 16
-const VERIFY_PLAINTEXT = 'OurCode-ChatEncryption-Verify'
 
+/**
+ * At-rest encryption for the provider API keys.
+ *
+ * The key is derived from this machine's id plus a fixed, in-repo salt, so
+ * anything running as this user can redo that derivation. What this protects
+ * against is a stolen database file or a casual read of the config table — not
+ * malware, and not another process the user runs. Chat transcripts are stored
+ * as plaintext.
+ */
 export class CryptoService {
   private key: Buffer
-  private chatKey: Buffer | null = null
 
   constructor() {
     const machineId = machineIdSync()
@@ -35,58 +42,11 @@ export class CryptoService {
     return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
   }
 
-  // --- Master-password based encryption (chat data) ---
+  // --- Master-key derivation shared by export/import ---
 
   /** Derive a 32-byte key from a password and salt using scrypt */
   private deriveKey(password: string, salt: string): Buffer {
     return scryptSync(password, salt, KEY_LENGTH) as Buffer
-  }
-
-  /** Generate a new salt, derive key from password, return salt + verification token */
-  setMasterPassword(password: string): { salt: string; verifyToken: string } {
-    const salt = randomBytes(16).toString('hex')
-    const key = this.deriveKey(password, salt)
-    this.chatKey = key
-    const verifyToken = this.encryptWithKey(VERIFY_PLAINTEXT, key).toString('base64')
-    return { salt, verifyToken }
-  }
-
-  /** Unlock chat encryption with password + stored salt. Returns true if valid. */
-  unlockWithPassword(password: string, salt: string, verifyToken: string): boolean {
-    const key = this.deriveKey(password, salt)
-    try {
-      const tokenBuf = Buffer.from(verifyToken, 'base64')
-      const plaintext = this.decryptWithKey(tokenBuf, key)
-      if (plaintext === VERIFY_PLAINTEXT) {
-        this.chatKey = key
-        return true
-      }
-    } catch {
-      // decryption failed = wrong password
-    }
-    return false
-  }
-
-  /** Check if chat key is loaded */
-  hasChatKey(): boolean {
-    return this.chatKey !== null
-  }
-
-  /** Clear the chat key (lock) */
-  lockChat(): void {
-    this.chatKey = null
-  }
-
-  /** Encrypt text with the chat key */
-  encryptChat(text: string): Buffer {
-    if (!this.chatKey) throw new Error('Chat encryption not unlocked')
-    return this.encryptWithKey(text, this.chatKey)
-  }
-
-  /** Decrypt buffer with the chat key */
-  decryptChat(buffer: Buffer): string {
-    if (!this.chatKey) throw new Error('Chat encryption not unlocked')
-    return this.decryptWithKey(buffer, this.chatKey)
   }
 
   /** Encrypt string with a given key, return Buffer [IV|TAG|DATA] */

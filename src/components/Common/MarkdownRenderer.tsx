@@ -44,6 +44,7 @@ import vbnet from 'highlight.js/lib/languages/vbnet'
 import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
 import { t, getLocale } from '@/i18n'
+import { MATERIAL_PATHS } from './icons/materialPaths'
 
 const LANGUAGES: Array<[string, Parameters<typeof hljs.registerLanguage>[1]]> = [
   ['bash', bash], ['c', c], ['cpp', cpp], ['csharp', csharp], ['css', css],
@@ -72,6 +73,11 @@ const escapeHtml = (s: string): string => s
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;')
 
+/** 连字图标字体的本地替代：把 Material Symbols 轮廓直接内联进 HTML 字符串，
+    离线/局域网部署时图标不会退化成 "content_copy" 这样的字面文本。 */
+const msIconSvg = (name: string): string =>
+  `<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false" data-icon="${name}"><path d="${MATERIAL_PATHS[name] ?? ''}"/></svg>`
+
 // Custom renderer
 const renderer = new marked.Renderer()
 
@@ -91,8 +97,8 @@ renderer.code = function (...args: any[]) {
     : hljs.highlight(text, { language }).value
   // NOTE: no inline onclick here — blocked by CSP and an injection vector.
   // Copy is handled via event delegation in the container (see useEffect below).
-  // mockup「代码块」头部：语言徽章 + 纯图标复制按钮（content_copy）。
-  return `<div class="code-block"><div class="code-header"><span class="code-lang">${language}</span><button class="copy-btn" data-copy title="${t('common.copy')}" aria-label="${t('common.copy')}"><span class="material-symbols-outlined" aria-hidden="true">content_copy</span></button></div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`
+  // mockup「代码块」头部：语言徽章 + 纯图标复制按钮（本地内联 SVG，不再依赖连字图标字体）。
+  return `<div class="code-block"><div class="code-header"><span class="code-lang">${language}</span><button class="copy-btn" data-copy title="${t('common.copy')}" aria-label="${t('common.copy')}">${msIconSvg('content_copy')}</button></div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`
 }
 
 /**
