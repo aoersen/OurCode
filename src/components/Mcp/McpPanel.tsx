@@ -197,6 +197,16 @@ export default function McpPanel() {
     }
   }
 
+  /** 真正的「重新加载」：让主进程重读配置并应用差异（未启动的会启动、
+   *  失败的会重试），再刷新面板数据。 */
+  const reloadServers = async () => {
+    if (currentProjectPath) {
+      const res = await window.electronAPI.mcpReload(currentProjectPath)
+      if (!res.ok && res.error) setError(res.error)
+    }
+    await refreshServers()
+  }
+
   /** Toggle a server's enabled flag: rewrite its config entry (disabled) in
    *  whichever tier the server belongs to and reload — same persistence path
    *  as the Settings editor. */
@@ -318,7 +328,7 @@ export default function McpPanel() {
             shadowedCount={shadowedCount}
             onToggle={toggleServer}
             onEditConfig={() => setActiveTab('config')}
-            onReload={() => refreshServers()}
+            onReload={() => reloadServers()}
             hasError={!!error}
           />
         )}
@@ -493,6 +503,14 @@ function ServersTab({
                 {stateLabel(state)}
                 {state === 'restarting' && status?.retry ? ` (${status.retry})` : ''}
               </span>
+              {(state === 'stopped' || state === 'failed') && (
+                <button
+                  onClick={onReload}
+                  className="text-[10px] px-1.5 py-0.5 rounded-full border border-nova-accent/40 text-nova-accent hover:bg-nova-accent/10 transition-colors shrink-0"
+                >
+                  {state === 'failed' ? t('mcpCenter.retryServer') : t('mcpCenter.startServer')}
+                </button>
+              )}
               <label className="flex items-center gap-1 text-[10px] text-nova-text-secondary cursor-pointer select-none shrink-0">
                 <input
                   type="checkbox"

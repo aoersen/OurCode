@@ -441,3 +441,20 @@ describe('MCPManager global config (two-tier merge)', () => {
     expect(mcp.getStatus().map((s) => s.name)).toEqual(['two'])
   })
 })
+
+describe('MCPManager reload retries failed servers', () => {
+  it('a failed server re-attempts connection on the next loadConfig (manual 重试)', async () => {
+    const mcp = track(new MCPManager({ requestTimeoutMs: 2_000, restart: { baseDelayMs: 10, maxRetries: 2 } }))
+    const dir = makeConfigDir('retry-failed', { command: 'definitely-not-a-real-command-xyz' })
+    const failed = waitForEvent<{ server: string }>(mcp, 'failed', 10_000)
+    await mcp.loadConfig(dir)
+    await failed
+    expect(mcp.getStatus().find((s) => s.name === 'mock')!.state).toBe('failed')
+
+    // 配置没有变化，但再次 loadConfig（面板「重试」/ 切项目回来）应重新发起
+    // 连接尝试，而不是永远停在 failed 上等重启 IDE。
+    const connecting = waitForEvent<{ server: string; state: string }>(mcp, 'status', 5_000, (p: any) => p.server === 'mock' && p.state === 'connecting')
+    await mcp.loadConfig(dir)
+    await connecting
+  })
+})

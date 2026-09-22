@@ -1236,6 +1236,8 @@ export const enUS: Record<TranslationKey, string> = {
   'mcpCenter.state.disabled': 'Disabled',
   'mcpCenter.state.stopped': 'Stopped',
   'mcpCenter.enable': 'Enable',
+  'mcpCenter.startServer': 'Start',
+  'mcpCenter.retryServer': 'Retry',
   'mcpCenter.scopeGlobal': 'Global',
   'mcpCenter.scopeProject': 'Project',
   'mcpCenter.shadowedHint': '{count} global server(s) overridden by same-name project config — showing effective entries only',

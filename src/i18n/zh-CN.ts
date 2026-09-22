@@ -1233,6 +1233,8 @@ export const zhCN = {
   'mcpCenter.state.disabled': '已禁用',
   'mcpCenter.state.stopped': '未启动',
   'mcpCenter.enable': '启用',
+  'mcpCenter.startServer': '启动',
+  'mcpCenter.retryServer': '重试',
   'mcpCenter.scopeGlobal': '全局',
   'mcpCenter.scopeProject': '项目',
   'mcpCenter.shadowedHint': '有 {count} 个全局服务器被本项目同名配置覆盖，列表只显示生效配置',
