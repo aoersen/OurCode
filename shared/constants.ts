@@ -174,6 +174,9 @@ export const DEFAULT_PREFERENCES = {
   /** Agent 工具调用轮数上限；0 = 无限（默认）。主流工具不设常态上限，
    *  只在用户主动配置时才加一个防死循环的安全阀。 */
   agentMaxIterations: 0,
+  /** 提问自动继续（ZCode 风格）：Agent 提问默认 5 分钟倒计时，超时未回答
+   *  自动继续；悬停/交互永久暂停。权限审批与计划审批永远等待。 */
+  questionAutoContinue: true,
 }
 
 // Free model keywords
@@ -186,6 +189,15 @@ export const EXHAUSTED_MARKER = '[已达到最大工具调用轮数'
 // localStorage prefix for the per-project "always allow this tool" allowlist.
 // Key = TOOL_ALLOWLIST_PREFIX + projectPath, value = JSON array of tool names.
 export const TOOL_ALLOWLIST_PREFIX = 'ourcode-tool-allowlist:'
+
+// localStorage prefix for the per-project "always deny this tool" denylist.
+// Key = TOOL_DENYLIST_PREFIX + projectPath, value = JSON array of tool names.
+// 命中即拒绝执行（不弹窗）；危险命令不受其影响（始终弹确认）。
+export const TOOL_DENYLIST_PREFIX = 'ourcode-tool-denylist:'
+
+// Agent 提问（ask_user_question / 计划模式防空转提问）的自动继续倒计时。
+// 权限审批与计划审批没有超时（永远等待用户决策）。
+export const QUESTION_AUTO_CONTINUE_MS = 5 * 60_000
 
 // Known model metadata (context window, vision, function call)
 export const MODEL_METADATA: Record<string, { contextWindow: number; vision: boolean; functionCall: boolean }> = {

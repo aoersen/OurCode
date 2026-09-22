@@ -481,7 +481,9 @@ export function createToolRegistry(): Tool[] {
       name: 'submit_plan',
       description:
         'In plan mode: submit a step-by-step plan for the user to approve before any file changes are made. ' +
-        'The plan should break the task into ordered, concrete steps. Do not use this tool in execute mode.',
+        'The plan should break the task into ordered, concrete steps. Do not use this tool in execute mode. ' +
+        'Declare every file the plan will create or modify in "files" (absolute or project-relative paths) — ' +
+        'after approval, ONLY those files may be written; writes to any other path are blocked.',
       parameters: {
         type: 'object',
         properties: {
@@ -497,6 +499,11 @@ export function createToolRegistry(): Tool[] {
               },
               required: ['summary'],
             },
+          },
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Final deliverable files the plan will create or modify (absolute or project-relative paths). Required so writes stay scoped after approval.',
           },
         },
         required: ['title', 'steps'],

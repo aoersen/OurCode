@@ -208,6 +208,23 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
       </div>
       <div className="px-4 py-3 flex flex-col gap-2.5">
         {renderSteps()}
+        {/* 最终产物（批准后唯一可写范围）——未声明则提示 fail closed */}
+        <div className="bg-[#f8fafc] dark:bg-white/5 rounded-lg p-2.5 border border-nova-border flex flex-col gap-1">
+          <span className="text-[10px] font-semibold tracking-wider text-nova-text-muted">
+            {t('agent.planDeliverables')}
+          </span>
+          {(session.planDeliverables || []).length > 0 ? (
+            (session.planDeliverables || []).map((p, i) => (
+              <span key={i} className="font-mono text-[11px] text-nova-text-secondary">• {p}</span>
+            ))
+          ) : (
+            <span className="text-[11px] text-nova-text-muted">{t('agent.planNoDeliverables')}</span>
+          )}
+          <span className="flex items-center gap-1 text-[10px] text-nova-text-muted">
+            <MSIcon name="sync" className="text-[11px] leading-none" />
+            {t('agent.planDeliverablesLockHint')}
+          </span>
+        </div>
         <label className="flex items-center gap-1.5 text-[12px] text-nova-text-muted cursor-pointer select-none">
           <input
             type="checkbox"

@@ -9,11 +9,16 @@ import McpConfigSection from '../Settings/McpConfigSection'
  * marketplace used), opened from the activity bar like the other panels.
  *
  * Five tabs:
- *  - 服务器: configured servers from <root>/mcp_config.json with live
- *    connection state (connecting/ready/failed/restarting/disabled) and an
- *    enable/disable toggle (persisted via mcp:saveConfig + reload).
- *  - 配置: the full server editor (add / edit / delete, stdio + HTTP) —
- *    reuses the Settings form so configuring never requires leaving the panel.
+ *  - 服务器: configured servers with live connection state
+ *    (connecting/ready/failed/restarting/disabled) and an enable/disable
+ *    toggle. Servers come from two tiers: 全局 (<userData>/mcp_config.json,
+ *    every project) and 项目 (<root>/mcp_config.json, this project only) —
+ *    a project entry with the same name overrides the global one, and the
+ *    list shows only the effective entries. The toggle persists to whichever
+ *    tier the entry belongs to.
+ *  - 配置: the full server editor (add / edit / delete, stdio + HTTP, 全局 +
+ *    项目 groups) — reuses the Settings form so configuring never requires
+ *    leaving the panel.
  *  - 工具: every tool exposed by connected servers (mcp__<server>__<tool>)
  *    with its description and input schema.
  *  - 资源: resources/list → resources/read preview.
@@ -77,8 +82,10 @@ export default function McpPanel() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Servers
-  const [servers, setServers] = useState<Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; file: string | null }>>([])
+  // Servers — effective view: project entries (which override same-name global
+  // ones) plus the global entries that are not shadowed.
+  const [servers, setServers] = useState<Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; scope: 'global' | 'project'; file: string | null }>>([])
+  const [shadowedCount, setShadowedCount] = useState(0)
   // Tools / resources / prompts
   const [tools, setTools] = useState<ToolDefinition[]>([])
   const [resources, setResources] = useState<McpResourceItem[]>([])
@@ -88,15 +95,14 @@ export default function McpPanel() {
 
   const refreshServers = useCallback(async () => {
     setError(null)
-    const [cfgRes, statusRes] = await Promise.all([
+    const [cfgRes, globalRes, statusRes] = await Promise.all([
       currentProjectPath ? window.electronAPI.mcpGetConfig(currentProjectPath) : Promise.resolve({ ok: false as const, error: 'NO_PROJECT' }),
-      window.electronAPI.mcpStatus(),
+      window.electronAPI.mcpGetGlobalConfig(),
+      // 带上项目路径：主进程发现管理器还挂在别的项目上时会先重载，状态才不会
+      // 一直停留在「未启动」的兜底值上。
+      window.electronAPI.mcpStatus(currentProjectPath ?? undefined),
     ])
-    if (!cfgRes.ok) {
-      if (cfgRes.error === 'NO_PROJECT') {
-        setServers([])
-        return
-      }
+    if (!cfgRes.ok && cfgRes.error !== 'NO_PROJECT') {
       // Raw "路径不在允许范围内" from the main process — show a user-friendly
       // message instead of the internal path-validation string.
       const friendly = cfgRes.error?.includes('路径不在允许范围内')
@@ -105,16 +111,26 @@ export default function McpPanel() {
       setError(friendly)
       return
     }
+    const projectEntries = (cfgRes.ok ? cfgRes.config.mcpServers : {}) || {}
+    const projectFile = cfgRes.ok ? cfgRes.file : null
+    const globalEntries = (globalRes.ok ? globalRes.config.mcpServers : {}) || {}
     const statusMap = new Map((statusRes || []).map((s) => [s.name, s]))
-    setServers(
-      Object.entries(cfgRes.config.mcpServers || {}).map(([name, entry]) => ({
-        name,
-        entry: entry as McpServerConfigEntry,
-        status: statusMap.get(name),
-        file: cfgRes.file,
-      })),
-    )
-  }, [currentProjectPath])
+    const items: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; scope: 'global' | 'project'; file: string | null }> = []
+    for (const [name, entry] of Object.entries(projectEntries)) {
+      items.push({ name, entry: entry as McpServerConfigEntry, status: statusMap.get(name), scope: 'project', file: projectFile ?? null })
+    }
+    // 与主进程的合并规则一致：同名时项目条目覆盖全局，列表中只显示生效条目。
+    let shadowed = 0
+    for (const [name, entry] of Object.entries(globalEntries)) {
+      if (name in projectEntries) {
+        shadowed += 1
+        continue
+      }
+      items.push({ name, entry: entry as McpServerConfigEntry, status: statusMap.get(name), scope: 'global', file: globalRes.file ?? null })
+    }
+    setServers(items)
+    setShadowedCount(shadowed)
+  }, [currentProjectPath, t])
 
   const refreshTools = useCallback(async () => {
     setError(null)
@@ -181,12 +197,20 @@ export default function McpPanel() {
     }
   }
 
-  /** Toggle a server's enabled flag: rewrite its config entry (disabled) and
-   *  reload — same persistence path as the Settings editor. */
-  const toggleServer = async (name: string, enabled: boolean) => {
-    if (!currentProjectPath) return
+  /** Toggle a server's enabled flag: rewrite its config entry (disabled) in
+   *  whichever tier the server belongs to and reload — same persistence path
+   *  as the Settings editor. */
+  const toggleServer = async (scope: 'global' | 'project', name: string, enabled: boolean) => {
     setError(null)
-    const cfgRes = await window.electronAPI.mcpGetConfig(currentProjectPath)
+    const cfgRes = scope === 'global'
+      ? await window.electronAPI.mcpGetGlobalConfig()
+      : currentProjectPath
+        ? await window.electronAPI.mcpGetConfig(currentProjectPath)
+        : null
+    if (!cfgRes) {
+      setError(t('mcpCenter.pathNotAllowed'))
+      return
+    }
     if (!cfgRes.ok) {
       const friendly = cfgRes.error?.includes('路径不在允许范围内')
         ? t('mcpCenter.pathNotAllowed')
@@ -199,7 +223,9 @@ export default function McpPanel() {
     if (enabled) delete entry.disabled
     else entry.disabled = true
     mcpServers[name] = entry
-    const saveRes = await window.electronAPI.mcpSaveConfig(currentProjectPath, { mcpServers }, cfgRes.file)
+    const saveRes = scope === 'global'
+      ? await window.electronAPI.mcpSaveGlobalConfig({ mcpServers })
+      : await window.electronAPI.mcpSaveConfig(currentProjectPath!, { mcpServers }, cfgRes.file)
     if (!saveRes.ok) {
       setError(saveRes.error || '保存配置失败')
       return
@@ -289,6 +315,7 @@ export default function McpPanel() {
           <ServersTab
             servers={servers}
             rootPath={currentProjectPath}
+            shadowedCount={shadowedCount}
             onToggle={toggleServer}
             onEditConfig={() => setActiveTab('config')}
             onReload={() => refreshServers()}
@@ -403,14 +430,16 @@ export default function McpPanel() {
 function ServersTab({
   servers,
   rootPath,
+  shadowedCount,
   onToggle,
   onEditConfig,
   onReload,
   hasError,
 }: {
-  servers: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; file: string | null }>
+  servers: Array<{ name: string; entry: McpServerConfigEntry; status?: McpServerStatusItem; scope: 'global' | 'project'; file: string | null }>
   rootPath: string | null
-  onToggle: (name: string, enabled: boolean) => void
+  shadowedCount: number
+  onToggle: (scope: 'global' | 'project', name: string, enabled: boolean) => void
   onEditConfig: () => void
   onReload: () => void
   hasError: boolean
@@ -431,18 +460,31 @@ function ServersTab({
 
   return (
     <div className="flex flex-col gap-2">
-      {!rootPath && !hasError && <EmptyState text={t('mcpCenter.noProject')} />}
+      {!rootPath && servers.length === 0 && !hasError && <EmptyState text={t('mcpCenter.noProject')} />}
       {rootPath && servers.length === 0 && !hasError && (
         <EmptyState text={t('mcpCenter.noServers')} />
       )}
-      {servers.map(({ name, entry, status }) => {
-        const state: McpServerState = status?.state || (entry.disabled ? 'disabled' : 'stopped')
+      {shadowedCount > 0 && (
+        <p className="text-[10px] text-nova-text-muted px-1">
+          {t('mcpCenter.shadowedHint', { count: shadowedCount })}
+        </p>
+      )}
+      {servers.map(({ name, entry, status, scope }) => {
+        // 启用勾选以配置里的 disabled 标志为准（运行时连接状态只看徽章），
+        // 避免状态图被其他项目的同名服务器污染时勾选显示错误。
+        const configuredDisabled = entry.disabled === true
+        const state: McpServerState = configuredDisabled
+          ? 'disabled'
+          : (status?.state || 'stopped')
         const isHttp = !!(entry.serverUrl || entry.url)
         return (
           <div key={name} className="bg-nova-card border border-nova-border rounded-lg p-2.5 flex flex-col gap-1.5 hover:border-nova-border-strong transition-colors">
             <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0 flex items-center gap-1.5">
                 <span className="text-[11px] font-semibold text-nova-text-primary font-mono truncate">{name}</span>
+                <span className={`text-[11px] px-1 py-0.5 rounded shrink-0 ${scope === 'global' ? 'bg-nova-accent/15 text-nova-accent' : 'bg-nova-hover text-nova-text-muted'}`}>
+                  {scope === 'global' ? t('mcpCenter.scopeGlobal') : t('mcpCenter.scopeProject')}
+                </span>
                 <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0">
                   {isHttp ? t('mcpCenter.serverTypeHttp') : t('mcpCenter.serverTypeStdio')}
                 </span>
@@ -454,8 +496,8 @@ function ServersTab({
               <label className="flex items-center gap-1 text-[10px] text-nova-text-secondary cursor-pointer select-none shrink-0">
                 <input
                   type="checkbox"
-                  checked={state !== 'disabled'}
-                  onChange={(e) => onToggle(name, e.target.checked)}
+                  checked={!configuredDisabled}
+                  onChange={(e) => onToggle(scope, name, e.target.checked)}
                   className="accent-nova-accent"
                 />
                 {t('mcpCenter.enable')}

@@ -274,10 +274,12 @@ export class ToolExecutor {
     }
   }
 
-  /** Refresh MCP tool definitions from the main process */
-  async refreshMcpTools(): Promise<void> {
+  /** Refresh MCP tool definitions from the main process. `projectPath` (the
+   *  running session's project) keeps the manager loaded on the ACTIVE project
+   *  — the main process reloads first when the file tree's mount point differs. */
+  async refreshMcpTools(projectPath?: string | null): Promise<void> {
     try {
-      this.dynamicTools = await window.electronAPI.mcpToolDefinitions()
+      this.dynamicTools = await window.electronAPI.mcpToolDefinitions(projectPath ?? undefined)
     } catch {
       this.dynamicTools = []
     }
@@ -285,7 +287,7 @@ export class ToolExecutor {
     // list, so switching workspaces can't leave the previous one's exemption
     // behind — an unreadable status means nothing is exempt.
     try {
-      const status = await window.electronAPI.mcpStatus()
+      const status = await window.electronAPI.mcpStatus(projectPath ?? undefined)
       this.bundledMcpServers = new Set((status || []).filter((s) => s.bundled).map((s) => s.name))
     } catch {
       this.bundledMcpServers = new Set()

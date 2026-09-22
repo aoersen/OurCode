@@ -1,8 +1,16 @@
 /**
  * MCP (Model Context Protocol) client — main process.
  *
- * Loads `mcp_config.json` from the workspace root and connects to each
- * configured server. Two transports are supported:
+ * Loads two tiers of config:
+ *  - global:   <userData>/mcp_config.json (via the `globalConfigPath` option)
+ *              — servers available in EVERY workspace;
+ *  - project:  <workspace root>/mcp_config.json (fallback .mcp.json).
+ * A project entry with the same name overrides the global one. The merged
+ * ("effective") config is what actually connects. Project switches apply a
+ * diff, so unchanged servers (typically global ones) stay connected instead
+ * of being torn down and re-handshaken on every workspace change.
+ *
+ * Two transports are supported:
  *
  *  - stdio:  spawn a local server as a child process; JSON-RPC 2.0 over
  *    newline-delimited JSON (LSP Content-Length framing also accepted).
@@ -32,7 +40,7 @@
  */
 import { spawn, ChildProcess } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
-import { join, relative } from 'path'
+import { dirname, join, relative } from 'path'
 import { EventEmitter } from 'events'
 import { request as httpRequest, ClientRequest, IncomingMessage } from 'http'
 import { request as httpsRequest } from 'https'
@@ -87,6 +95,12 @@ export interface MCPManagerOptions {
    * dependency-free MCP servers run on Electron's own Node (no system Node).
    */
   bundledNodeDir?: string
+  /**
+   * Absolute path to the global MCP config (<userData>/mcp_config.json).
+   * Servers declared there load for every workspace; a project entry with the
+   * same name overrides the global one. Undefined in headless/test contexts.
+   */
+  globalConfigPath?: string
 }
 
 /** Connection state of a configured MCP server, as surfaced to the
@@ -124,6 +138,15 @@ export function isBundledServerConfig(server: McpServerConfig): boolean {
   if (server.command !== 'bundled-node') return false
   const args = server.args || []
   return args.length > 0 && args.every((arg) => arg.startsWith('bundled:'))
+}
+
+/**
+ * Byte-stable identity of a server entry for diffing — key order is
+ * normalized, so an edit that only reorders keys does not trigger a
+ * spurious disconnect + reconnect.
+ */
+export function configSignature(server: McpServerConfig): string {
+  return JSON.stringify(server, Object.keys(server).sort())
 }
 
 interface ServerConnection {
@@ -431,7 +454,13 @@ class HttpTransport implements McpTransport {
 
 export class MCPManager extends EventEmitter {
   private connections = new Map<string, ServerConnection>()
+  /** Effective (merged) config: global overridden by same-name project entries.
+   *  This is what actually connects — all consumers read this. */
   private config: Record<string, McpServerConfig> = {}
+  /** Global-tier config (<userData>/mcp_config.json) — last successfully read. */
+  private globalConfig: Record<string, McpServerConfig> = {}
+  /** Project-tier config (<root>/mcp_config.json) — last successfully read. */
+  private projectConfig: Record<string, McpServerConfig> = {}
   private rootPath = ''
   /** False once servers have been (re)loaded — guards against zombie reconnects. */
   private intentionalStop = true
@@ -481,6 +510,146 @@ export class MCPManager extends EventEmitter {
     return this.options.bundledNodeDir
   }
 
+  private get globalConfigPath(): string | undefined {
+    return this.options.globalConfigPath
+  }
+
+  /**
+   * Working directory for a server's child process. Project servers run in the
+   * workspace they belong to; global servers run in the global config's own
+   * directory (userData) — they exist independently of any workspace, so a
+   * relative `args` path would otherwise break per-project. Global stdio
+   * entries should use absolute paths or PATH-resolved commands.
+   */
+  private cwdFor(name: string): string {
+    if (name in this.projectConfig) return this.rootPath
+    return this.globalConfigPath ? dirname(this.globalConfigPath) : ''
+  }
+
+  /**
+   * Read + parse a config file. Returns null when the file is missing or
+   * unparsable (parse failures emit an 'error' event and count as empty —
+   * a broken file must not silently keep yesterday's servers alive).
+   */
+  private readConfigFile(file: string): Record<string, McpServerConfig> | null {
+    let raw = ''
+    try {
+      raw = readFileSync(file, 'utf-8')
+    } catch {
+      return null // missing file
+    }
+    try {
+      const parsed = JSON.parse(raw)
+      return (parsed.mcpServers || parsed.servers || {}) as Record<string, McpServerConfig>
+    } catch (error: any) {
+      this.emitError(new Error(`MCP 配置文件解析失败 (${file}): ${error.message}`))
+      return null
+    }
+  }
+
+  /**
+   * Load global + project config and apply the diff. `rootPath` may be '' —
+   * then only the global tier loads (used at startup, before any workspace
+   * is open).
+   */
+  async loadConfig(rootPath: string): Promise<void> {
+    this.rootPath = rootPath
+    this.globalConfig = this.globalConfigPath ? (this.readConfigFile(this.globalConfigPath) ?? {}) : {}
+    this.projectConfig = {}
+    if (rootPath) {
+      for (const file of [join(rootPath, 'mcp_config.json'), join(rootPath, '.mcp.json')]) {
+        if (existsSync(file)) {
+          this.projectConfig = this.readConfigFile(file) ?? {}
+          break
+        }
+      }
+    }
+    this.applyEffectiveConfig()
+  }
+
+  /** Re-read ONLY the global tier (after a global-config save) and re-apply. */
+  async loadGlobalConfig(): Promise<void> {
+    if (!this.globalConfigPath) return
+    this.globalConfig = this.readConfigFile(this.globalConfigPath) ?? {}
+    this.applyEffectiveConfig()
+  }
+
+  /**
+   * Reconcile live connections with the effective config. Full start on the
+   * first load (or after stopAll); afterwards a diff — unchanged servers keep
+   * their connections (global servers survive project switches without a
+   * teardown + re-handshake), removed/changed ones are torn down and replaced.
+   */
+  private applyEffectiveConfig(): void {
+    const effective: Record<string, McpServerConfig> = { ...this.globalConfig, ...this.projectConfig }
+    const prev = this.config
+    const removed: string[] = []
+    const added: string[] = []
+    for (const name of Object.keys(prev)) {
+      if (!(name in effective)) removed.push(name)
+      else if (configSignature(prev[name]) !== configSignature(effective[name])) {
+        removed.push(name)
+        added.push(name)
+      } else if (this.statuses.get(name)?.state === 'failed' && !effective[name].disabled) {
+        // 配置没变但连接已失败：任何一次重载（手动「重试」/ 切换项目回来）
+        // 都重新发起连接尝试，而不是永远停在 failed 上等重启 IDE。
+        removed.push(name)
+        added.push(name)
+      }
+    }
+    for (const name of Object.keys(effective)) {
+      if (!(name in prev)) added.push(name)
+    }
+
+    this.config = effective
+
+    if (this.intentionalStop) {
+      // Fresh generation (first load / after stopAll): connect everything.
+      this.intentionalStop = false
+      for (const [name, server] of Object.entries(effective)) {
+        this.seedAndStart(name, server)
+      }
+      return
+    }
+
+    for (const name of removed) this.teardownServer(name)
+    for (const name of added) this.seedAndStart(name, effective[name])
+  }
+
+  /** Seed the status map, then connect (or mark disabled) — shared by the
+   *  full-start and diff paths. */
+  private seedAndStart(name: string, server: McpServerConfig): void {
+    // Seed the status map from config before any connection attempt — the
+    // UI can then show disabled/stopped servers even while none connect.
+    this.setStatus(name, { name, state: server.disabled ? 'disabled' : 'stopped' })
+    if (server.disabled) return
+    if (server.serverUrl || server.url) {
+      this.startHttpServer(name, server, 0)
+    } else {
+      this.startServer(name, server, 0)
+    }
+  }
+
+  /** Remove a server from the live set: kill its transport, drop its status /
+   *  backoff / stale-tools state. No stray statuses leak into getStatus(). */
+  private teardownServer(name: string): void {
+    const timer = this.restartTimers.get(name)
+    if (timer) {
+      clearTimeout(timer)
+      this.restartTimers.delete(name)
+    }
+    const conn = this.connections.get(name)
+    if (conn) {
+      try { conn.transport.close() } catch { /* already closed */ }
+      this.connections.delete(name)
+      this.rejectAll(conn, new Error(`MCP 服务器 "${name}" 配置已移除`))
+    }
+    this.statuses.delete(name)
+    this.lastKnownTools.delete(name)
+    this.readyAt.delete(name)
+    this.lastDeathAt.delete(name)
+  }
+
   /**
    * Resolve "bundled" stdio configs so MCP servers can run on Electron's own
    * Node runtime instead of a system-installed Node:
@@ -517,47 +686,6 @@ export class MCPManager extends EventEmitter {
     return { command, args, env }
   }
 
-  /** Load + connect servers from <root>/mcp_config.json */
-  async loadConfig(rootPath: string): Promise<void> {
-    this.rootPath = rootPath
-    this.stopAll()
-    this.config = {}
-
-    const candidates = [
-      join(rootPath, 'mcp_config.json'),
-      join(rootPath, '.mcp.json'),
-    ]
-    let raw = ''
-    for (const file of candidates) {
-      if (existsSync(file)) {
-        raw = readFileSync(file, 'utf-8')
-        break
-      }
-    }
-    if (!raw) return
-
-    try {
-      const parsed = JSON.parse(raw)
-      this.config = parsed.mcpServers || parsed.servers || {}
-    } catch (error: any) {
-      this.emitError(new Error(`mcp_config.json 解析失败: ${error.message}`))
-      return
-    }
-
-    this.intentionalStop = false
-    for (const [name, server] of Object.entries(this.config)) {
-      // Seed the status map from config before any connection attempt — the
-      // UI can then show disabled/stopped servers even while none connect.
-      this.setStatus(name, { name, state: server.disabled ? 'disabled' : 'stopped' })
-      if (server.disabled) continue
-      if (server.serverUrl || server.url) {
-        this.startHttpServer(name, server, 0)
-      } else {
-        this.startServer(name, server, 0)
-      }
-    }
-  }
-
   private connectTransport(name: string, transport: McpTransport, retry: number): ServerConnection {
     const conn: ServerConnection = { transport, pending: new Map(), idCounter: 1, initialized: false }
     this.connections.set(name, conn)
@@ -581,7 +709,7 @@ export class MCPManager extends EventEmitter {
     try {
       this.setStatus(name, { state: 'connecting', retry, error: undefined })
       const { command, args, env } = this.resolveStdio(server)
-      const transport = new StdioTransport(name, command, args, env, this.rootPath)
+      const transport = new StdioTransport(name, command, args, env, this.cwdFor(name))
       conn = this.connectTransport(name, transport, retry)
       this.initialize(name, conn, retry).catch((error) => {
         this.emitError(new Error(`MCP 服务器 "${name}" 初始化失败: ${error.message}`))

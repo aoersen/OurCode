@@ -205,8 +205,10 @@ export interface ElectronAPI {
   mcpReload: (rootPath: string) => Promise<{ ok: boolean; error?: string }>
   mcpGetConfig: (rootPath: string) => Promise<{ ok: boolean; config: { mcpServers: Record<string, any> }; file: string | null; error?: string }>
   mcpSaveConfig: (rootPath: string, config: { mcpServers: Record<string, any> }, file?: string | null) => Promise<{ ok: boolean; file?: string; error?: string }>
-  mcpToolDefinitions: () => Promise<import('@shared/types').ToolDefinition[]>
-  mcpStatus: () => Promise<Array<{ name: string; state: 'connecting' | 'ready' | 'failed' | 'restarting' | 'disabled' | 'stopped'; retry?: number; error?: string; bundled?: boolean }>>
+  mcpGetGlobalConfig: () => Promise<{ ok: boolean; config: { mcpServers: Record<string, any> }; file: string | null; error?: string }>
+  mcpSaveGlobalConfig: (config: { mcpServers: Record<string, any> }) => Promise<{ ok: boolean; file?: string; error?: string }>
+  mcpToolDefinitions: (rootPath?: string) => Promise<import('@shared/types').ToolDefinition[]>
+  mcpStatus: (rootPath?: string) => Promise<Array<{ name: string; state: 'connecting' | 'ready' | 'failed' | 'restarting' | 'disabled' | 'stopped'; retry?: number; error?: string; bundled?: boolean }>>
   mcpListResources: () => Promise<Array<{ server: string; uri: string; name?: string; mimeType?: string; description?: string }>>
   mcpReadResource: (server: string, uri: string) => Promise<{ ok: boolean; result?: string; error?: string }>
   mcpListPrompts: () => Promise<Array<{ server: string; name: string; description?: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }>>

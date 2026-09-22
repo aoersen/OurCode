@@ -2386,10 +2386,43 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // ───────────────────── 全局 MCP 配置（所有项目可用）─────────────────────
+  // Lives in <userData>/mcp_config.json — outside any workspace, so no
+  // path-trust assertion applies. A project entry with the same name overrides
+  // the global one (the manager merges the two tiers).
+
+  const globalMcpConfigPath = () => join(app.getPath('userData'), 'mcp_config.json')
+
+  ipcMain.handle('mcp:getGlobalConfig', () => {
+    try {
+      const file = globalMcpConfigPath()
+      let raw = ''
+      if (existsSync(file)) raw = readFileSync(file, 'utf-8')
+      if (!raw) return { ok: true, config: { mcpServers: {} }, file }
+      const parsed = JSON.parse(raw)
+      return { ok: true, config: { mcpServers: parsed.mcpServers || parsed.servers || {} }, file }
+    } catch (error: any) {
+      return { ok: false, error: error.message }
+    }
+  })
+
+  ipcMain.handle('mcp:saveGlobalConfig', async (_event, config: { mcpServers: Record<string, any> }) => {
+    try {
+      const file = globalMcpConfigPath()
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, JSON.stringify({ mcpServers: config?.mcpServers || {} }, null, 2), 'utf-8')
+      await mcp.loadGlobalConfig()
+      return { ok: true, file }
+    } catch (error: any) {
+      return { ok: false, error: error.message }
+    }
+  })
+
   // Used by the renderer to build tool definitions for the LLM
-  ipcMain.handle('mcp:toolDefinitions', async () => {
+  ipcMain.handle('mcp:toolDefinitions', async (_event, rootPath?: string) => {
     // Stale tools (from a disconnected server's last-known list) are filtered —
     // the model must never be offered a tool that would fail with "未连接".
+    await syncMcpToRoot(rootPath)
     const tools = (await mcp.listTools()).filter((t) => !t.stale)
     return tools.map((t) => toMcpToolDefinition(t))
   })
@@ -2423,9 +2456,32 @@ function registerIpcHandlers(): void {
   })
 
   // Per-server connection state for the MCP management UI (MCP 管理中心)
-  ipcMain.handle('mcp:status', async () => {
+  // Per-server connection state for the management UI (MCP 管理中心)
+  ipcMain.handle('mcp:status', async (_event, rootPath?: string) => {
+    await syncMcpToRoot(rootPath)
     return mcp.getStatus()
   })
+
+  /**
+   * Keep the MCP manager on the ACTIVE project. The manager normally loads a
+   * workspace's servers on fs:watch (file-tree mount), which can lag behind —
+   * or never match — the project the active conversation belongs to. Callers
+   * that know their project (MCP 面板、每轮发送前的工具刷新) pass it here;
+   * when it differs from the loaded root, reload before answering. Failed
+   * servers are retried by the reload (see MCPManager.applyEffectiveConfig),
+   * so this doubles as the panel's manual "启动/重试" trigger.
+   */
+  const syncMcpToRoot = async (rootPath?: string) => {
+    if (!rootPath) return
+    if (normalizePath(mcp.loadedRoot || '') === normalizePath(rootPath)) return
+    try {
+      assertPathWritable(rootPath)
+      await mcp.loadConfig(rootPath)
+    } catch {
+      // Untrusted or unloadable path — answer with whatever is loaded; the
+      // panel surfaces its own error via mcp:getConfig.
+    }
+  }
 
   // ───────────────────── Usage statistics ─────────────────────
   ipcMain.handle(IPC_CHANNELS.USAGE_RECORD, (_event, events: UsageEvent[]) => {
@@ -2807,7 +2863,9 @@ app.whenReady().then(() => {
   const bundledMcpDir = app.isPackaged
     ? join(process.resourcesPath, 'mcp-servers')
     : join(app.getAppPath(), 'mcp-servers')
-  mcp = new MCPManager({ bundledNodeDir: bundledMcpDir })
+  mcp = new MCPManager({ bundledNodeDir: bundledMcpDir, globalConfigPath: join(userDataPath, 'mcp_config.json') })
+  // 全局 MCP 服务器在启动时即加载——它们不依赖任何已打开的项目。
+  void mcp.loadGlobalConfig()
 
   // Per-group TLS bypass for intranet / self-signed certificates
   refreshTlsSkippedHosts()

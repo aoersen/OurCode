@@ -22,7 +22,7 @@ import { captureCheckpoint } from '@/services/checkpointService'
 import { buildSkillIndex, listSkills } from '@/services/skills/skillManager'
 import { loadAgentDefinition, SubagentGuard, resolveAllowedRoot } from '@/services/subagents/subagentDefinitions'
 import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel, sanitizeModelName } from '@/services/subagents/subagentReport'
-import { useChatStore, setWireContextForRun } from '@/stores/chatStore'
+import { useChatStore, setWireContextForRun, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { getFileContent } from '@/editor/modelRegistry'
@@ -96,6 +96,10 @@ async function buildSubSystemPrompt(opts: SubAgentOptions, defSystemPrompt: stri
 
   // Skills are available to subagents too
   prompt += await buildSkillIndex(rootPath)
+
+  // 与主会话一致：MCP / 技能安装必须走本 IDE 的配置机制，防止子 Agent
+  // 把配置写进 Claude Code 等外部工具。
+  prompt += MCP_AND_SKILLS_GUIDELINES
 
   prompt += `\n\n<subagent_rules>
 - 自主完成任务：使用工具（读取/搜索/编辑文件、执行命令）推进，不要向用户请求确认。

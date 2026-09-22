@@ -178,6 +178,8 @@ export default function ChatInput({
   const removeQueuedMessage = useChatStore((s) => s.removeQueuedMessage)
   const sendQueuedNow = useChatStore((s) => s.sendQueuedNow)
   const clearQueue = useChatStore((s) => s.clearQueue)
+  // 权限模式 Shift+Tab 循环切换（ZCode 风格）
+  const cycleEditMode = useChatStore((s) => s.cycleEditMode)
   // Loading/stop state is per session: while THIS conversation generates the
   // send button turns into stop; other conversations running in parallel keep
   // their own buttons (and stopping here must never abort them).
@@ -617,6 +619,14 @@ export default function ChatInput({
         applyMarkdown('`', '`')
         return
       }
+    }
+
+    // Shift+Tab cycles the permission mode (ZCode-style). Only when no slash
+    // menu / file search is consuming Tab (those take precedence).
+    if (e.key === 'Tab' && e.shiftKey && !showSlashMenu && !showFileSearch) {
+      e.preventDefault()
+      if (activeSessionId) void cycleEditMode(activeSessionId)
+      return
     }
 
     // Slash-command menu navigation

@@ -761,6 +761,9 @@ export default function SettingsModal() {
                 <SettingRow label="允许 AI 自动记忆" desc="开启后 AI 可在对话中自动把重要信息保存到长期记忆" right={
                   <ToggleButton on={preferences.aiAutoMemory} onClick={() => savePreferences({ aiAutoMemory: !preferences.aiAutoMemory })} />
                 } />
+                <SettingRow label="提问自动继续" desc="Agent 提问默认 5 分钟倒计时，超时未回答时自动选择方向继续；悬停或任意操作会永久停止计时。关闭后提问一直等待（权限审批与计划审批始终等待，不受影响）" right={
+                  <ToggleButton on={preferences.questionAutoContinue !== false} onClick={() => savePreferences({ questionAutoContinue: preferences.questionAutoContinue === false })} />
+                } />
                 <SettingRow label="LLM 响应缓存" desc="相同请求直接复用上次结果，不再调用 API" right={
                   <ToggleButton on={preferences.llmResponseCache} onClick={() => savePreferences({ llmResponseCache: !preferences.llmResponseCache })} />
                 } />

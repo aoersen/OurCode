@@ -296,13 +296,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mcpGetConfig: (rootPath: string) => ipcRenderer.invoke('mcp:getConfig', rootPath),
   mcpSaveConfig: (rootPath: string, config: { mcpServers: Record<string, any> }, file?: string | null) =>
     ipcRenderer.invoke('mcp:saveConfig', rootPath, config, file),
-  mcpToolDefinitions: () => ipcRenderer.invoke('mcp:toolDefinitions'),
+  mcpGetGlobalConfig: () => ipcRenderer.invoke('mcp:getGlobalConfig'),
+  mcpSaveGlobalConfig: (config: { mcpServers: Record<string, any> }) =>
+    ipcRenderer.invoke('mcp:saveGlobalConfig', config),
+  mcpToolDefinitions: (rootPath?: string) => ipcRenderer.invoke('mcp:toolDefinitions', rootPath),
   mcpListResources: () => ipcRenderer.invoke('mcp:listResources'),
   mcpReadResource: (server: string, uri: string) => ipcRenderer.invoke('mcp:readResource', server, uri),
   mcpListPrompts: () => ipcRenderer.invoke('mcp:listPrompts'),
   mcpGetPrompt: (server: string, name: string, args?: Record<string, any>) =>
     ipcRenderer.invoke('mcp:getPrompt', server, name, args),
-  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  mcpStatus: (rootPath?: string) => ipcRenderer.invoke('mcp:status', rootPath),
 
   // App
   getPath: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_PATH, name),

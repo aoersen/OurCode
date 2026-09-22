@@ -101,6 +101,9 @@ export interface ChatSession {
   // Plan awaiting approval (set by submit_plan)
   planContent?: string
   planStatus?: 'none' | 'pending_approval' | 'approved' | 'canceled'
+  /** 计划声明的最终产物文件（绝对或相对 projectPath 的路径）。计划模式批准后
+   *  仅允许写入这些路径；缺省 = 未声明（fail closed，所有写入被拦截）。 */
+  planDeliverables?: string[]
   // Project workspace path this session belongs to (captured at creation time)
   projectPath?: string
   // Real context size (input + cache + output tokens) reported by the last API
@@ -465,6 +468,10 @@ export interface UserPreferences {
   contextCompactionRatio?: number
   /** 压缩摘要使用的模型 ID；留空则跟随会话模型。 */
   contextCompactionModel?: string
+  /** 提问自动继续（ZCode 风格）：Agent 的 ask_user_question 默认带 5 分钟
+   *  倒计时，超时未回答时 Agent 按自己的判断继续并打标。关闭后提问一直
+   *  等待。权限审批与计划审批不受此开关影响（永远等待）。 */
+  questionAutoContinue?: boolean
 }
 
 // Model Info

@@ -338,3 +338,106 @@ describe('isBundledServerConfig — which MCP tools skip approval', () => {
     manager.stopAll()
   })
 })
+
+describe('MCPManager global config (two-tier merge)', () => {
+  const mockServer = (overrides: Record<string, any> = {}) => ({
+    command: process.execPath,
+    args: [MOCK],
+    env: { MOCK_MCP_SILENT: '0' },
+    ...overrides,
+  })
+
+  const globalManager = (globalConfigPath: string) =>
+    track(new MCPManager({ requestTimeoutMs: 2_000, restart: { baseDelayMs: 50, maxRetries: 3 }, globalConfigPath }))
+
+  function emptyDir(name: string): string {
+    const dir = join(__dirname, 'fixtures', `mcp-${name}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
+    mkdirSync(dir, { recursive: true })
+    tempRoots.push(dir)
+    return dir
+  }
+
+  function writeConfig(file: string, servers: Record<string, any>) {
+    writeFileSync(file, JSON.stringify({ mcpServers: servers }, null, 2), 'utf-8')
+  }
+
+  it('loads global servers with no project open (rootPath "")', async () => {
+    const dir = makeConfigDir('global-only')
+    const mcp = globalManager(join(dir, 'mcp_config.json'))
+    const ready = waitForEvent(mcp, 'ready', 5_000, (p: any) => p.server === 'mock')
+    await mcp.loadConfig('')
+    await ready
+    expect(mcp.serverNames()).toEqual(['mock'])
+    expect(mcp.getStatus().map((s) => s.name)).toEqual(['mock'])
+  })
+
+  it('merges both tiers and lets a same-name project entry override the global one', async () => {
+    const globalDir = makeConfigDir('merge-global')
+    writeConfig(join(globalDir, 'mcp_config.json'), {
+      // 若错误地使用了全局配置，这个坏命令会立刻 failed；项目同名条目应胜出
+      shared: { command: 'definitely-not-a-real-command-xyz' },
+      globonly: mockServer(),
+    })
+    const projDir = makeConfigDir('merge-proj')
+    writeConfig(join(projDir, 'mcp_config.json'), {
+      shared: mockServer(),
+      projonly: mockServer(),
+    })
+    const mcp = globalManager(join(globalDir, 'mcp_config.json'))
+    const readyShared = waitForEvent(mcp, 'ready', 5_000, (p: any) => p.server === 'shared')
+    const readyGlobonly = waitForEvent(mcp, 'ready', 5_000, (p: any) => p.server === 'globonly')
+    await mcp.loadConfig(projDir)
+    await readyShared
+    await readyGlobonly
+    expect(mcp.serverNames().sort()).toEqual(['globonly', 'projonly', 'shared'])
+    expect(mcp.getStatus().map((s) => s.name).sort()).toEqual(['globonly', 'projonly', 'shared'])
+    // 项目同名覆盖全局：shared 用的是项目的 mock（状态 ready），全局的坏命令从未执行
+    expect(mcp.getStatus().find((s) => s.name === 'shared')!.state).toBe('ready')
+  })
+
+  it('keeps unchanged global servers connected across project switches (no re-handshake)', async () => {
+    const globalDir = makeConfigDir('keep-global')
+    writeConfig(join(globalDir, 'mcp_config.json'), { globonly: mockServer() })
+    const projA = makeConfigDir('keep-a')
+    writeConfig(join(projA, 'mcp_config.json'), { aonly: mockServer() })
+    const projB = emptyDir('keep-b') // 没有任何配置文件的项目
+
+    const mcp = globalManager(join(globalDir, 'mcp_config.json'))
+    let globonlyReadyCount = 0
+    mcp.on('ready', (p: any) => { if (p.server === 'globonly') globonlyReadyCount++ })
+
+    const until = async (cond: () => boolean, timeoutMs: number): Promise<void> => {
+      const start = Date.now()
+      while (!cond()) {
+        if (Date.now() - start > timeoutMs) throw new Error('条件等待超时')
+        await new Promise((r) => setTimeout(r, 25))
+      }
+    }
+
+    await mcp.loadConfig(projA)
+    // globonly 与 aonly 的握手完成顺序不定 — 轮询等待计数，而不是等某个事件
+    await until(() => globonlyReadyCount >= 1, 5_000)
+
+    await mcp.loadConfig(projB)
+    // 给足时间：若全局连接被错误地拆除重连，ready 会再次触发
+    await new Promise((r) => setTimeout(r, 500))
+    expect(globonlyReadyCount).toBe(1)
+    expect(mcp.serverNames()).toEqual(['globonly'])
+    expect(mcp.getStatus().find((s) => s.name === 'globonly')!.state).toBe('ready')
+  })
+
+  it('loadGlobalConfig re-applies edits: removed servers are torn down, added ones connect', async () => {
+    const dir = makeConfigDir('reload-global')
+    const globalFile = join(dir, 'mcp_config.json')
+    writeConfig(globalFile, { one: mockServer() })
+    const mcp = globalManager(globalFile)
+    await mcp.loadConfig('')
+    await waitForEvent(mcp, 'ready', 5_000, (p: any) => p.server === 'one')
+
+    writeConfig(globalFile, { two: mockServer() })
+    await mcp.loadGlobalConfig()
+    await waitForEvent(mcp, 'ready', 5_000, (p: any) => p.server === 'two')
+    expect(mcp.serverNames()).toEqual(['two'])
+    expect(mcp.getStatus().map((s) => s.name)).toEqual(['two'])
+  })
+})

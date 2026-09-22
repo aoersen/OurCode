@@ -27,7 +27,7 @@ const mockApi = {
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, reconcileInterruptedRuns, APPROVAL_AUTO_REJECT_MS, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages } from '@/stores/chatStore'
+import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
 import type { MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -1798,9 +1798,9 @@ describe('decision backlog across parallel conversations', () => {
     try {
       const st = () => useChatStore.getState()
       st().offerDecision(approval('B', 'call-b'))
-      vi.advanceTimersByTime(APPROVAL_AUTO_REJECT_MS + 1000)
-      // The old 60s clock started at creation, so a background approval expired
-      // unseen and the model got a bare "denied".
+      // 权限请求不超时（权限模式重设计 C6）：无论等多久，未被看到的审批
+      // 都留在后备队列，绝不自动拒绝。
+      vi.advanceTimersByTime(30 * 60_000)
       expect(st().decisionBacklog).toHaveLength(1)
       expect(st().pendingApproval).toBeNull()
     } finally {
@@ -1808,16 +1808,53 @@ describe('decision backlog across parallel conversations', () => {
     }
   })
 
-  it('auto-rejects a shown approval once the user ignores it for 60s', () => {
+  it('keeps waiting on a shown approval — permission requests never time out', () => {
     vi.useFakeTimers()
     try {
       const st = () => useChatStore.getState()
       st().offerDecision(approval('A', 'call-a'))
       expect(st().pendingApproval?.toolCall.id).toBe('call-a')
-      vi.advanceTimersByTime(APPROVAL_AUTO_REJECT_MS + 1000)
+      // 旧行为 60s 自动拒绝；现在对齐 ZCode：权限请求一直等待用户决策
+      vi.advanceTimersByTime(30 * 60_000)
+      expect(st().pendingApproval?.toolCall.id).toBe('call-a')
+      // 用户仍可正常决策
+      st().approveToolCall()
       expect(st().pendingApproval).toBeNull()
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('MCP 与技能安装指南（stable 提示词前缀）', () => {
+  // 这段指南存在的意义：告诉模型本 IDE 自己的 MCP / 技能配置机制，防止它
+  // 按 Claude Code 的惯例（claude mcp add / .claude.json / .claude/skills）
+  // 把配置写进别的工具。任何一条关键约束被改没了，测试都应该报警。
+  it('说明本 IDE 的 MCP 配置入口与格式', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('mcp_config.json')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('工作区根目录')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('所有项目可用')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('覆盖全局')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('"mcpServers"')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('serverUrl')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('bundled-node')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('mcp__<server>__<tool>')
+  })
+
+  it('明确禁止把配置写进 Claude Code 等外部工具', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('claude mcp add')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('~/.claude.json')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('.claude/')
+  })
+
+  it('说明技能只能装到本 IDE 的技能目录', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('.ourcode/skills')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('.claude/skills')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('SKILL.md')
+  })
+
+  it('要求密钥只写配置文件、不落正文不提交', () => {
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('API Key')
+    expect(MCP_AND_SKILLS_GUIDELINES).toContain('不要提交进 git')
   })
 })

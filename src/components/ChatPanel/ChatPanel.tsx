@@ -6,6 +6,7 @@ import ChatInput from './ChatInput'
 import ChatSidebar from './ChatSidebar'
 import QuestionConfirmBar from './QuestionConfirmBar'
 import InlineDecisionArea from './InlineDecisionArea'
+import ModeMenu from './ModeMenu'
 import ArenaModal from './ArenaModal'
 import WorkflowModal from './WorkflowModal'
 import ModelSelector from './ModelSelector'
@@ -104,7 +105,7 @@ export default function ChatPanel() {
   // changes) — the old getActiveSession() function selector never re-renders.
   const activeSession = useChatStore((s) => (s.activeSessionId ? s.sessions.find((x) => x.id === s.activeSessionId) ?? null : null))
   const createSession = useChatStore((s) => s.createSession)
-  const setProjectEditMode = useChatStore((s) => s.setProjectEditMode)
+  const requestEditModeChange = useChatStore((s) => s.requestEditModeChange)
   const updateSessionParams = useChatStore((s) => s.updateSessionParams)
   const activeConfigGroupId = useConfigStore((s) => s.activeConfigGroupId)
   const models = useConfigStore((s) => s.models)
@@ -146,25 +147,10 @@ export default function ChatPanel() {
   // Mode switch is where the session-wide READ policy follows the edit mode:
   // entering 完全访问 arms it behind one native confirmation; leaving it
   // disarms (a safe direction, no dialog), so 手动确认 really asks again.
-  const handleEditModeChange = async (mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access') => {
+  // 逻辑已收敛到 store 的 requestEditModeChange（Shift+Tab 循环复用同一路径）。
+  const handleEditModeChange = (mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access') => {
     if (!activeSession) return
-    if (mode === 'full_access') {
-      let armed = false
-      try {
-        armed = await window.electronAPI.armReadPolicy()
-      } catch {
-        armed = false
-      }
-      if (!armed) {
-        useUIStore.getState().showNotification(t('chat.fullAccessReadDenied'), 'warning')
-        return
-      }
-    } else {
-      try {
-        await window.electronAPI.disarmReadPolicy()
-      } catch { /* disarming is best-effort — a missed call just means fewer dialogs */ }
-    }
-    setProjectEditMode(activeSession.id, mode)
+    void requestEditModeChange(activeSession.id, mode)
   }
 
   return (
@@ -367,29 +353,14 @@ export default function ChatPanel() {
                   <option value="high" title={t('chat.thinkingLevelHighHint')}>{t('chat.thinkingLevelHigh')}</option>
                   <option value="max" title={t('chat.thinkingLevelMaxHint')}>{t('chat.thinkingLevelMax')}</option>
                 </select>
-                <select
+                {/* 编辑方式 —— 四档权限模式（手动确认/自动编辑/计划/完全访问）。
+                    弹出菜单展示图标 + 一句话说明；Shift+Tab 可循环切换。
+                    目标模式开启时其自身流程取代 auto_edit/plan，只保留两档。 */}
+                <ModeMenu
                   value={projectEditMode}
-                  onChange={(e) => void handleEditModeChange(e.target.value as 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access')}
-                  className={`text-xs rounded-md px-2 py-1 border outline-none cursor-pointer transition-colors ${
-                    projectEditMode === 'full_access'
-                      ? 'border-orange-500/50 bg-orange-500/10 text-orange-400'
-                      : 'border-nova-border bg-nova-input-bg text-nova-text-primary hover:border-nova-accent focus:border-nova-accent'
-                  }`}
-                  title={t('chat.projectEditModeLabel')}
-                  style={{ backgroundImage: 'none' }}
-                >
-                  <option value="confirm_before_change" title={t('chat.projectEditModeConfirmHint')}>{t('chat.projectEditModeConfirm')}</option>
-                  <option value="full_access" title={t('chat.projectEditModeFullHint')} className="text-orange-400">{t('chat.projectEditModeFull')}</option>
-                  {/* While target mode is on, its own workflow supersedes
-                      auto_edit / plan — only manual-confirm and full-access
-                      remain selectable. */}
-                  {!targetMode && (
-                    <>
-                      <option value="auto_edit" title={t('chat.projectEditModeAutoHint')}>{t('chat.projectEditModeAuto')}</option>
-                      <option value="plan" title={t('chat.projectEditModePlanHint')}>{t('chat.projectEditModePlan')}</option>
-                    </>
-                  )}
-                </select>
+                  targetMode={targetMode}
+                  onChange={handleEditModeChange}
+                />
                 {/* 轨迹视图切换 —— 本行最右侧；点击在对话与 agent 执行日志之间切换。 */}
                 <button
                   onClick={() => setView(view === 'trace' ? 'chat' : 'trace')}
