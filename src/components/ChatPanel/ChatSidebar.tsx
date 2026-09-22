@@ -145,7 +145,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
       <div className="flex items-center justify-between px-3 py-2 border-b border-nova-border">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-xs font-semibold text-nova-text-secondary">{t('chat.sessionList')}</span>
-          <span className="text-[9px] px-1.5 py-px rounded-full bg-nova-accent/12 text-nova-accent font-medium shrink-0">
+          <span className="text-[11px] px-1.5 py-px rounded-full bg-nova-accent/12 text-nova-accent font-medium shrink-0">
             {visibleSessions.length}
           </span>
         </div>
@@ -232,7 +232,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
                           spinning (running) > red dot (error) */}
                       {attentionSessionIds.has(session.id) ? (
                         <span
-                          className="shrink-0 inline-flex items-center gap-1 px-1.5 py-px rounded-full text-[9px] font-medium"
+                          className="shrink-0 inline-flex items-center gap-1 px-1.5 py-px rounded-full text-[11px] font-medium"
                           style={{ background: 'color-mix(in srgb, var(--accent, #0058bc) 14%, transparent)', color: 'var(--accent)' }}
                         >
                           <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

@@ -10,7 +10,8 @@
  * Measures: open/load time, real keypress latency at the end of the file, and
  * UI responsiveness while the fully-loaded model is in memory.
  */
-import { test, expect, _electron as electron } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import { dismissOnboarding, launchApp } from './helpers'
 import type { Page } from '@playwright/test'
 import path from 'path'
 
@@ -27,9 +28,7 @@ test('large file: open time, keypress latency and responsiveness', async () => {
   const folder = path.dirname(filePath)
   const fileName = path.basename(filePath)
 
-  const app = await electron.launch({
-    args: [path.join(__dirname, '../dist-electron/main.js')],
-  })
+  const { app } = await launchApp()
 
   // Let the main window come up, then point the open-folder dialog at `folder`
   // so Ctrl+O below opens the right directory.
@@ -53,6 +52,7 @@ test('large file: open time, keypress latency and responsiveness', async () => {
     if (!page) await new Promise((r) => setTimeout(r, 500))
   }
   if (!page) throw new Error('main window not found')
+  await dismissOnboarding(page)
 
   page.on('crash', () => console.log('!! RENDERER CRASHED'))
   page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 200)))

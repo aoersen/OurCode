@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * 工具调用审批 —— 内嵌于对话面板决策区（极简纯净版 V2 落地方案）：
@@ -44,7 +45,7 @@ export default function ToolApprovalDialog() {
     >
       {/* 头部：⚠️ 警告图标 + 标题 + 工具名等宽徽标 */}
       <div className="px-4 py-3 flex items-center gap-2 border-b border-nova-border bg-nova-hover/50">
-        <span className="material-symbols-outlined text-[18px] leading-none text-warning shrink-0" aria-hidden>warning</span>
+        <MSIcon name="warning" className="text-[18px] leading-none text-warning shrink-0" />
         <span className="text-[13px] font-semibold text-nova-text-primary">{t('chat.toolApprovalTitle')}</span>
         <span className="ml-auto font-mono text-[12px] px-2 py-0.5 rounded bg-nova-accent/5 text-nova-accent border border-nova-accent/10">
           {toolCall.name}

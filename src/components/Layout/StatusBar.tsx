@@ -393,7 +393,7 @@ export default function StatusBar() {
               <span className="truncate max-w-[140px]">
                 {modelInfo?.alias || model.split('/').pop() || t('chat.selectModel')}
               </span>
-              <span className="text-[9px] opacity-50">▾</span>
+              <span className="text-[11px] opacity-50">▾</span>
             </button>
             {showModelPicker && (
               <div className="absolute bottom-full right-0 mb-1 glass-panel rounded-lg py-1 min-w-[240px] max-w-[340px] z-50 max-h-[300px] overflow-y-auto">
@@ -403,7 +403,7 @@ export default function StatusBar() {
                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: activeConfigGroup.color || '#3b82f6' }} />
                     <span className="text-[10px] font-semibold text-nova-text-secondary truncate flex-1">{activeConfigGroup.name}</span>
                     {models.length > 0 && (
-                      <span className="text-[9px] text-nova-text-muted shrink-0">
+                      <span className="text-[11px] text-nova-text-muted shrink-0">
                         {t('statusBar.modelsCount', { count: models.length })}
                       </span>
                     )}

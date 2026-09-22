@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useShallow } from 'zustand/react/shallow'
 import { useI18n } from '@/i18n/useI18n'
 import type { SubAgentProgress, TodoItem } from '@/types'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * Agent 状态迷你面板 —— 对话面板左上角悬浮的极简纯净白小面板（V5 落地）。
@@ -20,21 +21,21 @@ import type { SubAgentProgress, TodoItem } from '@/types'
 function TodoStatusIcon({ status }: { status: TodoItem['status'] }) {
   if (status === 'completed') {
     return (
-      <span className="material-symbols-outlined text-[16px] leading-none text-success shrink-0" aria-hidden>check_circle</span>
+      <MSIcon name="check_circle" className="text-[16px] leading-none text-success shrink-0" />
     )
   }
   if (status === 'failed') {
     return (
-      <span className="material-symbols-outlined text-[16px] leading-none text-error shrink-0" aria-hidden>close</span>
+      <MSIcon name="close" className="text-[16px] leading-none text-error shrink-0" />
     )
   }
   if (status === 'in_progress') {
     return (
-      <span className="material-symbols-outlined text-[16px] leading-none animate-spin-slow text-nova-accent shrink-0" aria-hidden>progress_activity</span>
+      <MSIcon name="progress_activity" className="text-[16px] leading-none animate-spin-slow text-nova-accent shrink-0" />
     )
   }
   return (
-    <span className="material-symbols-outlined text-[16px] leading-none text-nova-text-muted opacity-60 shrink-0" aria-hidden>radio_button_unchecked</span>
+    <MSIcon name="radio_button_unchecked" className="text-[16px] leading-none text-nova-text-muted opacity-60 shrink-0" />
   )
 }
 
@@ -42,21 +43,21 @@ function TodoStatusIcon({ status }: { status: TodoItem['status'] }) {
 function SubagentStatusIcon({ status }: { status: SubAgentProgress['status'] }) {
   if (status === 'running') {
     return (
-      <span className="material-symbols-outlined text-[14px] leading-none animate-spin-slow text-nova-accent shrink-0" aria-hidden>progress_activity</span>
+      <MSIcon name="progress_activity" className="text-[14px] leading-none animate-spin-slow text-nova-accent shrink-0" />
     )
   }
   if (status === 'done') {
     return (
-      <span className="material-symbols-outlined text-[14px] leading-none text-success shrink-0" aria-hidden>check_circle</span>
+      <MSIcon name="check_circle" className="text-[14px] leading-none text-success shrink-0" />
     )
   }
   if (status === 'error') {
     return (
-      <span className="material-symbols-outlined text-[14px] leading-none text-error shrink-0" aria-hidden>close</span>
+      <MSIcon name="close" className="text-[14px] leading-none text-error shrink-0" />
     )
   }
   return (
-    <span className="material-symbols-outlined text-[14px] leading-none text-nova-text-muted shrink-0" aria-hidden>stop_circle</span>
+    <MSIcon name="stop_circle" className="text-[14px] leading-none text-nova-text-muted shrink-0" />
   )
 }
 
@@ -138,21 +139,21 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
     return (
       <button
         onClick={() => setCollapsed(false)}
-        className="absolute left-6 top-4 z-10 flex items-center gap-1.5 h-8 px-2.5 rounded-full bg-nova-surface border border-nova-border shadow-sm hover:bg-nova-hover transition-colors cursor-pointer select-none"
+        className="self-start mx-6 mt-3 mb-1 shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-full bg-nova-surface border border-nova-border shadow-sm hover:bg-nova-hover transition-colors cursor-pointer select-none"
         title={t('agent.panelExpand')}
       >
-        <span className="material-symbols-outlined text-[14px] leading-none text-nova-accent shrink-0" aria-hidden>smart_toy</span>
+        <MSIcon name="smart_toy" className="text-[14px] leading-none text-nova-accent shrink-0" />
         {executing && activeTodo ? (
-          <span className="text-[11.5px] font-medium text-nova-text-primary max-w-[180px] truncate leading-snug">
+          <span className="text-[12px] font-medium text-nova-text-primary max-w-[180px] truncate leading-snug">
             {activeTodo.content}
           </span>
         ) : (
-          <span className="text-[11.5px] font-medium text-nova-text-primary shrink-0">
+          <span className="text-[12px] font-medium text-nova-text-primary shrink-0">
             {executing ? t('agent.miniPanelRunning') : t('agent.miniPanelTitle')}
           </span>
         )}
         {executing && (
-          <span className="material-symbols-outlined text-[12px] leading-none text-nova-accent animate-spin-slow shrink-0" aria-hidden>progress_activity</span>
+          <MSIcon name="progress_activity" className="text-[12px] leading-none text-nova-accent animate-spin-slow shrink-0" />
         )}
         {total > 0 && (
           <>
@@ -160,7 +161,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
             <span className="font-mono text-[11px] text-success shrink-0">{done}/{total}</span>
           </>
         )}
-        <span className="material-symbols-outlined text-[12px] leading-none text-nova-text-muted shrink-0" aria-hidden>expand_more</span>
+        <MSIcon name="expand_more" className="text-[12px] leading-none text-nova-text-muted shrink-0" />
       </button>
     )
   }
@@ -170,7 +171,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
     <div className="absolute left-6 top-4 z-10 w-[340px] bg-nova-surface border border-nova-border rounded-xl shadow-sm overflow-hidden">
       {/* 面板头一行：Agent 标题 + 绿点 + 3/4 + 收起成胶囊 */}
       <div className="flex items-center gap-1.5 px-3 py-2">
-        <span className="material-symbols-outlined text-[15px] leading-none text-nova-accent shrink-0" aria-hidden>smart_toy</span>
+        <MSIcon name="smart_toy" className="text-[15px] leading-none text-nova-accent shrink-0" />
         <span className="text-[12px] font-semibold text-nova-text-primary shrink-0">
           {executing ? t('agent.miniPanelRunning') : t('agent.miniPanelTitle')}
         </span>
@@ -182,7 +183,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
             className="w-6 h-6 flex items-center justify-center rounded-md text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors cursor-pointer"
             title={t('agent.panelCollapse')}
           >
-            <span className="material-symbols-outlined text-[14px] leading-none" aria-hidden>expand_less</span>
+            <MSIcon name="expand_less" className="text-[14px] leading-none" />
           </button>
         </span>
       </div>
@@ -199,27 +200,25 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
               className="w-5 h-5 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors cursor-pointer ml-auto"
               title={planOpen ? t('agent.planCollapse') : t('agent.planExpand')}
             >
-              <span className={`material-symbols-outlined text-[14px] leading-none transition-transform duration-200 ${planOpen ? '' : 'rotate-180'}`} aria-hidden>
-                expand_less
-              </span>
+              <MSIcon name="expand_less" className={`text-[14px] leading-none transition-transform duration-200 ${planOpen ? '' : 'rotate-180'}`} />
             </button>
           </div>
           {planOpen && (
             <div className="flex flex-col gap-1.5">
               <div className="flex items-start gap-1.5">
-                <span className="material-symbols-outlined text-[14px] leading-none text-nova-accent mt-[1px] shrink-0" aria-hidden>assignment</span>
-                <span className="text-[12.5px] font-semibold text-nova-text-primary leading-snug">{plan.title}</span>
+                <MSIcon name="assignment" className="text-[14px] leading-none text-nova-accent mt-[1px] shrink-0" />
+                <span className="text-[12px] font-semibold text-nova-text-primary leading-snug">{plan.title}</span>
               </div>
               {plan.steps.length > 0 ? (
                 <ol className="flex flex-col gap-1">
                   {plan.steps.map((step: any, i: number) => (
-                    <li key={i} className="flex items-start gap-1.5 text-[11.5px]">
-                      <span className="shrink-0 w-4 h-4 rounded-full bg-nova-accent/15 text-nova-accent text-[9px] flex items-center justify-center font-medium mt-[1px]">
+                    <li key={i} className="flex items-start gap-1.5 text-[12px]">
+                      <span className="shrink-0 w-4 h-4 rounded-full bg-nova-accent/15 text-nova-accent text-[11px] flex items-center justify-center font-medium mt-[1px]">
                         {i + 1}
                       </span>
                       <div className="min-w-0">
                         <div className="text-nova-text-primary leading-snug">{step?.summary || ''}</div>
-                        {step?.detail && <div className="text-[10.5px] text-nova-text-muted leading-snug">{step.detail}</div>}
+                        {step?.detail && <div className="text-[11px] text-nova-text-muted leading-snug">{step.detail}</div>}
                       </div>
                     </li>
                   ))}
@@ -256,7 +255,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
                 }`}
               >
                 <TodoStatusIcon status={todo.status} />
-                <span className="min-w-0 flex-1 leading-snug text-[11.5px]">{todo.content}</span>
+                <span className="min-w-0 flex-1 leading-snug text-[12px]">{todo.content}</span>
               </div>
             ))}
           </div>
@@ -284,7 +283,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
                     className="flex items-center gap-2 py-[5px] px-1 -mx-1 rounded-md hover:bg-nova-hover transition-colors cursor-pointer select-none text-left"
                   >
                     <SubagentStatusIcon status={sa.status} />
-                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-nova-text-primary">{sa.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-nova-text-primary">{sa.name}</span>
                     <span
                       className={`shrink-0 text-[10px] ${
                         sa.status === 'running'
@@ -298,12 +297,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
                     >
                       {subagentStatusLabel(sa.status, t)}
                     </span>
-                    <span
-                      className={`material-symbols-outlined text-[14px] leading-none text-nova-text-muted shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
-                      aria-hidden
-                    >
-                      chevron_right
-                    </span>
+                    <MSIcon name="chevron_right" className={`text-[14px] leading-none text-nova-text-muted shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
                   </button>
                   {/* 行级展开：思考摘要 + 工具步骤 + 统计 */}
                   {open && (
@@ -318,11 +312,11 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
                           {sa.steps.map((st) => (
                             <div key={st.id} className="flex items-center gap-1.5 min-w-0">
                               {st.status === 'running' ? (
-                                <span className="material-symbols-outlined text-[12px] leading-none text-nova-accent animate-spin-slow shrink-0" aria-hidden>progress_activity</span>
+                                <MSIcon name="progress_activity" className="text-[12px] leading-none text-nova-accent animate-spin-slow shrink-0" />
                               ) : st.status === 'error' ? (
-                                <span className="material-symbols-outlined text-[12px] leading-none text-error shrink-0" aria-hidden>close</span>
+                                <MSIcon name="close" className="text-[12px] leading-none text-error shrink-0" />
                               ) : (
-                                <span className="material-symbols-outlined text-[12px] leading-none text-success shrink-0" aria-hidden>check</span>
+                                <MSIcon name="check" className="text-[12px] leading-none text-success shrink-0" />
                               )}
                               <span className="min-w-0 truncate">{st.name}</span>
                             </div>

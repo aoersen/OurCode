@@ -1,38 +1,8 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import { dismissOnboarding, launchApp } from './helpers'
 import { mkdtemp, writeFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
-/** Dismiss the first-run onboarding modal. It mounts only AFTER the app's
- *  async boot completes (which can take several seconds), so wait until the
- *  splash is gone and no dialog shows for a moment before giving up. */
-async function dismissOnboarding(win: Page): Promise<void> {
-  let readyStreak = 0
-  for (let i = 0; i < 60; i++) {
-    const dialog = win.locator('[role="dialog"][aria-label="欢迎使用"]').first()
-    const visible = await dialog.isVisible({ timeout: 300 }).catch(() => false)
-    if (visible) {
-      readyStreak = 0
-      const skip = dialog.locator('button', { hasText: '跳过' }).first()
-      if (await skip.isVisible().catch(() => false)) {
-        await skip.click()
-        await win.waitForTimeout(400)
-        continue
-      }
-      await win.waitForTimeout(300)
-      continue
-    }
-    const splashGone = !(await win.locator('#splash-screen').isVisible().catch(() => false))
-    if (splashGone) {
-      readyStreak += 1
-      if (readyStreak >= 4) return
-    } else {
-      readyStreak = 0
-    }
-    await win.waitForTimeout(400)
-  }
-}
 
 /** Robustly find the main app window (not DevTools), dismissing the first-run
  *  onboarding modal if it shows. */
@@ -100,10 +70,7 @@ test.describe('File preview views (html / markdown / image)', () => {
 
     let app: ElectronApplication | null = null
     try {
-      app = await electron.launch({
-        args: [path.join(__dirname, '../dist-electron/main.js')],
-        env: { ...process.env, OURCODE_USER_DATA: userData },
-      })
+      app = (await launchApp({ userData })).app
       const win = await mainWindow(app)
       if (await win.locator('text=恢复未保存的更改').first().isVisible().catch(() => false)) {
         await win.mouse.click(10, 10)

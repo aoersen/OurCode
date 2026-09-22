@@ -5,6 +5,7 @@ import { formatMs, extractKey } from './ToolStepRow'
 import SubAgentProgressBlock from './SubAgentProgressBlock'
 import { buildTraceEntries } from './traceEntries'
 import type { TraceEntry } from './traceEntries'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * 轨迹视图（V4 高密度终端风）—— 全 JetBrains Mono 紧凑日志：
@@ -83,7 +84,7 @@ function TraceRow({ index, entry }: { index: number; entry: TraceEntry }) {
           {index + 1}
         </span>
         {/* U/A/T 角色色标 */}
-        <span className={`w-4 h-4 rounded text-[9px] font-semibold flex items-center justify-center shrink-0 mr-2 mt-[1px] ${MARKER_CLS[entry.kind]}`}>
+        <span className={`w-4 h-4 rounded text-[11px] font-semibold flex items-center justify-center shrink-0 mr-2 mt-[1px] ${MARKER_CLS[entry.kind]}`}>
           {MARKER_LABEL[entry.kind]}
         </span>
         {/* 状态图标 */}
@@ -101,14 +102,9 @@ function TraceRow({ index, entry }: { index: number; entry: TraceEntry }) {
           >
             <RowContent entry={entry} isError={isError} />
             {hasDetails && (
-              <span
-                className={`material-symbols-outlined text-[14px] leading-none shrink-0 transition-transform duration-200 ${
+              <MSIcon name="expand_more" className={`text-[14px] leading-none shrink-0 transition-transform duration-200 ${
                   expanded ? 'rotate-180 text-nova-accent' : 'text-nova-text-muted opacity-0 group-hover:opacity-100'
-                }`}
-                aria-hidden
-              >
-                expand_more
-              </span>
+                }`} />
             )}
           </div>
 
@@ -145,12 +141,12 @@ function StatusIcon({ entry, isError, isPending }: { entry: TraceEntry; isError:
     return <span className="text-nova-text-muted">–</span>
   }
   if (isPending) {
-    return <span className="material-symbols-outlined text-[14px] leading-none text-nova-accent animate-spin-slow" aria-hidden>sync</span>
+    return <MSIcon name="sync" className="text-[14px] leading-none text-nova-accent animate-spin-slow" />
   }
   if (isError) {
-    return <span className="material-symbols-outlined text-[14px] leading-none text-error" aria-hidden>close</span>
+    return <MSIcon name="close" className="text-[14px] leading-none text-error" />
   }
-  return <span className="material-symbols-outlined text-[14px] leading-none text-success" aria-hidden>check</span>
+  return <MSIcon name="check" className="text-[14px] leading-none text-success" />
 }
 
 /** 单行内容：工具 = 工具名 · 摘要（路径/查询/命令）· 耗时；用户/AI = 正文首行 */
@@ -191,7 +187,7 @@ function V4Details({
   return (
     <div className="relative bg-nova-bg rounded-md border border-nova-border p-2.5 overflow-hidden">
       <div className="mb-2">
-        <div className="text-[9px] font-bold text-nova-text-muted uppercase tracking-wider mb-0.5">{t('tool.params')}</div>
+        <div className="text-[11px] font-bold text-nova-text-muted uppercase tracking-wider mb-0.5">{t('tool.params')}</div>
         <pre className="text-nova-text-secondary text-[11px] leading-[1.5] whitespace-pre-wrap break-all">
           {JSON.stringify(toolCall.arguments, null, 2)}
         </pre>
@@ -200,7 +196,7 @@ function V4Details({
         <>
           <div className="h-px bg-nova-border my-1.5" />
           <div className="mb-1">
-            <div className="text-[9px] font-bold text-nova-text-muted uppercase tracking-wider mb-0.5">{t('tool.result')}</div>
+            <div className="text-[11px] font-bold text-nova-text-muted uppercase tracking-wider mb-0.5">{t('tool.result')}</div>
             <pre className={`text-[11px] leading-[1.5] whitespace-pre-wrap break-all line-clamp-6 ${result.isError ? 'text-error' : 'text-nova-text-muted'}`}>
               {result.result}
             </pre>
@@ -210,8 +206,8 @@ function V4Details({
             title={t('common.copy')}
             className="absolute top-1.5 right-1.5 flex items-center gap-1 text-nova-text-muted hover:text-nova-text-primary bg-nova-surface hover:bg-nova-surface border border-nova-border rounded p-1 opacity-0 group-hover:opacity-100 transition-opacity"
           >
-            <span className="material-symbols-outlined text-[12px] leading-none" aria-hidden>content_copy</span>
-            <span className="text-[9px]">{t('common.copy')}</span>
+            <MSIcon name="content_copy" className="text-[12px] leading-none" />
+            <span className="text-[11px]">{t('common.copy')}</span>
           </button>
         </>
       )}

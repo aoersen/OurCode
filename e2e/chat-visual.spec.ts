@@ -1,4 +1,5 @@
 import { test, expect, _electron as electron } from '@playwright/test'
+import { APP_LAUNCH_ARGS } from './helpers'
 import path from 'path'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -108,7 +109,7 @@ test('聊天区视觉截图（极简纯净版）', async () => {
   test.setTimeout(120000)
   const userData = mkdtempSync(join(tmpdir(), 'chat-visual-'))
   const app = await electron.launch({
-    args: [path.join(__dirname, '../dist-electron/main.js')],
+    args: [...APP_LAUNCH_ARGS],
     env: { ...process.env, OURCODE_USER_DATA: userData },
   })
 
@@ -172,11 +173,12 @@ test('聊天区视觉截图（极简纯净版）', async () => {
         planBg: planCard ? cs(planCard, 'background-color') : null,
         planBorder: planCard ? cs(planCard, 'border-top-color') : null,
         planRadius: planCard ? cs(planCard, 'border-radius') : null,
-        thinkingHasPsychologyIcon: Array.from(document.querySelectorAll('.material-symbols-outlined')).some((el) => el.textContent?.includes('psychology')),
+        // 图标已从连字字体改为内联 SVG（MSIcon），按 data-icon 认图标名
+        thinkingHasPsychologyIcon: !!document.querySelector('svg[data-icon="psychology"]'),
         // 思考块不应再是 minimal-panel 大框：psychology 图标所在容器应没有
         // 卡片边框（父级链上无 .minimal-panel）
         thinkingNotInPanel: (() => {
-          const icon = Array.from(document.querySelectorAll('.material-symbols-outlined')).find((el) => el.textContent?.includes('psychology'))
+          const icon = document.querySelector('svg[data-icon="psychology"]')
           return icon ? !icon.closest('.minimal-panel') : null
         })(),
         bubbleBg: bubble ? cs(bubble, 'background-color') : null,
@@ -232,13 +234,13 @@ test('聊天区视觉截图（极简纯净版）', async () => {
         ) as HTMLElement | null
         if (!btn) return null
         const cs = getComputedStyle(btn)
-        const icon = btn.querySelector('.material-symbols-outlined')
+        const icon = btn.querySelector('svg[data-icon]')
         const name = btn.querySelector('.font-mono')
         const path = Array.from(btn.querySelectorAll('span')).find((s) => s.className.includes('max-w-[100px]'))
         return {
           bg: cs.backgroundColor,
           border: cs.borderTopColor,
-          iconText: icon?.textContent ?? null,
+          iconText: icon?.getAttribute('data-icon') ?? null,
           nameSize: name ? getComputedStyle(name).fontSize : null,
           pathMaxW: path ? getComputedStyle(path).maxWidth : null,
         }

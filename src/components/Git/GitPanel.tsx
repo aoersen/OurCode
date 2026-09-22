@@ -8,6 +8,7 @@ import { fetchGitDiffSides, onGitChanged, runGitCommand as gitRun } from '@/serv
 import { parseGitStatusPorcelain, committableFiles, conflictedFiles, type GitStatusEntry } from '@/utils/gitStatus'
 import PullRequestSection from './PullRequestSection'
 import { useI18n } from '@/i18n/useI18n'
+import { askText } from '@/components/Common/PromptDialog'
 
 interface GitCommit {
   hash: string
@@ -249,7 +250,7 @@ export default function GitPanel() {
   }
 
   const handleCreateBranch = async () => {
-    const name = window.prompt(t('git.newBranchPrompt'))?.trim()
+    const name = (await askText({ title: t('git.newBranchPrompt') })) ?? ''
     if (!name) return
     if (!/^[a-zA-Z0-9._/-]+$/.test(name)) {
       showNotification(t('git.badBranchName'), 'error')
@@ -601,7 +602,7 @@ export default function GitPanel() {
             <div className="flex items-center justify-between px-3 py-1.5">
               <span className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted flex items-center gap-1.5">
                 {t('git.staged')}
-                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[9px]">{stagedChanges.length}</span>
+                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[11px]">{stagedChanges.length}</span>
               </span>
               <button
                 onClick={handleUnstageAll}
@@ -659,7 +660,7 @@ export default function GitPanel() {
             <div className="flex items-center justify-between px-3 py-1.5">
               <span className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted flex items-center gap-1.5">
                 {t('git.changes')}
-                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[9px]">{unstagedChanges.length}</span>
+                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[11px]">{unstagedChanges.length}</span>
               </span>
               <button
                 onClick={handleStageAll}
@@ -717,7 +718,7 @@ export default function GitPanel() {
             <div className="flex items-center justify-between px-3 py-1.5">
               <span className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted flex items-center gap-1.5">
                 {t('git.untracked')}
-                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[9px]">{untrackedFiles.length}</span>
+                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[11px]">{untrackedFiles.length}</span>
               </span>
             </div>
             <div className="flex flex-col gap-0.5 opacity-70 hover:opacity-100 transition-opacity">

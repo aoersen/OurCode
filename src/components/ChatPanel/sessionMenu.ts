@@ -1,6 +1,7 @@
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore, type ContextMenuItem } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+import { askText } from '@/components/Common/PromptDialog'
 
 /** A session only needs the fields the menu inspects. */
 export interface SessionMenuTarget {
@@ -34,10 +35,10 @@ export function useSessionMenu() {
     }
   }
 
-  const handleRename = (sessionId: string) => {
-    const title = prompt(t('chat.renameSessionPrompt'))
-    if (title?.trim()) {
-      renameSession(sessionId, title.trim())
+  const handleRename = async (sessionId: string) => {
+    const title = await askText({ title: t('chat.renameSessionPrompt') })
+    if (title) {
+      renameSession(sessionId, title)
     }
   }
 

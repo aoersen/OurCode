@@ -1,11 +1,14 @@
-import { test, expect, _electron as electron, type Page, type ElectronApplication } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page, type ElectronApplication } from '@playwright/test'
+import { dismissOnboarding, launchApp, seedApiConfig } from './helpers'
 
 /**
  * 「一人公司」独立窗口冒烟测试（vendored office-v3）。
  * 主窗口底部「一人公司」入口（活动栏底部、设置上方）→ 打开独立办公室窗口 →
  * 断言新窗口 #office3d-root 内出现 WebGL canvas 与 8 个悬浮标签，且过程中无
  * office/three 相关 console 报错。办公室窗口与主窗口相互独立。
+ *
+ * 必须种入 API 配置：没有活动会话时 OfficeChatPane 会用 h-full 撑满中央列，
+ * 工作台/右栏会被压成 0 高（toBeVisible 断言即失败）。
  */
 
 async function mainWindow(app: ElectronApplication): Promise<Page> {
@@ -47,14 +50,14 @@ async function openOfficeWindow(app: ElectronApplication, main: Page): Promise<P
 
   // 等办公室视图挂载（场景根节点出现）
   await expect(office!.locator('#office3d-root')).toBeVisible({ timeout: 15000 })
+  await dismissOnboarding(office!)
   return office!
 }
 
 test('office view mounts the 3D scene in its own window', async () => {
-  const app = await electron.launch({
-    args: [path.join(__dirname, '../dist-electron/main.js')],
-  })
+  const { app } = await launchApp()
   const main = await mainWindow(app)
+  await seedApiConfig(main)
   const office = await openOfficeWindow(app, main)
 
   const consoleErrors: string[] = []

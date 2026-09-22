@@ -602,12 +602,12 @@ export default function ProjectListPanel() {
                       {project.name}
                     </span>
                     {isCurrent ? (
-                      <span className="bg-nova-accent text-white text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">
+                      <span className="bg-nova-accent text-white text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">
                         当前
                       </span>
                     ) : (
                       project.lastOpened > 0 && (
-                        <span className="bg-slate-200/50 text-slate-500 dark:bg-white/10 dark:text-nova-text-muted text-[9px] font-bold px-2 py-0.5 rounded-full tracking-wider shrink-0">
+                        <span className="bg-slate-200/50 text-slate-500 dark:bg-white/10 dark:text-nova-text-muted text-[11px] font-bold px-2 py-0.5 rounded-full tracking-wider shrink-0">
                           {formatTime(project.lastOpened)}
                         </span>
                       )

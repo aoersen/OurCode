@@ -16,6 +16,8 @@ import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import type { ChatSession } from '@/types'
 import { resolveThinkingLevel } from '@/types'
+import MSIcon from '@/components/Common/icons/MSIcon'
+import Button from '@/components/Common/Button'
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -259,21 +261,21 @@ export default function ChatPanel() {
                           onClick={() => { setShowArena(true); setShowMoreMenu(false) }}
                           className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
                         >
-                          <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted" aria-hidden>compare_arrows</span>
+                          <MSIcon name="compare_arrows" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.arenaCompare')}
                         </button>
                         <button
                           onClick={() => { setShowWorkflows(true); setShowMoreMenu(false) }}
                           className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
                         >
-                          <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted" aria-hidden>sync</span>
+                          <MSIcon name="sync" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.workflows')}
                         </button>
                         <button
                           onClick={() => { openMemoryManager(); setShowMoreMenu(false) }}
                           className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
                         >
-                          <span className="material-symbols-outlined text-[15px] leading-none text-nova-text-muted" aria-hidden>memory</span>
+                          <MSIcon name="memory" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.memory')}
                         </button>
                         <div className="h-px bg-nova-border my-1" />
@@ -299,19 +301,17 @@ export default function ChatPanel() {
         <div className="flex-1 flex flex-col overflow-hidden relative">
           {activeSession ? (
             <>
+              {/* Agent 执行状态胶囊 —— 占一行自己的空间，不再浮在消息之上。
+                  （之前 absolute 浮层会盖住首条消息的文字，窄面板尤其明显。）
+                  展开后的详情卡仍是浮层：那是用户主动点开的气泡。 */}
+              {view === 'chat' && <AgentStatusMiniPanel sessionId={activeSession.id} />}
+
               {view === 'trace' ? (
                 <div className="flex-1 min-h-0">
                   <AgentTraceView />
                 </div>
               ) : (
                 <ChatMessages />
-              )}
-
-              {/* Agent status mini panel — floating top-left of the CHAT VIEW,
-                  pinned to the visible chat area (NOT the scrolling message
-                  list), so it stays put while the conversation scrolls. */}
-              {view === 'chat' && activeSession && (
-                <AgentStatusMiniPanel sessionId={activeSession.id} />
               )}
 
               {/* 内嵌决策区 —— 询问选择 / 工具审批 / 重新生成 / 回退全部等框
@@ -398,12 +398,9 @@ export default function ChatPanel() {
                 <div className="text-xs text-nova-text-muted mb-6 max-w-xs mx-auto leading-relaxed">
                   {t('chat.emptyDesc')}
                 </div>
-                <button
-                  onClick={handleNewSession}
-                  className="px-5 py-2 text-white rounded-lg text-sm hover:opacity-90 transition-opacity shadow-sm bg-nova-accent"
-                >
+                <Button onClick={handleNewSession} className="px-5 shadow-sm">
                   {t('chat.startNewChat')}
-                </button>
+                </Button>
                 {!activeConfigGroupId && (
                   <button
                     onClick={openSettings}

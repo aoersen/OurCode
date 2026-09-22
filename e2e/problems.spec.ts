@@ -1,5 +1,5 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page } from '@playwright/test'
+import { dismissOnboarding, dropUserData, launchApp } from './helpers'
 import { mkdtemp, writeFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -18,6 +18,7 @@ async function mainWindow(app: import('@playwright/test').ElectronApplication): 
     if (!page) await new Promise((r) => setTimeout(r, 500))
   }
   if (!page) throw new Error('main window not found')
+  await dismissOnboarding(page)
   return page
 }
 
@@ -27,7 +28,7 @@ test.describe('Problems Panel', () => {
     // A file with a guaranteed TS type error
     await writeFile(join(dir, 'broken.ts'), 'const x: number = "hello";\nconst ok = 1;\n', 'utf-8')
 
-    const app = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+    const { app, userData } = await launchApp()
     const win = await mainWindow(app)
     try {
       // Open the folder (stubbed dialog on the main process)
@@ -71,6 +72,7 @@ test.describe('Problems Panel', () => {
     } finally {
       await app.close()
       await rm(dir, { recursive: true, force: true }).catch(() => {})
+      dropUserData(userData)
     }
   })
 })

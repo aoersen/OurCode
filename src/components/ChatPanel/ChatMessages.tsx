@@ -8,6 +8,7 @@ import projectLogo from '@/assets/ourcode-logo.png'
 import { useI18n } from '@/i18n/useI18n'
 import { lookupModelMetadata } from '@/types'
 import type { ChatMessage as ChatMessageType } from '@/types'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /** Drag handle for history reorder. ONLY the handle is draggable — making the
  *  whole message row `draggable` in history-edit mode broke mouse text
@@ -505,7 +506,7 @@ export default function ChatMessages() {
           title={t('chat.scrollToBottom')}
           className="sticky bottom-3 self-start shrink-0 flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full bg-nova-card border border-nova-border shadow-lg text-nova-text-secondary hover:text-nova-text-primary hover:bg-nova-hover transition-colors animate-fade-in z-10"
         >
-          <span className="material-symbols-outlined text-[14px] leading-none" aria-hidden>arrow_downward</span>
+          <MSIcon name="arrow_downward" className="text-[14px] leading-none" />
           <span className="text-[11px]">{t('chat.scrollToBottom')}</span>
         </button>
       )}

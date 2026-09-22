@@ -17,7 +17,7 @@ export default function ToolCallDetails({ toolCall, result }: ToolCallDetailsPro
       <div className="px-2.5 pt-1.5 text-[10px] uppercase tracking-wider text-nova-text-muted font-semibold">
         {t('tool.params')}
       </div>
-      <pre className="px-2.5 pb-1.5 pt-0.5 text-[11.5px] font-mono text-nova-text-secondary whitespace-pre-wrap break-all leading-[1.55] max-h-32 overflow-y-auto">
+      <pre className="px-2.5 pb-1.5 pt-0.5 text-[12px] font-mono text-nova-text-secondary whitespace-pre-wrap break-all leading-[1.55] max-h-32 overflow-y-auto">
         {JSON.stringify(toolCall.arguments, null, 2)}
       </pre>
       {result && (
@@ -34,7 +34,7 @@ export default function ToolCallDetails({ toolCall, result }: ToolCallDetailsPro
               {t('common.copy')}
             </button>
           </div>
-          <pre className={`px-2.5 pb-2 pt-0.5 text-[11.5px] font-mono whitespace-pre-wrap break-all leading-[1.55] max-h-40 overflow-y-auto ${
+          <pre className={`px-2.5 pb-2 pt-0.5 text-[12px] font-mono whitespace-pre-wrap break-all leading-[1.55] max-h-40 overflow-y-auto ${
             isError ? 'text-error' : 'text-nova-text-secondary'
           }`}>
             {result.result}

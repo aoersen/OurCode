@@ -2526,6 +2526,21 @@ function registerIpcHandlers(): void {
   })
 }
 
+// OURCODE_USER_DATA lets tests / multi-instance runs point the app at a
+// throwaway data dir instead of the real userData. Redirect the FULL Chromium
+// profile too (localStorage — editor session, recent projects, UI state —
+// lives there, not in the app's own stores), so the isolation is complete.
+// Must happen before the app is ready / Chromium initializes the profile.
+//
+// It must also happen BEFORE the single-instance lock below: Electron keys that
+// lock on the userData path, so acquiring it first makes every launch — sandboxed
+// or not — contend for the REAL profile's lock. An isolated instance would then
+// quit on startup whenever any other instance was alive (a stray test process, or
+// the developer's own app), which is exactly what broke rapid e2e relaunches.
+if (process.env.OURCODE_USER_DATA) {
+  app.setPath('userData', process.env.OURCODE_USER_DATA)
+}
+
 // Only one instance may run at a time. A second launch (double-click while the
 // dev server is up, or a stray `npm run dev`) would fight for the same GPU/disk
 // cache in userData — Chromium logs "Unable to move the cache" / "Unable to
@@ -2543,15 +2558,6 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 // App lifecycle
-
-// OURCODE_USER_DATA lets tests / multi-instance runs point the app at a
-// throwaway data dir instead of the real userData. Redirect the FULL Chromium
-// profile too (localStorage — editor session, recent projects, UI state —
-// lives there, not in the app's own stores), so the isolation is complete.
-// Must happen before the app is ready / Chromium initializes the profile.
-if (process.env.OURCODE_USER_DATA) {
-  app.setPath('userData', process.env.OURCODE_USER_DATA)
-}
 
 app.whenReady().then(() => {
   // Local file preview protocol (ourcode-file://) — must be registered after

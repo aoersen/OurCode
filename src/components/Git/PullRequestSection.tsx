@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useI18n } from '@/i18n/useI18n'
+import { askText } from '@/components/Common/PromptDialog'
 import { useUIStore } from '@/stores/uiStore'
 import { useChatStore } from '@/stores/chatStore'
 import { runGitCommand } from '@/services/git'
@@ -132,7 +133,7 @@ export default function PullRequestSection({ branch, onRefresh }: PullRequestSec
 
   const handleComment = async (): Promise<void> => {
     if (!pr) return
-    const text = window.prompt(t('git.prCommentPrompt'))
+    const text = await askText({ title: t('git.prCommentPrompt'), multiline: true })
     if (!text?.trim()) return
     if (await run(t('git.prComment'), () => commentPullRequest(pr.number, text))) void load()
   }

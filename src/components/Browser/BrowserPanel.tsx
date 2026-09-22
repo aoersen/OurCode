@@ -125,7 +125,7 @@ export default function BrowserPanel() {
           <div key={i} className="px-2 py-1 rounded bg-white/50 dark:bg-white/5">
             <span className={`text-[10px] font-bold uppercase mr-1.5 ${LEVEL_STYLE[entry.level]}`}>{entry.level}</span>
             <span className="text-[11px] font-mono text-nova-text-primary whitespace-pre-wrap break-words">{entry.text}</span>
-            {entry.source && <div className="text-[9px] font-mono text-nova-text-muted truncate">{entry.source}</div>}
+            {entry.source && <div className="text-[11px] font-mono text-nova-text-muted truncate">{entry.source}</div>}
           </div>
         ))}
       </div>

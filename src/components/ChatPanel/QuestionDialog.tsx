@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 /**
  * Ask-user-question —— 内嵌于对话面板决策区（极简纯净版 V1 落地方案）：
@@ -68,7 +69,7 @@ export default function QuestionDialog() {
     >
       {/* 头部：❓ + 标题 + 可多选徽标 */}
       <div className="px-4 py-3 flex items-center gap-2 border-b border-nova-border bg-nova-hover/50">
-        <span className="material-symbols-outlined text-[18px] leading-none text-nova-accent shrink-0" aria-hidden>help</span>
+        <MSIcon name="help" className="text-[18px] leading-none text-nova-accent shrink-0" />
         <span className="text-[13px] font-semibold text-nova-text-primary">{t('chat.askUserTitle')}</span>
         {multiSelect && options.length > 0 && (
           <span className="ml-auto text-[11px] px-2 py-0.5 rounded bg-nova-accent/5 text-nova-accent border border-nova-accent/10">

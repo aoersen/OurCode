@@ -1,28 +1,63 @@
-/* Import fonts — Plus Jakarta Sans (UI) + JetBrains Mono (code) */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* 本地打包字体 —— 局域网/离线部署取不到 Google Fonts，UI 与等宽字体必须随产物分发。
+   可变字重 + 仅 latin / latin-ext 子集（中文按 font-family 顺序落到系统字体）。
+   图标不再依赖连字字体，见 src/components/Common/icons/MSIcon.tsx。 */
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('../assets/fonts/plus-jakarta-sans-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* Material Symbols Outlined — 工具调用等处的图标字体（Stitch 全工具版设计）。
-   类名与 Google 字体 CSS 一致；本地兜底定义保证在离线/字体加载失败时
-   退化为字面文本而不破坏布局。 */
-.material-symbols-outlined {
-  font-family: 'Material Symbols Outlined';
-  font-weight: normal;
-  font-style: normal;
-  line-height: 1;
-  letter-spacing: normal;
-  text-transform: none;
-  display: inline-block;
-  white-space: nowrap;
-  word-wrap: normal;
-  direction: ltr;
-  -webkit-font-feature-settings: 'liga';
-  -webkit-font-smoothing: antialiased;
-  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-}
 
 /* Root — Light Glassmorphism design tokens (GPT-platform style).
    Default is LIGHT; `.dark` (below) overrides with the dark glass variant. */
@@ -163,6 +198,14 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text-primary);
+}
+
+/* 键盘可达性 —— 全站有 60+ 处 `outline-none` 把浏览器默认焦点环抹掉了，而组件里
+   没有任何 focus-visible 样式，Tab 键走一遍完全看不见焦点在哪。这里统一补一条
+   只在键盘聚焦时出现的 accent 环（鼠标点击不触发 :focus-visible，不会到处画框）。 */
+:focus-visible {
+  outline: 2px solid var(--accent, #0058bc);
+  outline-offset: 2px;
 }
 
 /* Glass canvas — two/three soft "fruity" gradient orbs behind the floating
@@ -351,8 +394,38 @@ textarea[data-ai-input] {
 
 .markdown-body ul,
 .markdown-body ol {
-  margin-left: 20px;
+  /* Tailwind preflight 把 list-style 重置成 none，只留 margin 的话，AI 回答里的
+     列表会退化成"缩进的裸文本"——看不出这是一组条目。 */
+  list-style: disc outside;
+  margin-left: 4px;
+  padding-left: 1.5em;
   margin-bottom: 8px;
+}
+
+.markdown-body ol {
+  list-style: decimal outside;
+}
+
+.markdown-body ul ul {
+  list-style: circle outside;
+}
+
+.markdown-body ol ol {
+  list-style: lower-alpha outside;
+}
+
+.markdown-body li {
+  margin-bottom: 2px;
+  padding-left: 2px;
+}
+
+.markdown-body li::marker {
+  color: var(--text-muted);
+}
+
+/* 任务清单 `- [ ]` 由 marked 渲染成 checkbox，不需要圆点 */
+.markdown-body li:has(> input[type="checkbox"]) {
+  list-style: none;
 }
 
 .markdown-body blockquote {
@@ -646,10 +719,6 @@ textarea[data-ai-input] {
   transition: color 0.15s, background 0.15s;
 }
 
-.copy-btn .material-symbols-outlined {
-  font-size: 14px;
-}
-
 .copy-btn:hover {
   background: rgba(15, 23, 42, 0.06);
   color: var(--text-primary);
@@ -678,6 +747,10 @@ textarea[data-ai-input] {
 .code-block .hljs {
   background: transparent;
   color: #24292f; /* github-light base text */
+  /* highlight.js 主题自带 `padding: 1em` + display:block，叠在 .code-block pre 的
+     14px 上，会让 5 行代码撑出两倍高的空白。内边距只由 pre 负责。 */
+  padding: 0;
+  overflow-x: visible;
 }
 
 :root.dark .code-block .hljs {

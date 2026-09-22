@@ -657,6 +657,9 @@ export default function ChatInput({
     }
   }
 
+  // 有内容可发（文本 / 附件 / 上下文文件）—— 运行中决定是否同时显示「发送」
+  const hasDraft = !!input.trim() || images.length > 0 || contextFiles.length > 0
+
   return (
     <div className="border-t border-nova-border p-3">
       {/* 附加文件 —— 输入框上方一行紧凑标签（仅用户主动附加的文件，随消息发送） */}
@@ -893,17 +896,18 @@ export default function ChatInput({
                   <line x1="8" y1="23" x2="16" y2="23" />
                 </svg>
               </button>
-              {/* While the agent works the button is "结束" — typing turns it
-                  into "发送" so Enter/click queues the message (type-ahead);
-                  sending or clearing the input flips it back to "结束". */}
-              {isThisSessionLoading && !input.trim() && images.length === 0 ? (
+              {/* 运行中「结束」常驻：之前一打字它就变成「发送」，等于把中止能力
+                  藏起来了（想停手必须先清空输入框）。现在两者并存 —— 有草稿时
+                  「发送」同时出现，Enter/点击走排队。 */}
+              {isThisSessionLoading && (
                 <button
                   onClick={() => activeSessionId && stopGeneration(activeSessionId)}
                   className="px-3.5 py-1.5 text-xs text-white font-medium rounded-md transition-colors bg-error hover:opacity-90"
                 >
                   {runningLabelOverride || t('chat.stop')}
                 </button>
-              ) : (
+              )}
+              {(!isThisSessionLoading || hasDraft) && (
                 <button
                   onClick={handleSubmit}
                   disabled={(!input.trim() && contextFiles.length === 0 && images.length === 0) || !activeConfigGroupId}

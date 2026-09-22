@@ -17,6 +17,7 @@ import FileChip from './FileChip'
 import { splitFileLinks } from '@/utils/fileRefs'
 import { imageAttachmentDataUrl } from '@/utils/imageAttach'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 interface ChatMessageProps {
   message: ChatMessageType
@@ -549,7 +550,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
             )}
             {run?.status === 'error' && (
               <span className="flex items-center gap-1 text-error">
-                <span className="material-symbols-outlined text-[13px] leading-none" aria-hidden>error</span>
+                <MSIcon name="error" className="text-[13px] leading-none" />
                 {t('agent.runStatus.error')}
               </span>
             )}

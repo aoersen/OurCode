@@ -594,7 +594,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                     />
                     <div className="flex-1 min-w-0 pb-0.5">
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="truncate text-[12.5px]" style={{ color: titleColor, fontWeight: e.kind === 'start' ? 500 : 400 }}>
+                        <span className="truncate text-[12px]" style={{ color: titleColor, fontWeight: e.kind === 'start' ? 500 : 400 }}>
                           {e.title}
                         </span>
                         {e.meta && (
@@ -638,7 +638,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                   </span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-[12.5px] font-medium" style={{ color: '#0058bc' }}>
+                      <span className="text-[12px] font-medium" style={{ color: '#0058bc' }}>
                         {t('office.workInProgress')}
                       </span>
                       <span
@@ -680,10 +680,10 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
         >
           <div className="flex items-center gap-2.5 min-w-0">
             <span style={{ color: '#0058bc', fontSize: 14 }}>◉</span>
-            <span className="shrink-0 text-[12.5px] font-bold" style={{ color: '#0d1c2d' }}>
+            <span className="shrink-0 text-[12px] font-bold" style={{ color: '#0d1c2d' }}>
               {t('office.latestStatus')}:
             </span>
-            <span className="truncate text-[12.5px]" style={{ color: '#424753' }}>
+            <span className="truncate text-[12px]" style={{ color: '#424753' }}>
               {latestLog ? latestLog.text : t('office.noLog')}
             </span>
           </div>
@@ -714,7 +714,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
           }}
         >
           <div className="sticky top-0 flex items-center justify-between px-3.5 py-2.5 border-b" style={{ borderColor: HAIRLINE, background: '#FAFAFC' }}>
-            <span className="text-[12.5px] font-bold" style={{ color: '#0d1c2d' }}>{selectionName(hoveredGroup)} · 工作内容</span>
+            <span className="text-[12px] font-bold" style={{ color: '#0d1c2d' }}>{selectionName(hoveredGroup)} · 工作内容</span>
             <span
               className="rounded-full"
               style={{
@@ -780,7 +780,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                           {p.status === 'running' ? 'RUNNING' : p.status === 'done' ? 'DONE' : 'FAILED'}
                         </span>
                       </div>
-                      <div className="mt-0.5 text-[11.5px] leading-relaxed break-words" style={{ color: '#424753' }}>
+                      <div className="mt-0.5 text-[12px] leading-relaxed break-words" style={{ color: '#424753' }}>
                         {summarizeTask(p.task, 240)}
                       </div>
                       {p.steps.length > 0 && (
@@ -803,7 +803,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                         </div>
                       )}
                       {p.error && (
-                        <div className="mt-1 text-[10.5px] leading-relaxed break-words" style={{ color: '#dc2626' }}>{p.error}</div>
+                        <div className="mt-1 text-[11px] leading-relaxed break-words" style={{ color: '#dc2626' }}>{p.error}</div>
                       )}
                     </div>
                   </div>

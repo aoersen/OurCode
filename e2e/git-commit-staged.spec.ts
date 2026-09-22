@@ -1,4 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import { APP_LAUNCH_ARGS } from './helpers'
 import { execFileSync } from 'child_process'
 import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -45,7 +46,7 @@ async function seedRepo(): Promise<string> {
 async function launchSandbox(): Promise<{ app: ElectronApplication; win: Page; userData: string }> {
   const userData = await mkdtemp(join(tmpdir(), 'ourcode-git-user-'))
   const app = await electron.launch({
-    args: [join(__dirname, '../dist-electron/main.js')],
+    args: [...APP_LAUNCH_ARGS],
     env: { ...process.env, OURCODE_USER_DATA: userData },
   })
   let win: Page | null = null

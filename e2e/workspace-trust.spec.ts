@@ -1,4 +1,5 @@
 import { test, expect, _electron as electron, type Page, type ElectronApplication } from '@playwright/test'
+import { APP_LAUNCH_ARGS } from './helpers'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -15,7 +16,7 @@ import os from 'os'
 
 async function launchApp(userData: string): Promise<{ app: ElectronApplication; win: Page }> {
   const app = await electron.launch({
-    args: [path.join(__dirname, '../dist-electron/main.js')],
+    args: [...APP_LAUNCH_ARGS],
     env: { ...process.env, OURCODE_USER_DATA: userData },
   })
   let win: Page | null = null

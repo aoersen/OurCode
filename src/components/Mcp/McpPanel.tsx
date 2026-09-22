@@ -319,13 +319,13 @@ export default function McpPanel() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
+                      <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
                       <span className="text-[11px] font-medium text-nova-text-primary truncate">{item.name || item.uri}</span>
                     </div>
-                    <span className="text-[9px] text-nova-accent shrink-0">{t('mcpCenter.resourceRead')}</span>
+                    <span className="text-[11px] text-nova-accent shrink-0">{t('mcpCenter.resourceRead')}</span>
                   </div>
                   {item.description && <p className="text-[10px] text-nova-text-muted mt-1 truncate">{item.description}</p>}
-                  <p className="text-[9px] text-nova-text-muted/60 mt-0.5 font-mono truncate">{item.uri}</p>
+                  <p className="text-[11px] text-nova-text-muted/60 mt-0.5 font-mono truncate">{item.uri}</p>
                 </button>
               ))
             )}
@@ -345,14 +345,14 @@ export default function McpPanel() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
+                      <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{item.server}</span>
                       <span className="text-[11px] font-medium text-nova-text-primary truncate font-mono">{item.name}</span>
                     </div>
-                    <span className="text-[9px] text-nova-accent shrink-0">{t('mcpCenter.promptGet')}</span>
+                    <span className="text-[11px] text-nova-accent shrink-0">{t('mcpCenter.promptGet')}</span>
                   </div>
                   {item.description && <p className="text-[10px] text-nova-text-muted mt-1">{item.description}</p>}
                   {item.arguments && item.arguments.length > 0 && (
-                    <p className="text-[9px] text-nova-text-muted/60 mt-0.5">
+                    <p className="text-[11px] text-nova-text-muted/60 mt-0.5">
                       {item.arguments.map((a) => (a.required ? `[${a.name}]` : `(${a.name})`)).join(' ')}
                     </p>
                   )}
@@ -431,11 +431,11 @@ function ServersTab({
             <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0 flex items-center gap-1.5">
                 <span className="text-[11px] font-semibold text-nova-text-primary font-mono truncate">{name}</span>
-                <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0">
+                <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0">
                   {isHttp ? t('mcpCenter.serverTypeHttp') : t('mcpCenter.serverTypeStdio')}
                 </span>
               </div>
-              <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium shrink-0 ${STATE_BADGES[state]}`}>
+              <span className={`text-[11px] px-1.5 py-0.5 rounded-full border font-medium shrink-0 ${STATE_BADGES[state]}`}>
                 {stateLabel(state)}
                 {state === 'restarting' && status?.retry ? ` (${status.retry})` : ''}
               </span>
@@ -452,13 +452,13 @@ function ServersTab({
             {(state === 'failed' || state === 'restarting') && status?.error && (
               <p className="text-[10px] text-red-400 truncate">{status.error}</p>
             )}
-            <div className="text-[9px] text-nova-text-muted font-mono truncate">
+            <div className="text-[11px] text-nova-text-muted font-mono truncate">
               {isHttp ? (entry.serverUrl || entry.url) : `${entry.command || ''} ${(entry.args || []).join(' ')}`.trim()}
             </div>
             {entry.disabledTools && entry.disabledTools.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {entry.disabledTools.map((tool) => (
-                  <span key={tool} className="text-[9px] px-1 py-0.5 rounded border border-gray-500/20 bg-gray-500/10 text-gray-400 line-through">
+                  <span key={tool} className="text-[11px] px-1 py-0.5 rounded border border-gray-500/20 bg-gray-500/10 text-gray-400 line-through">
                     {tool}
                   </span>
                 ))}
@@ -510,14 +510,14 @@ function ToolCard({ tool }: { tool: ToolDefinition }) {
       <div className="flex items-center gap-2 p-2.5 cursor-pointer" onClick={() => setExpanded(!expanded)}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[9px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{server || '?'}</span>
+            <span className="text-[11px] px-1 py-0.5 rounded bg-nova-hover text-nova-text-muted shrink-0 font-mono">{server || '?'}</span>
             <span className="text-[11px] font-semibold text-nova-text-primary font-mono truncate">{toolName}</span>
           </div>
-          <p className="text-[9px] text-nova-text-muted mt-0.5 truncate">{tool.function.description || t('plugin.noDescription')}</p>
+          <p className="text-[11px] text-nova-text-muted mt-0.5 truncate">{tool.function.description || t('plugin.noDescription')}</p>
         </div>
         <button
           onClick={(e) => { e.stopPropagation(); void copyName() }}
-          className="px-1.5 py-1 text-[9px] text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover rounded-md shrink-0 transition-colors"
+          className="px-1.5 py-1 text-[11px] text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover rounded-md shrink-0 transition-colors"
           title={tool.function.name}
         >
           {copied ? t('mcpCenter.copied') : t('mcpCenter.copyName')}
@@ -530,7 +530,7 @@ function ToolCard({ tool }: { tool: ToolDefinition }) {
         <div className="px-3 pb-3 border-t border-nova-border pt-2">
           <div className="flex items-center justify-between mb-1">
             <h4 className="text-[10px] font-medium text-nova-text-muted">Input Schema</h4>
-            <span className="text-[9px] text-nova-text-muted font-mono truncate ml-2">{tool.function.name}</span>
+            <span className="text-[11px] text-nova-text-muted font-mono truncate ml-2">{tool.function.name}</span>
           </div>
           <pre className="text-[10px] text-nova-text-secondary bg-nova-bg border border-nova-border rounded-lg p-2 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
             {JSON.stringify(tool.function.parameters || {}, null, 2)}

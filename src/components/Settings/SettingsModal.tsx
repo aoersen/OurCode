@@ -10,6 +10,8 @@ import {
   EndpointFormat,
 } from '@/services/llm/endpoints'
 import McpConfigSection from './McpConfigSection'
+import Button from '@/components/Common/Button'
+import { askText } from '@/components/Common/PromptDialog'
 import PluginSection from '../Plugin/PluginSection'
 
 // Accent color presets
@@ -238,7 +240,7 @@ export default function SettingsModal() {
       const file = (e.target as HTMLInputElement).files?.[0]
       if (!file) return
       const text = await file.text()
-      const password = prompt('输入导入密码（无密码请留空）')
+      const password = await askText({ title: '输入导入密码（无密码请留空）', allowEmpty: true })
       await importConfigGroups(text, password || undefined)
       loadConfigGroups()
     }
@@ -247,7 +249,7 @@ export default function SettingsModal() {
 
   const handleExport = async () => {
     const { exportConfigGroups } = useConfigStore.getState()
-    const password = prompt('设置导出密码（无密码请留空）')
+    const password = await askText({ title: '设置导出密码（无密码请留空）', allowEmpty: true })
     const data = await exportConfigGroups(password || undefined)
     const blob = new Blob([data], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -354,7 +356,7 @@ export default function SettingsModal() {
                             <span className="block text-[10px] text-nova-text-muted truncate leading-tight font-mono">{group.baseUrl}</span>
                           </span>
                           {active && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-nova-accent/15 text-nova-accent shrink-0">使用中</span>
+                            <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-nova-accent/15 text-nova-accent shrink-0">使用中</span>
                           )}
                         </button>
                       )
@@ -475,9 +477,9 @@ export default function SettingsModal() {
                         >
                           <span className="flex items-center gap-1 text-[11px] font-medium text-nova-text-primary leading-tight">
                             跟随提供商默认
-                            <span className="text-[9px] px-1 py-0.5 rounded-full bg-nova-accent/15 text-nova-accent shrink-0">推荐</span>
+                            <span className="text-[11px] px-1 py-0.5 rounded-full bg-nova-accent/15 text-nova-accent shrink-0">推荐</span>
                           </span>
-                          <span className="text-[9px] text-nova-text-muted leading-tight">
+                          <span className="text-[11px] text-nova-text-muted leading-tight">
                             {FORMAT_META[nativeFormat].label} · {FORMAT_META[nativeFormat].desc}
                           </span>
                         </button>
@@ -495,9 +497,9 @@ export default function SettingsModal() {
                             >
                               <span className="flex items-center gap-1 text-[11px] font-medium text-nova-text-primary leading-tight">
                                 {FORMAT_META[f].label}
-                                {isNative && <span className="text-[9px] px-1 py-0.5 rounded-full bg-green-500/15 text-green-400 shrink-0">推荐</span>}
+                                {isNative && <span className="text-[11px] px-1 py-0.5 rounded-full bg-green-500/15 text-green-400 shrink-0">推荐</span>}
                               </span>
-                              <span className="text-[9px] text-nova-text-muted leading-tight">{FORMAT_META[f].desc}</span>
+                              <span className="text-[11px] text-nova-text-muted leading-tight">{FORMAT_META[f].desc}</span>
                             </button>
                           )
                         })}
@@ -521,7 +523,7 @@ export default function SettingsModal() {
                             {showEditKey ? '🙈' : '👁'}
                           </button>
                         </div>
-                        <span className="text-[9px] text-nova-text-muted">支持环境变量 <code className="px-0.5 bg-nova-hover rounded text-[9px]">$ENV_KEY</code></span>
+                        <span className="text-[11px] text-nova-text-muted">支持环境变量 <code className="px-0.5 bg-nova-hover rounded text-[11px]">$ENV_KEY</code></span>
                       </div>
                       <div className="flex flex-col gap-1">
                         <label className="text-[11px] font-medium text-nova-text-secondary">标识颜色</label>
@@ -609,11 +611,11 @@ export default function SettingsModal() {
                         <svg className="w-3 h-3 shrink-0 transition-transform group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6" /></svg>
                         自定义请求头
                         {parsedHeaderCount > 0 && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nova-hover text-nova-text-muted">{parsedHeaderCount} 条</span>
+                          <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-hover text-nova-text-muted">{parsedHeaderCount} 条</span>
                         )}
                       </summary>
                       <div className="flex flex-col gap-1 px-2.5 pb-2.5 pt-1">
-                        <span className="text-[9px] text-nova-text-muted">每行一条，格式：Header: Value</span>
+                        <span className="text-[11px] text-nova-text-muted">每行一条，格式：Header: Value</span>
                         <textarea value={headersText}
                           onChange={(e) => setHeadersText(e.target.value)}
                           onBlur={() => {
@@ -647,12 +649,9 @@ export default function SettingsModal() {
 
                     {/* Actions */}
                     <div className="flex justify-end gap-2 pt-2 border-t border-nova-border">
-                      <button onClick={() => { setEditingGroup(null); setIsCreating(false); resetEditorState() }}
-                        className="px-3.5 py-1.5 text-[13px] bg-nova-hover text-nova-text-secondary rounded-lg hover:text-nova-text-primary transition-colors">取消</button>
-                      <button onClick={handleTest} disabled={testing}
-                        className="px-3.5 py-1.5 text-[13px] bg-nova-hover text-nova-text-secondary rounded-lg hover:text-nova-text-primary transition-colors disabled:opacity-50">🧪 测试连接</button>
-                      <button onClick={handleSaveGroup}
-                        className="px-3.5 py-1.5 text-[13px] bg-nova-accent text-white rounded-lg hover:opacity-90 transition-opacity">💾 保存配置</button>
+                      <Button variant="secondary" size="sm" onClick={() => { setEditingGroup(null); setIsCreating(false); resetEditorState() }}>取消</Button>
+                      <Button variant="secondary" size="sm" onClick={handleTest} disabled={testing}>测试连接</Button>
+                      <Button size="sm" onClick={handleSaveGroup}>保存配置</Button>
                     </div>
                   </div>
                 ) : (
@@ -942,7 +941,7 @@ export default function SettingsModal() {
                         <span className="text-xs text-nova-text-secondary">{s.description}</span>
                         <kbd
                           className={`px-2 py-0.5 bg-nova-input-bg border border-nova-border rounded text-[10px] font-mono ${shortcutStore.preset === 'custom' ? 'text-nova-accent cursor-pointer' : 'text-nova-text-muted'}`}
-                          onClick={() => { if (shortcutStore.preset !== 'custom') return; const k = prompt('输入新快捷键', s.keys); if (k?.trim()) shortcutStore.updateShortcut(s.id, k.trim()) }}
+                          onClick={async () => { if (shortcutStore.preset !== 'custom') return; const k = await askText({ title: '输入新快捷键', defaultValue: s.keys }); if (k) shortcutStore.updateShortcut(s.id, k) }}
                         >
                           {s.keys}
                         </kbd>
@@ -1093,7 +1092,7 @@ function TestResultPanel({ steps, success }: { steps: ConnectionStep[]; success?
             {step.ms !== undefined && <span className="text-nova-text-muted shrink-0 font-mono">{step.ms}ms</span>}
           </div>
           {step.url && (
-            <div className="text-[9px] font-mono text-nova-text-muted break-all pl-4">{step.url}</div>
+            <div className="text-[11px] font-mono text-nova-text-muted break-all pl-4">{step.url}</div>
           )}
         </div>
       ))}

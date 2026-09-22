@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n/useI18n'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 interface ThinkingSectionProps {
   /** 该轮次的思考文本（流式或已提交） */
@@ -58,9 +59,7 @@ export default function ThinkingSection({ thinking, defaultExpanded = false, str
         className="w-full flex items-center justify-between gap-2 px-1.5 py-1 text-left cursor-pointer select-none group rounded-md hover:bg-nova-hover/60 transition-colors"
       >
         <span className="flex items-center gap-1.5 min-w-0 text-nova-text-muted">
-          <span className="material-symbols-outlined text-[15px] leading-none shrink-0" aria-hidden>
-            psychology
-          </span>
+          <MSIcon name="psychology" className="text-[15px] leading-none shrink-0" />
           <span className="text-[11px] uppercase tracking-[0.05em] font-semibold shrink-0">{t('chat.thinkingTitle')}</span>
           {streaming && !isExpanded && (
             <span className="inline-flex gap-0.5 shrink-0" aria-hidden>
@@ -70,17 +69,12 @@ export default function ThinkingSection({ thinking, defaultExpanded = false, str
             </span>
           )}
         </span>
-        <span
-          className={`material-symbols-outlined text-[15px] leading-none text-nova-text-muted shrink-0 transition-transform duration-300 group-hover:text-nova-text-secondary ${isExpanded ? 'rotate-180' : ''}`}
-          aria-hidden
-        >
-          expand_more
-        </span>
+        <MSIcon name="expand_more" className={`text-[15px] leading-none text-nova-text-muted shrink-0 transition-transform duration-300 group-hover:text-nova-text-secondary ${isExpanded ? 'rotate-180' : ''}`} />
       </button>
 
       {isExpanded && (
         <div>
-          <div className="px-1.5 text-[12.5px] leading-[1.65] text-nova-text-muted whitespace-pre-wrap">
+          <div className="px-1.5 text-[12px] leading-[1.65] text-nova-text-muted whitespace-pre-wrap">
             {thinking}
           </div>
           {/* 底部 hairline + 收起按钮 */}
@@ -90,7 +84,7 @@ export default function ThinkingSection({ thinking, defaultExpanded = false, str
               onClick={collapse}
               className="mt-1.5 flex items-center gap-1 px-2.5 py-1 text-[11px] text-nova-text-muted hover:text-nova-text-secondary hover:bg-nova-hover rounded-md transition-colors select-none"
             >
-              <span className="material-symbols-outlined text-[13px] leading-none" aria-hidden>expand_less</span>
+              <MSIcon name="expand_less" className="text-[13px] leading-none" />
               {t('chat.collapseProcess')}
             </button>
           </div>

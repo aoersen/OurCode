@@ -124,7 +124,7 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                         {filteredModels.slice(0, 20).map((m) => (
                           <button key={m.id} onClick={() => toggleModel(m.id)}
                             className="w-full text-left px-2.5 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-hover rounded transition-colors flex items-center gap-2">
-                            <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold shrink-0"
+                            <div className="w-5 h-5 rounded flex items-center justify-center text-[11px] font-bold shrink-0"
                               style={{ background: `${PROVIDER_COLORS[getProviderFromModelId(m.id)] || '#2563eb'}20`, color: PROVIDER_COLORS[getProviderFromModelId(m.id)] || '#2563eb' }}>
                               {getProviderFromModelId(m.id).charAt(0).toUpperCase()}
                             </div>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import MainLayout from './components/Layout/MainLayout'
 import ErrorBoundary from './components/Common/ErrorBoundary'
 import SessionEventNotifier from './components/Common/SessionEventNotifier'
+import PromptDialogHost from './components/Common/PromptDialog'
 import OnboardingModal from './components/Onboarding/OnboardingModal'
 import RestoreBackupsModal from './components/Editor/RestoreBackupsModal'
 import type { BackupEntry } from '@shared/types'
@@ -128,6 +129,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <SessionEventNotifier />
+      <PromptDialogHost />
       <MainLayout />
       {ready && showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
       {ready && pendingBackups.length > 0 && (

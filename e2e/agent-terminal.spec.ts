@@ -1,4 +1,5 @@
 import { test, expect, _electron as electron, type Page } from '@playwright/test'
+import { APP_LAUNCH_ARGS } from './helpers'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -37,7 +38,7 @@ const SECRET_PROBE =
 
 async function launchSandbox(dir: string): Promise<{ app: Awaited<ReturnType<typeof electron.launch>>; win: Page }> {
   const app = await electron.launch({
-    args: [join(__dirname, '../dist-electron/main.js')],
+    args: [...APP_LAUNCH_ARGS],
     env: {
       ...process.env,
       OURCODE_USER_DATA: dir,

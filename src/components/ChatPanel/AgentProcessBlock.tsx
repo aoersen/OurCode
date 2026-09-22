@@ -3,6 +3,7 @@ import type { ChatMessage as ChatMessageType } from '@/types'
 import { useChatStore } from '@/stores/chatStore'
 import { useI18n } from '@/i18n/useI18n'
 import ToolStepRow from './ToolStepRow'
+import MSIcon from '@/components/Common/icons/MSIcon'
 
 interface AgentProcessBlockProps {
   /** 同一气泡（turn）内全部 assistant 消息，按真实轮次顺序排列 */
@@ -77,19 +78,12 @@ export default function AgentProcessBlock({ messages, sessionId, defaultExpanded
         className="w-full flex items-center justify-between gap-2 px-1.5 py-1 text-left cursor-pointer select-none group rounded-md hover:bg-nova-hover/60 transition-colors"
       >
         <span className="flex items-center gap-1.5 min-w-0 text-nova-text-muted">
-          <span className="material-symbols-outlined text-[15px] leading-none shrink-0" aria-hidden>
-            psychology
-          </span>
+          <MSIcon name="psychology" className="text-[15px] leading-none shrink-0" />
           <span className="text-[11px] uppercase tracking-[0.05em] font-semibold shrink-0">
             {hasToolCalls ? t('chat.thinkingProcess') : t('chat.thinkingTitle')}
           </span>
         </span>
-        <span
-          className={`material-symbols-outlined text-[15px] leading-none text-nova-text-muted shrink-0 transition-transform duration-300 group-hover:text-nova-text-secondary ${isExpanded ? 'rotate-180' : ''}`}
-          aria-hidden
-        >
-          expand_more
-        </span>
+        <MSIcon name="expand_more" className={`text-[15px] leading-none text-nova-text-muted shrink-0 transition-transform duration-300 group-hover:text-nova-text-secondary ${isExpanded ? 'rotate-180' : ''}`} />
       </button>
 
       {isExpanded && (
@@ -99,12 +93,12 @@ export default function AgentProcessBlock({ messages, sessionId, defaultExpanded
               {ri > 0 && <div className="my-2 h-px bg-nova-border/40" aria-hidden />}
               <div className="flex flex-col gap-1.5">
                 {round.thinking && (
-                  <div className="text-[12.5px] leading-[1.65] text-nova-text-muted whitespace-pre-wrap">
+                  <div className="text-[12px] leading-[1.65] text-nova-text-muted whitespace-pre-wrap">
                     {round.thinking}
                   </div>
                 )}
                 {round.midContent && (
-                  <div className="text-[12.5px] leading-[1.65] text-nova-text-secondary whitespace-pre-wrap">
+                  <div className="text-[12px] leading-[1.65] text-nova-text-secondary whitespace-pre-wrap">
                     {round.midContent}
                   </div>
                 )}
@@ -137,7 +131,7 @@ export default function AgentProcessBlock({ messages, sessionId, defaultExpanded
               onClick={collapse}
               className="mt-1.5 flex items-center gap-1 px-2.5 py-1 text-[11px] text-nova-text-muted hover:text-nova-text-secondary hover:bg-nova-hover rounded-md transition-colors select-none"
             >
-              <span className="material-symbols-outlined text-[13px] leading-none" aria-hidden>expand_less</span>
+              <MSIcon name="expand_less" className="text-[13px] leading-none" />
               {t('chat.collapseProcess')}
             </button>
           </div>

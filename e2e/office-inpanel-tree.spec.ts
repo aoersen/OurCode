@@ -1,5 +1,5 @@
-import { test, expect, _electron as electron, type Page, type ElectronApplication } from '@playwright/test'
-import path from 'path'
+import { test, expect, type Page, type ElectronApplication } from '@playwright/test'
+import { dismissOnboarding, dropUserData, launchApp, seedApiConfig } from './helpers'
 import { mkdtemp, writeFile, mkdir } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -36,13 +36,16 @@ test('office: double-click project opens file tree IN the office panel', async (
   await writeFile(join(dir, 'src', 'main.ts'), 'export const x = 1\n', 'utf-8')
   await writeFile(join(dir, 'README.md'), '# hi\n', 'utf-8')
 
-  const app = await electron.launch({ args: [path.join(__dirname, '../dist-electron/main.js')] })
+  const { app, userData } = await launchApp()
   const main = await mainWindow(app)
+  // 种入配置 → 办公室窗口据此自建会话；没有会话时中央列会被 OfficeChatPane 压成 0 高。
+  await seedApiConfig(main)
   const officeBtn = main.locator('button[aria-label*="一人公司"], button[aria-label*="One-Person"], button[aria-label*="办公室"], button[aria-label*="Office"]').first()
   await expect(officeBtn).toBeVisible({ timeout: 15000 })
   await officeBtn.click()
   const office = await officeWindow(app, main)
   await expect(office.locator('#office3d-root')).toBeVisible({ timeout: 30000 })
+  await dismissOnboarding(office)
 
   // 打开项目（mock 对话框）→ 树应在办公室左侧栏内就地打开，办公室视图不退出
   await app.evaluate(({ dialog }, folder) => {
@@ -90,26 +93,8 @@ test('office: double-click project opens file tree IN the office panel', async (
     console.log('AFTER FILE CLICK → office overlay gone:', !officeGone)
   }
 
-  // 清理：本测试用默认 userData，把临时项目从最近列表里移除，避免污染真实数据
-  try {
-    await office.evaluate(() => {
-      for (const k of ['recentProjects_office', 'recentProjectTimes_office']) {
-        try {
-          const raw = localStorage.getItem(k)
-          if (!raw) continue
-          const v = JSON.parse(raw)
-          if (Array.isArray(v)) {
-            const nv = v.filter((x) => typeof x !== 'string' || !/officetree-/.test(x))
-            if (nv.length !== v.length) localStorage.setItem(k, JSON.stringify(nv))
-          } else if (v && typeof v === 'object') {
-            let changed = false
-            for (const key of Object.keys(v)) if (/officetree-/.test(key)) { delete v[key]; changed = true }
-            if (changed) localStorage.setItem(k, JSON.stringify(v))
-          }
-        } catch { /* ignore */ }
-      }
-    })
-  } catch { /* window may be closed */ }
-
   await app.close()
+  // 之前这里手写了一段「把临时项目从最近列表剔除」的清理逻辑，注释说明是因为本测试
+  // 用的是默认 userData。现在整个 spec 跑在一次性 profile 上，那段清理已无必要。
+  dropUserData(userData)
 })
