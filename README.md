@@ -1,83 +1,70 @@
 # OurCode IDE
 
-> An AI-powered code editor with multi-provider LLM support, agentic workflows, and editable chat history.
+[![CI](https://github.com/aoersen/OurCode/actions/workflows/ci.yml/badge.svg)](https://github.com/aoersen/OurCode/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/aoersen/OurCode)](https://github.com/aoersen/OurCode/releases)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](./LICENSE)
+
+A desktop AI code editor built with Electron: multiple LLM providers, agentic tools with human-in-the-loop approvals, and editable chat history.
 
 [中文文档](./README.zh-CN.md)
 
-OurCode IDE is a desktop code editor built with Electron that brings an AI assistant directly into your coding workflow. Chat with the assistant, let it read and edit files in your workspace, run commands in the integrated terminal, and keep full control with human-in-the-loop approvals — or delegate autonomous subtasks to specialized subagents.
+## Features
 
-## ✨ Feature Highlights
+### AI assistant & chat
 
-### 🤖 AI Assistant & Chat
+- Streaming responses with thinking blocks rendered in real time; chat Markdown is sanitized with DOMPurify.
+- Editable history: edit, delete, or regenerate from any message; drag to reorder or batch-delete.
+- Fork a conversation from any message, or compare several models on the same prompt in the Arena.
+- Project memory (toggleable), image input (toolbar button, `Ctrl+V`, drag-and-drop; oversized images are downscaled and re-encoded locally), and reusable prompt workflow templates.
 
-- **Streaming chat with live thinking** — Responses stream token by token with thinking blocks rendered in real time; Markdown output is sanitized with DOMPurify before display.
-- **Editable chat history** — Edit, delete, or regenerate from any past message; drag to reorder, or batch-delete.
-- **Branch & compare** — Fork the conversation from any message into a new session, or run the same prompt across several models in an Arena and adopt the best answer with one click.
-- **Long-term memory** — The assistant can save and retrieve project memories (toggleable).
-- **Image input (vision)** — Attach screenshots with the toolbar button, `Ctrl+V`, or by dropping files into the composer. Oversized images are downscaled and re-encoded locally before they go out, and attachments are stored with the session so they survive a restart.
-- **Reusable workflows** — Save prompts as workflow templates to kick off recurring tasks in a single click.
+### Providers
 
-### 🌐 Multi-Provider LLM Support
+- OpenAI, Anthropic, Google Gemini, DeepSeek, Groq, Azure OpenAI, Ollama, and any OpenAI-compatible endpoint.
+- Multiple API groups, each with its own color label, custom headers, and wire-format override (`openai` / `responses` / `anthropic` / `azure` / `ollama`).
+- Onboarding with step-by-step connection tests, model-list fetching, and optionally encrypted config import/export.
 
-- **8 provider families** — OpenAI, Anthropic, Google Gemini, DeepSeek, Groq, Azure OpenAI, Ollama (local), and any OpenAI-compatible endpoint.
-- **Multiple API groups** — Per-group color labels, custom headers, and wire-format override (`openai` / `responses` / `anthropic` / `azure` / `ollama`).
-- **Painless setup** — Guided onboarding, step-by-step connection tests, model-list fetching, and (optionally encrypted) import/export of your configuration.
+### Agents & tools
 
-### 🛠️ Agentic Tools & Autonomous Workflows
+- The assistant reads files, searches the workspace, edits files, and runs commands. Write operations require explicit approval; read-only operations run immediately, with one-click batch approval.
+- Review AI edits hunk by hunk in a diff view; accept or reject each block individually.
+- Four agent modes: `confirm_before_change`, `auto_edit`, `plan`, `full_access`.
+- Plan mode with task lists and mid-task clarifying questions.
+- Built-in subagents `code-reviewer`, `test-generator`, and `researcher`, customizable via `.ourcode/agents/*.md`, running with decreasing permissions, iteration/token budgets, and checkpoint rollback.
+- Skills via Claude-Code-style `SKILL.md` discovery, loaded on demand as read-only tools.
+- Project rules from `AGENTS.md`, `.ourcoderules`, `rules.json`, `RULES.md`, `.cursorrules`, and `.windsurfrules` are loaded into the prompt automatically.
+- Loop protection: a verbatim repeated tool call gets a warning, then the run stops with an explanation; calls truncated by `max_tokens` are refused.
+- MCP servers over stdio or HTTP (streamable), with automatic reconnection.
+- Native git tools (`git_status` / `git_diff` / `git_log` / `git_branch` / `git_add` / `git_commit` / `git_push`) with no MCP setup; commit and push require confirmation.
+- Built-in browser session for the assistant, restricted to http(s): `browser_navigate`, `browser_read_console`, `browser_screenshot`, `browser_act` (approval-gated), mirrored in the Browser panel.
+- Pull requests through your locally authenticated `gh` CLI: `read_pull_request`, `create_pull_request`. The app stores no account or token.
+- Bundled git MCP server runs on the IDE's own Node runtime, for machines without Node installed.
+- Browser UI self-testing with Playwright MCP (`ui-self-test` skill); see [docs/BROWSER_SELF_TEST.md](docs/BROWSER_SELF_TEST.md).
 
-- **Agentic tool calling** — The assistant reads files, searches your workspace, creates/edits files, and runs commands. **Write operations always require your explicit approval**; read-only operations run immediately. Batch-approve with one click.
-- **Hunk-by-hunk review of AI edits** — *View Changes* in the File Changes sidebar opens a diff with review arrows beside every change block. Rejecting restores that block from the pre-edit snapshot and writes the file back (original encoding/BOM preserved, open editor buffers kept in sync); accepting only advances the comparison baseline and never touches disk. Each decision recomputes the remaining changes, so you don't have to revert the whole file.
-- **Four agent modes** — `confirm_before_change`, `auto_edit`, `plan`, and `full_access` let you dial autonomy from strict confirmation to hands-free.
-- **Plan mode & todos** — The assistant can propose a plan, maintain a task checklist, and ask you clarifying questions mid-task.
-- **Subagents** — Built-in `code-reviewer`, `test-generator`, and `researcher` agents (customizable via `.ourcode/agents/*.md`) run delegated subtasks with monotonically-decreasing permissions, iteration/token budgets, and checkpoint rollback.
-- **Skills** — Claude-Code-style `SKILL.md` discovery: skills in your workspace or user directory are exposed as read-only tools, and more can be installed from a skill registry.
-- **Project rules** — `AGENTS.md` (workspace root, plus the per-directory ones along the file you are editing), `.ourcoderules`, `rules.json`, `RULES.md`, `.cursorrules`, and `.windsurfrules` are loaded into the prompt automatically, so a repo that already carries rules for another agent tool needs no migration.
-- **Runaway protection** — a tool call repeated verbatim gets the model nudged out of the loop and, if it keeps spinning, the run stops with an explanation instead of burning tokens; tool calls whose arguments were cut off by `max_tokens` are refused rather than executed.
-- **MCP support** — Connect MCP servers over stdio or HTTP (streamable) to extend the assistant with external tools, resources, and prompts, with automatic reconnection.
-- **Native Git tools (Claude-Code style, zero config)** — Built-in `git_status` / `git_diff` / `git_log` / `git_branch` / `git_add` / `git_commit` / `git_push` tools work with **no MCP setup**: the agent can inspect changes, stage files per group (`git add` needs no approval), commit (`git commit` requires confirmation) and push (`git push` requires confirmation). Read-only git tools also work in plan mode — inspect the diff before proposing a plan. When the bundled git MCP is connected, its same-named tools are auto-hidden to avoid two overlapping sets.
-- **Integrated browser session** — A sandboxed, http(s)-only page the assistant can drive: `browser_navigate`, `browser_read_console` (console output **and** uncaught page errors), `browser_screenshot`, and `browser_act` (click / type / press / scroll — approval-gated, since clicking can change remote state). This closes the loop the terminal never could: after a frontend change the model opens the dev server, reads what the page logged, and looks at a screenshot instead of guessing. The Browser panel mirrors the same session, so you see the console it sees and can pop the page into a real window (or log into something it cannot).
-- **Pull requests, through your own `gh`** — `read_pull_request` (list / view with CI checks and review comments) and `create_pull_request` (create / comment, approval-gated). No account, no token stored by the app: it drives the GitHub CLI you already authenticated.
-- **Bundled Git MCP (no Node required)** — The bundled git-server MCP runs on the IDE's own Node runtime (configure with `bundled-node` command and `bundled:` args; one-click add in Settings), so AI can inspect repo status, generate commit messages, commit and push even on machines without Node — only the `git` CLI needs to be installed.
+### Editor & workspace
 
-### 📝 Code Editor & Workspace
+- Monaco-based editor with tabs, diff views, breadcrumbs, snippets, and minimap.
+- Large files load in chunks; writes preserve the original encoding and BOM.
+- File explorer, Quick Open (`Ctrl+P`), command palette (`Ctrl+Shift+P`), and workspace search with batch replace.
+- Per-language LSP diagnostics (e.g. `pylsp` for Python) in the Problems panel.
+- Hot-exit crash recovery restores unsaved buffers.
 
-- **Monaco-based editor** — Multi-tab editing, diff views, breadcrumbs, snippets, and minimap.
-- **Large-file friendly** — Chunked streaming for big files, automatic encoding detection, and encoding/BOM-preserving writes.
-- **Fast navigation** — File explorer, Quick Open (`Ctrl+P`), and a VS Code-style command palette (`Ctrl+Shift+P`).
-- **Search & replace** — Whole-workspace search with case/whole-word/regex options, include/exclude patterns, and batch replace.
-- **LSP diagnostics** — Per-language LSP servers (e.g. `pylsp` for Python) stream diagnostics into the Problems panel.
-- **Crash recovery** — Hot-exit backups and automatic restore of unsaved buffers after an unexpected quit.
+### Terminal & git
 
-### 🖥️ Terminal & Git
+- xterm.js + node-pty terminal with tabs, split panes, and light/dark palettes.
+- Long-running assistant commands (`run_command` with `background=true`) appear as `AI: <command>` terminal tabs; the assistant reads them with `read_terminal_output` and stops them with `stop_terminal`.
+- Git panel with status, diff, staging, commit, push/pull, and log; AI-generated commit messages and a Lifeguard pre-commit review.
 
-- **Integrated terminal** — Full-featured xterm.js + node-pty terminal with multiple tabs, renaming, side-by-side split panes, and light/dark ANSI palettes.
-- **The assistant's long-running tasks are visible** — A dev server or watcher the assistant starts with `run_command(background=true)` is a real integrated-terminal session owned by the main process: the panel opens an `AI: <command>` tab you can watch, or type into to answer a prompt, and closing that tab only detaches the view. The agent reads it with `read_terminal_output` and cleans up with `stop_terminal`, which can only stop runs the assistant started — and the child environment is credential-scrubbed like every other agent subprocess.
-- **Git panel** — Status, diff, stage/unstage, commit, push/pull/fetch, stash, branch creation and log — plus **AI-generated commit messages** and a **Lifeguard** pre-commit review that flags potential bugs with error/warning/info severity. Committing takes exactly the files you staged (nothing is swept in behind your back), every operation reports its failure in a toast instead of the console, and conflicted files get their own section with an *abort merge* escape hatch.
-- **Pull request section** — Lists the current branch's PR with its checks and review comments, opens one from the branch's own commits, and hands reviewer feedback to the assistant as a request. Backed by the locally installed `gh` (`gh auth login`); when it is missing or signed out the panel says so in one line instead of hiding the feature.
+### Extensibility
 
-### 🧩 Extensibility & Customization
+- Plugins in Web Worker sandboxes with a permission manifest and an in-app installer.
+- VS Code or JetBrains keybinding presets, custom themes, and a Chinese/English UI.
 
-- **Sandboxed plugins** — Web-Worker plugins with a permission model; register commands through a manifest, with an in-app install/management UI.
-- **Shortcut presets** — VS Code, JetBrains, or fully custom keybindings.
-- **Theming** — Dark / light / system themes with a custom accent color.
-- **Bilingual UI** — Chinese (zh-CN) and English (en-US).
+### Other
 
-### 🔒 Security & Privacy
+- Per-model usage dashboard, broken down by models, skills, subagents, and MCP tools.
+- In-app auto-update via electron-updater.
 
-- Filesystem access is restricted to an explicit allowlist (only folders you opened).
-- **No off-origin navigation.** Every window is pinned to the app's own origins (`will-navigate` + `setWindowOpenHandler`): a stray link opens in your system browser, and anything that is neither the app nor a preview is refused — including `window.open()` from the HTML you preview. The browsed page in the browser session is http(s)-only, so a remote page cannot reach your workspace through the `ourcode-file://` preview scheme, and it loads without a preload bridge.
-- **`git` / `gh` argument gate.** The exec channels accept an allowlisted subcommand only, and refuse `-c`, `--config`, `--exec-path`, `--git-dir`, `--work-tree`, `--output` and `ext::` transports — the shapes that let a git argument turn into arbitrary program execution or a write outside the workspace. `gh api` is not exposed.
-- Strict Content-Security-Policy in the renderer.
-- API keys encrypted with AES-256-GCM using a machine-bound key.
-- Markdown rendered in chat is sanitized with DOMPurify.
-- Local-first storage (SQLite) — your data stays on your machine, except for the API calls you configure.
-
-### ⚙️ More
-
-- **Usage analytics** — Per-model usage dashboard with stats for models, skills, subagents, and MCP tools.
-- **Auto-update** — Seamless in-app updates via electron-updater.
-
-## 🌐 Supported Providers
+## Supported providers
 
 | Provider | Notes |
 | --- | --- |
@@ -90,43 +77,33 @@ OurCode IDE is a desktop code editor built with Electron that brings an AI assis
 | Ollama | Local models via Ollama |
 | Custom | Any OpenAI-compatible endpoint |
 
-## 🧰 Tech Stack
+## Install
 
-- **Electron + electron-vite** — desktop shell and build tooling
-- **React + TypeScript** — renderer UI
-- **Tailwind CSS** — styling
-- **Monaco Editor** — code editing
-- **xterm.js + node-pty** — integrated terminal
-- **better-sqlite3** — local storage
-- **Zustand** — state management
-- **Vitest / Playwright** — unit and e2e tests
+Prebuilt packages are on the [releases page](https://github.com/aoersen/OurCode/releases).
 
-## 🚀 Getting Started
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org) 20+ and npm
-- (Windows quick start) you can use `dev.bat` / `run.bat` instead of the manual steps below
-
-### Install
+To run from source you need [Node.js](https://nodejs.org) 20+ and npm:
 
 ```bash
 npm install
-```
-
-> `better-sqlite3` and `node-pty` are native modules. If you hit ABI mismatch errors when running under Electron, rebuild them with:
->
-> ```bash
-> npx electron-builder install-app-deps
-> ```
-
-### Run in development
-
-```bash
 npm run dev
 ```
 
-### Quality checks
+`better-sqlite3` and `node-pty` are native modules. If you get ABI mismatch errors under Electron, rebuild them:
+
+```bash
+npx electron-builder install-app-deps
+```
+
+On Windows you can also use `dev.bat` / `run.bat` instead of the manual steps.
+
+## Usage
+
+1. Launch the app and complete the onboarding.
+2. In **Settings → API Config**, create an API group: pick a provider, paste your API key, optionally set a base URL and custom headers, and choose a default model. Base URLs may use `http://` or `https://`; enable "Skip certificate verification" for internal gateways with self-signed or private CA certificates. All API and MCP requests are proxied through the main process, so there is no browser CORS restriction.
+3. Adjust behavior in **Preferences** and review keybindings in **Shortcuts**.
+4. Open a folder and start a chat. Write operations ask for approval first; read-only operations run automatically.
+
+## Development
 
 ```bash
 npm run typecheck   # TypeScript type check
@@ -135,7 +112,7 @@ npm test            # Vitest unit tests
 npm run test:e2e    # Playwright e2e tests (npx playwright install first)
 ```
 
-### Build & package
+Build and package:
 
 ```bash
 npm run build            # build for development preview
@@ -144,34 +121,9 @@ npm run dist:mac         # macOS (dmg + zip)
 npm run dist:linux       # Linux (AppImage + deb)
 ```
 
-## ⚙️ Usage
+## Plugins
 
-1. Launch the app and complete the onboarding.
-2. Open **Settings** → **API Config** and create an API group: pick a provider, paste your API key (optionally a base URL and custom headers), and set a default model.
-3. Use **Preferences** to tweak behavior and **Shortcuts** to review keybindings.
-4. Open a folder, then start a chat — the assistant can use agentic tools; write operations ask for your approval first, read-only operations run automatically.
-
-## 📁 Project Structure
-
-```
-OurCode-ide/
-├── electron/            # Main process (main.ts, preload.ts) & services
-│   └── services/        # file-system, sqlite-store, crypto, backup, mcp-manager
-├── src/                 # Renderer (React)
-│   ├── components/      # ChatPanel, Editor, Sidebar, Terminal, Git, SearchPanel,
-│   │                    # CommandPalette, Skills, Plugin, Settings...
-│   ├── services/        # LLM clients/adapters, tools, skills, subagents, plugin, commands
-│   ├── stores/          # Zustand stores (chat, editor, config, plugins, shortcuts...)
-│   ├── hooks/           # Custom hooks
-│   └── utils/           # Helpers (file icons, etc.)
-├── shared/              # Types & constants shared between main and renderer
-├── e2e/                 # Playwright end-to-end tests
-└── tools/               # CLI helpers (create-nebula-plugin)
-```
-
-## 🔌 Plugin Development
-
-Plugins are sandboxed in Web Workers and declare their capabilities via a manifest with explicit permissions:
+Plugins run in a Web Worker sandbox and declare permissions in a manifest:
 
 ```jsonc
 {
@@ -183,23 +135,49 @@ Plugins are sandboxed in Web Workers and declare their capabilities via a manife
 }
 ```
 
-Enforced permissions — each maps to a whitelist of callable APIs: `editor.read`, `editor.write`, `file.read`, `file.write`, `ai.chat`, `ui.panel`, `ui.statusbar`. The manifest also accepts `ai.completion`, `terminal.read`, `terminal.write`, and `network`, but those currently grant no APIs.
+Enforced permissions: `editor.read`, `editor.write`, `file.read`, `file.write`, `ai.chat`, `ui.panel`, `ui.statusbar`. (`ai.completion`, `terminal.read`, `terminal.write`, and `network` are accepted in manifests but currently grant no APIs.)
 
-Plugins reach the command palette by calling `api.commands.register` at runtime; those commands merge into the unified command registry. The declarative `contributes` block is only summarized on the plugin's card — the host does not yet register commands, keybindings, panels, or status-bar items from it, and panels/status-bar items registered at runtime have no surface to render into yet.
+Plugins register commands at runtime with `api.commands.register`; those commands merge into the unified command registry. See [docs/EXTENSIONS_ARCHITECTURE.md](docs/EXTENSIONS_ARCHITECTURE.md).
 
-## 🔐 Security
+## Security
 
-- A folder has to be trusted before it is used. An untrusted folder is neither read nor written, and the MCP servers it declares (`mcp_config.json` / `.mcp.json`) are never started. Every `fs:*` IPC handler re-validates the path against the trusted roots, resolving symlinks so a link inside a workspace cannot point outside it; trust is granted only through a native dialog the main process itself opens.
-- MCP servers that don't ship inside the app package need your approval on every tool call.
+- A folder must be trusted before it is read or written, and before the MCP servers it declares (`mcp_config.json` / `.mcp.json`) are started. Every `fs:*` IPC handler re-validates the path against the trusted roots and resolves symlinks, so a link inside a workspace cannot point outside it. Trust is granted only through a native dialog opened by the main process.
+- MCP servers that don't ship with the app require approval on every tool call.
+- Windows are pinned to the app's own origins: external links open in the system browser, and the built-in browser session is limited to http(s) pages, which load without a preload bridge.
+- The `git` / `gh` exec channels accept an allowlisted subcommand only and refuse `-c`, `--config`, `--exec-path`, `--git-dir`, `--work-tree`, `--output`, and `ext::` transports, the shapes that can turn a git argument into arbitrary program execution. `gh api` is not exposed.
 - Strict Content-Security-Policy in the renderer.
-- API keys are stored encrypted (AES-256-GCM) under a key derived from this machine's id plus a fixed salt. That keeps a copied database file from revealing them, and nothing more — anything running as your user can redo the same derivation.
-- Chat transcripts, tool outputs and the model wire log are plaintext in the app's data directory.
+- API keys are stored encrypted with AES-256-GCM under a machine-bound key. This protects a copied database file, and nothing more: anything running as your user can redo the same derivation.
+- Chat transcripts, tool outputs, and the model wire log are stored in plaintext in the app data directory.
 - Markdown rendered in chat is sanitized with DOMPurify.
 
-## 📄 License
+## Project structure
 
-[PolyForm Noncommercial License 1.0.0](./LICENSE) — free to use, modify, and distribute for any **noncommercial purpose**, including personal research, study, education, hobby projects, and use by noncommercial organizations (charities, educational institutions, public research organizations, and government institutions).
+```
+OurCode-ide/
+├── electron/            # Main process (main.ts, preload.ts) & services
+│   └── services/        # file-system, sqlite-store, crypto, backup, mcp-manager
+├── src/                 # Renderer (React)
+│   ├── components/      # ChatPanel, Editor, Terminal, Git, Settings, ...
+│   ├── services/        # LLM clients/adapters, tools, skills, subagents, plugins
+│   ├── stores/          # Zustand stores (chat, editor, config, plugins, shortcuts)
+│   └── hooks/           # Custom hooks
+├── shared/              # Types & constants shared between main and renderer
+├── e2e/                 # Playwright end-to-end tests
+└── tools/               # CLI helpers (create-nebula-plugin)
+```
 
-**Commercial use is not permitted.** If you'd like to use OurCode IDE for commercial purposes, please contact the author for a separate license.
+## Docs
 
-See [LICENSE](./LICENSE) for the full terms.
+- [docs/EXTENSIONS_ARCHITECTURE.md](docs/EXTENSIONS_ARCHITECTURE.md) — plugin and extension architecture
+- [docs/BROWSER_SELF_TEST.md](docs/BROWSER_SELF_TEST.md) — browser UI self-testing with Playwright MCP
+- [examples/ui-self-test-demo](examples/ui-self-test-demo) — runnable example
+
+## License
+
+[PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and distribute for any noncommercial purpose: personal research, study, education, hobby projects, and use by noncommercial organizations (charities, educational institutions, public research organizations, government institutions).
+
+Commercial use is not permitted; contact the author for a separate license. See [LICENSE](./LICENSE) for the full terms.
+
+## Contributing
+
+Issues and pull requests are welcome. Run `npm run typecheck && npm run lint && npm test` before submitting changes.
