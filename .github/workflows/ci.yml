@@ -153,7 +153,15 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
-            release/*.yml
+          if-no-files-found: error
+      - name: Upload macOS arm64 update metadata (signed builds only)
+        # An unsigned zip can't be installed by Squirrel.Mac — publishing
+        # latest-mac.yml would point the updater at a build it must reject.
+        if: env.CSC_LINK != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ourcode-ide-macos-arm64-yml
+          path: release/*.yml
           if-no-files-found: error
 
   release-macos-x64:
@@ -198,7 +206,13 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
-            release/*.yml
+          if-no-files-found: error
+      - name: Upload macOS x64 update metadata (signed builds only)
+        if: env.CSC_LINK != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ourcode-ide-macos-x64-yml
+          path: release/*.yml
           if-no-files-found: error
 
   release-linux:

@@ -2,6 +2,10 @@
   "name": "ourcode-ide",
   "version": "0.2.13",
   "description": "AI-powered code editor with multi-provider support and editable chat history",
+  "author": {
+    "name": "OurCode",
+    "email": "16fengzhiyong@users.noreply.github.com"
+  },
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "electron-vite dev",
