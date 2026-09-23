@@ -118,7 +118,7 @@
         "zip"
       ],
       "icon": "build/icon.png",
-      "artifactName": "OurCode-IDE-${version}.${ext}"
+      "artifactName": "OurCode-IDE-${version}-${arch}.${ext}"
     },
     "linux": {
       "target": [
