@@ -82,7 +82,6 @@ describe.skipIf(!sqliteUsable)('SQLiteStore session persistence', () => {
 
     const mainOnly = store.getSessions('main')
     const officeOnly = store.getSessions('office')
-    const all = store.getSessions()
 
     expect(mainOnly.map((s) => s.id)).toEqual(['sess-main'])
     expect(officeOnly.map((s) => s.id)).toEqual(['sess-office'])
@@ -90,7 +89,9 @@ describe.skipIf(!sqliteUsable)('SQLiteStore session persistence', () => {
     store.saveSession(makeSession({ id: 'sess-legacy' }))
     expect(store.getSessions('main').some((s) => s.id === 'sess-legacy')).toBe(true)
     expect(store.getSessions('office').some((s) => s.id === 'sess-legacy')).toBe(false)
-    // 全量读取（备份/checkpoint 清理等）仍能看到两个模式。
+    // 全量读取（备份/checkpoint 清理等）仍能看到两个模式。须在 legacy 会话
+    // 落盘之后取，否则拿到的是保存前的旧快照。
+    const all = store.getSessions()
     expect(all.map((s) => s.id).sort()).toEqual(['sess-legacy', 'sess-main', 'sess-office'])
   })
 

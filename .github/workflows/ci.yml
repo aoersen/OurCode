@@ -158,9 +158,11 @@ jobs:
 
   release-macos-x64:
     name: Package macOS (Intel)
-    # macos-13 is GitHub's Intel (x64) macOS runner; keeps native modules
-    # (better-sqlite3, node-pty) compiled natively per arch.
-    runs-on: macos-13
+    # macos-13 was retired by GitHub — Intel macOS runners are now
+    # macos-15-intel / macos-26-intel; the old label stays queued forever.
+    # The Intel image keeps native modules (better-sqlite3, node-pty)
+    # compiled natively per arch.
+    runs-on: macos-15-intel
     timeout-minutes: 40
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     steps:

@@ -49,8 +49,8 @@ async function openProjectFile(win: Page, app: import('@playwright/test').Electr
   }).toPass({ timeout: 25000 })
   await dismissOnboarding(win)
   await win.locator(`div.group:has-text("${dir.split(/[/\\]/).pop()}")`).first().dblclick()
-  await expect(win.locator(`#file-tree-root >> text=${fileName}`).first()).toBeVisible({ timeout: 8000 })
-  await win.locator(`#file-tree-root >> text=${fileName}`).first().click()
+  await expect(win.locator('#file-tree-root').getByText(fileName).first()).toBeVisible({ timeout: 8000 })
+  await win.locator('#file-tree-root').getByText(fileName).first().click()
   await win.waitForTimeout(1000)
 }
 

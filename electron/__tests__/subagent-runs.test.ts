@@ -71,6 +71,9 @@ describe.skipIf(!sqliteUsable)('SQLiteStore subagent run records', () => {
   })
 
   afterEach(() => {
+    // Windows 不允许删除句柄未关闭的数据库文件（EBUSY）；Linux 的 unlink 对
+    // 打开中的文件是允许的，所以这个泄漏只在 Windows 上表现为清理失败。
+    store?.close()
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -80,7 +83,7 @@ describe.skipIf(!sqliteUsable)('SQLiteStore subagent run records', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].toolCallId).toBe('call-1')
     expect(rows[0].record.task).toBe('实现登录页')
-    expect(rows[0].record.steps[0].arguments.path).toBe('a.tsx')
+    expect(rows[0].record.steps[0].arguments.path).toBe('src/App.tsx')
   })
 
   it('re-saving the same tool call updates in place instead of duplicating', () => {

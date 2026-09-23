@@ -40,9 +40,10 @@ test.describe('Problems Panel', () => {
       // after double-clicking the project card.
       await expect(async () => {
         await win.keyboard.press('Control+o')
-        await expect(win.locator(`text=${dir}`).first()).toBeVisible({ timeout: 4000 })
+        // getByText(string) 做子串匹配，不会把以 / 开头的 Linux 路径当正则解析。
+        await expect(win.getByText(dir).first()).toBeVisible({ timeout: 4000 })
       }).toPass({ timeout: 25000 })
-      await win.locator(`text=${dir}`).first().dblclick()
+      await win.getByText(dir).first().dblclick()
       await expect(win.locator('#file-tree-root >> text=broken.ts').first()).toBeVisible({ timeout: 8000 })
 
       // Open the broken file — the TS worker emits a marker

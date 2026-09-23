@@ -47,7 +47,17 @@ async function launchSandbox(): Promise<{ app: ElectronApplication; win: Page; u
   const userData = await mkdtemp(join(tmpdir(), 'ourcode-git-user-'))
   const app = await electron.launch({
     args: [...APP_LAUNCH_ARGS],
-    env: { ...process.env, OURCODE_USER_DATA: userData },
+    // CI runners have no git identity (the seed repo's env applies only to
+    // the test's own git calls) — the app's `git commit` would otherwise fail
+    // with "Please tell me who you are". GIT_* survives the app's env scrub.
+    env: {
+      ...process.env,
+      OURCODE_USER_DATA: userData,
+      GIT_AUTHOR_NAME: 'OurCode E2E',
+      GIT_AUTHOR_EMAIL: 'e2e@example.invalid',
+      GIT_COMMITTER_NAME: 'OurCode E2E',
+      GIT_COMMITTER_EMAIL: 'e2e@example.invalid',
+    },
   })
   let win: Page | null = null
   for (let i = 0; i < 40 && !win; i++) {
