@@ -225,6 +225,9 @@ export interface ElectronAPI {
    *  按窗口模式分目录：office（一人公司窗口）与 main（对话窗口）各自独立。 */
   ensureDefaultProject: (mode?: 'main' | 'office') => Promise<string>
   getPlatform: () => Promise<string>
+  /** 宿主平台（win32/darwin/linux）——preload 同步暴露，与主进程给
+   *  run_command 选 shell 用的是同一个值。 */
+  platform: 'win32' | 'darwin' | 'linux'
   resolveEnvVar: (name: string) => Promise<string>
   getVersion: () => Promise<string>
   getLocale: () => Promise<string>

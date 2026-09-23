@@ -3,6 +3,7 @@ import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, L
 import { TOOL_ALLOWLIST_PREFIX, TOOL_DENYLIST_PREFIX, QUESTION_AUTO_CONTINUE_MS, lookupModelMetadata } from '@shared/constants'
 import { kindOf, resolveApproval, targetPathsOf, isPathInScope, MODE_CYCLE, type EditMode } from '@/services/permissions/modePolicy'
 import { IS_OFFICE, WINDOW_MODE, modeKey } from '@/utils/windowMode'
+import { shellEnvironmentNote } from '@/utils/platform'
 import { useConfigStore } from './configStore'
 import { useEditorStore } from './editorStore'
 import { useMemoryStore } from './memoryStore'
@@ -484,7 +485,7 @@ const AGENT_MODE_INSTRUCTION = `
 - 用搜索/读取工具理解代码库后直接动手实现，不要为规划而规划；需要多步推进的任务用 manage_todo 维护任务列表，让用户看到进度。
 - 完成修改后用项目现有的测试 / lint / typecheck 脚本验证（存在的话）。
 - 有专用工具时禁止用 run_command 绕过：git 操作一律用 git_status / git_diff / git_add / git_commit / git_push / git_split_commit，文件操作一律用 read_file / write_file / edit_file / search_in_files。禁止为一次性的 git 操作编写或调试脚本。
-- 用 run_command 时记住：Windows 上是 PowerShell，赋值用 $env:NAME=... 而不是 set NAME=...，没有 &&（连续执行分多次调用）。构建/测试/类型检查等长命令默认 30 秒超时会被中断——调用时要设 timeoutMs（如 120000）。若命令仍返回 [超时]，说明它需要更长时间，直接用更大的 timeoutMs 重试一次或换一种验证方式（如只构建相关模块），不要通过加内存参数、换 shell、重装依赖等方式反复折腾同一命令。
+- 用 run_command 时记住：${shellEnvironmentNote()}。构建/测试/类型检查等长命令默认 30 秒超时会被中断——调用时要设 timeoutMs（如 120000）。若命令仍返回 [超时]，说明它需要更长时间，直接用更大的 timeoutMs 重试一次或换一种验证方式（如只构建相关模块），不要通过加内存参数、换 shell、重装依赖等方式反复折腾同一命令。
 - 不会自己退出的进程（dev server、watch、需要应答的安装）必须用 run_command 的 background=true 在集成终端里启动：它立即返回 terminalId，之后用 read_terminal_output 读输出（没就绪就隔几秒再读，不要密集轮询），用 stop_terminal 收尾；任务收尾时把你启动的进程停掉，或明确告诉用户它还在运行。
 - 提交前先 git_status + git_diff 确认改动范围；按功能拆分提交时用 git_add 逐组暂存 + git_commit，或 git_split_commit 一次完成分组提交；commit message 遵循仓库风格（feat:/fix:/refactor: 前缀）。
 - 工具结果可能被系统压缩清理：重要的信息（文件内容、命令输出、关键结论）及时写入你的可见回复，不要假设之后还能读到原始工具结果。

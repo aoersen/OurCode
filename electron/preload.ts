@@ -145,6 +145,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 本窗口是否为办公室模式：主进程通过 webPreferences.additionalArguments
   // 注入 '--office-mode'（沙箱 preload 可读 process.argv，同步可用）。
   isOfficeMode: process.argv.includes('--office-mode'),
+  // 宿主平台（win32/darwin/linux）：与主进程给 run_command 选 shell 用的是
+  // 同一个值，同步暴露，渲染层拼工具描述/提示词时不用发一次 IPC。
+  platform: process.platform,
   onMaximized: (callback: (isMaximized: boolean) => void) => {
     const listener = (_event: any, isMaximized: boolean) => callback(isMaximized)
     ipcRenderer.on('window:maximized', listener)

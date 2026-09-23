@@ -3,6 +3,7 @@
  */
 import { Tool, ToolDefinition } from './types'
 import type { SubAgentOptions } from '@/services/subagents/subagentRunner'
+import { shellEnvironmentNote } from '@/utils/platform'
 
 export function createToolRegistry(): Tool[] {
   return [
@@ -239,7 +240,7 @@ export function createToolRegistry(): Tool[] {
       description:
         'Execute a shell command in the given directory. Returns stdout/stderr. ' +
         '注意：① 有专用工具时不要用它——文件/搜索用 read_file/search_in_files，git 用 git_status/git_diff/git_log/git_add/git_commit/git_split_commit（本工具需要审批，会打断流程）；' +
-        '② Windows 环境是 PowerShell（没有 grep/&& 等 Unix 命令），赋值用 $env:NAME=... 而不是 set NAME=...，需要搜索用 search_in_files，需要连续执行分多次调用；' +
+        `② ${shellEnvironmentNote()}；` +
         '③ 命令默认 30 秒超时会被中断——构建/测试/安装等长命令必须设置 timeoutMs（如 120000），若仍超时说明它确实需要更长时间，不要重复执行同一命令；' +
         '④ dev server / watch / 需要交互输入这类不会自己退出的命令，必须用 background=true（它在集成终端里跑，随后用 read_terminal_output 读、stop_terminal 停），' +
         '用前台调用只会被超时杀掉。',
