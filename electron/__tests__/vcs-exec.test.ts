@@ -37,11 +37,13 @@ describe('checkVcsArgs (git)', () => {
   it('keeps the allowlist to what the app actually sends', () => {
     // `git config` is the persistent RCE primitive (core.pager / core.fsmonitor);
     // clone/clean/init reach outside the working tree or create one.
-    for (const sub of ['config', 'clone', 'clean', 'init', 'filter-branch', 'rm', 'mv', 'remote', 'tag']) {
+    for (const sub of ['config', 'clone', 'clean', 'init', 'filter-branch', 'rm', 'mv', 'remote']) {
       expect(GIT_ALLOWED_SUBCOMMANDS.has(sub), sub).toBe(false)
     }
-    // apply is in only for the diff editor's patch-from-stdin shapes (below).
+    // apply is in only for the diff editor's patch-from-stdin shapes (below);
+    // tag is in for the target-mode phase checkpoints (vcs-compat pins shapes).
     expect(GIT_ALLOWED_SUBCOMMANDS.has('apply')).toBe(true)
+    expect(GIT_ALLOWED_SUBCOMMANDS.has('tag')).toBe(true)
   })
 
   it('allows only the patch-from-stdin shapes of `apply`', () => {

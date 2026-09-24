@@ -50,6 +50,24 @@ describe('phaseCheckpoint git layer', () => {
     expect(git).toHaveBeenCalledWith(root, ['tag', tag, '-m', '研发'])
   })
 
+  it('createPhaseCheckpoint snapshots the working tree before tagging (commit-then-tag)', async () => {
+    git.mockResolvedValue({ success: true, output: '' })
+    const tag = await createPhaseCheckpoint(root, '研发')
+    expect(git).toHaveBeenNthCalledWith(1, root, ['add', '-A'])
+    expect(git).toHaveBeenNthCalledWith(2, root, ['commit', '-m', '[ourcode-tm] checkpoint: 研发'])
+    expect(git).toHaveBeenNthCalledWith(3, root, ['tag', tag, '-m', '研发'])
+  })
+
+  it('createPhaseCheckpoint still tags HEAD when the snapshot commit fails (nothing to commit)', async () => {
+    git
+      .mockResolvedValueOnce({ success: true, output: '' }) // add ok
+      .mockResolvedValueOnce({ success: false, output: '', error: 'nothing to commit' }) // commit fails
+      .mockResolvedValue({ success: true, output: '' }) // tag ok
+    const tag = await createPhaseCheckpoint(root, '研发')
+    expect(tag).toMatch(/^ourcode\/tm-研发-[\w]+$/)
+    expect(git).toHaveBeenCalledWith(root, ['tag', tag, '-m', '研发'])
+  })
+
   it('createPhaseCheckpoint returns null when git fails', async () => {
     git.mockResolvedValue({ success: false, output: '', error: 'x' })
     expect(await createPhaseCheckpoint(root, '研发')).toBeNull()
@@ -80,13 +98,13 @@ describe('phaseCheckpoint git layer', () => {
     const res = await rollbackToPhase(root, 'ourcode/tm-研发-abc')
     expect(res.ok).toBe(true)
     expect(res.branch).toMatch(/^ourcode\/rb-[\w]+$/)
-    expect(git).toHaveBeenCalledWith(root, ['switch', '-c', res.branch, 'ourcode/tm-研发-abc'])
+    expect(git).toHaveBeenCalledWith(root, ['checkout', '-b', res.branch, 'ourcode/tm-研发-abc'])
   })
 
   it('rollbackToPhase reports failure with guidance', async () => {
     git.mockResolvedValue({ success: false, output: '', error: 'conflict' })
     const res = await rollbackToPhase(root, 'ourcode/tm-研发-abc')
     expect(res.ok).toBe(false)
-    expect(res.error).toContain('git switch')
+    expect(res.error).toContain('git checkout')
   })
 })

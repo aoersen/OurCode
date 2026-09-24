@@ -44,6 +44,19 @@ function parseList(raw?: string): string[] {
 }
 
 /**
+ * 模板占位符检测：监管 LLM 常把信封模板原样抄下来
+ * （`files_to_modify: [<允许改的文件，互不重叠>]`、`to: <角色名>`）。
+ * 这类「路径」一旦进入 guard 的写范围，真实文件全部命中不了 → 子智能体
+ * 变成「只能读不能改」；这类「角色名」派发出去也找不到定义。统一丢弃，
+ * 让写范围回退到角色定义自身（tm-developer/tm-ui-developer 全量权限）。
+ */
+function isPlaceholderToken(v: string): boolean {
+  if (/[<>]/.test(v)) return true
+  if (/允许改|互不重叠|可选|待定|示例|占位|角色名|此处|TODO|FIXME/.test(v)) return true
+  return false
+}
+
+/**
  * Sanitize the envelope's optional `model:` field. The supervisor LLM often
  * copies the template verbatim (`model: <可选…>`), wraps the name in quotes
  * (`model: "deepseek-chat"`) or writes placeholder junk (`undefined` /
@@ -87,17 +100,21 @@ export function parseEnvelope(task: string): TaskEnvelope | null {  const m = /^
   const to = fm.to || ''
   if (!to) return null
 
+  // 占位符污染清洗（见 isPlaceholderToken）：模板原样抄袭的 `<角色名>`、
+  // `<允许改的文件…>` 等不能作为派发对象名 / 写范围——一律当作没填。
+  const safeTo = isPlaceholderToken(to) ? '' : to
+
   return {
-    to,
+    to: safeTo,
     type: fm.type || undefined,
     phase: fm.phase || undefined,
     status: fm.status || undefined,
-    filesToModify: parseList(fm.files_to_modify),
-    filesToRead: parseList(fm.files_to_read),
+    filesToModify: parseList(fm.files_to_modify).filter((p) => !isPlaceholderToken(p)),
+    filesToRead: parseList(fm.files_to_read).filter((p) => !isPlaceholderToken(p)),
     acceptance: fm.acceptance || undefined,
     fixAttempts: fm.fix_attempts !== undefined ? parseInt(fm.fix_attempts, 10) || 0 : 0,
     model: sanitizeModelField(fm.model),
-    reportPath: fm.report_path || undefined,
+    reportPath: fm.report_path && !isPlaceholderToken(fm.report_path) ? fm.report_path : undefined,
     prompt: task.slice(m[0].length).trim(),
   }
 }

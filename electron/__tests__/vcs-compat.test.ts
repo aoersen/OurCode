@@ -46,6 +46,12 @@ const UI_ARGV: Array<{ label: string; args: string[] }> = [
   { label: 'tool branch', args: ['branch'] },
   { label: 'tool add group', args: ['add', '--', 'src/a.ts', 'src/b.ts'] },
   { label: 'tool push remote', args: ['push', 'origin', 'feat/x'] },
+  // target-mode phase checkpoints (services/targetMode/phaseCheckpoint.ts) —
+  // one-person-company「回滚到此」; added with tag in GIT_ALLOWED_SUBCOMMANDS.
+  { label: 'phase checkpoint tag', args: ['tag', 'ourcode/tm-研发-mabc123', '-m', '研发'] },
+  { label: 'phase checkpoint list', args: ['tag', '-l', 'ourcode/tm-*', '--sort=-creatordate'] },
+  { label: 'phase checkpoint date', args: ['log', '-1', '--format=%cI', 'ourcode/tm-研发-mabc123'] },
+  { label: 'phase rollback checkout', args: ['checkout', '-b', 'ourcode/rb-mabc456', 'ourcode/tm-研发-mabc123'] },
 ]
 
 describe('git argv used by the app passes the exec gate', () => {

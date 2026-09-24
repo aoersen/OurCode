@@ -109,4 +109,29 @@ describe('envelopeToOverrides (v2 §13.1 — envelope → run_subagent options)'
     expect(o.reportPath).toBeUndefined()
     expect(o.writePaths).toBeUndefined()
   })
+
+  it('drops template placeholder tokens from files_to_modify (subagent must not turn read-only)', () => {
+    // 监管把信封模板原样抄下来的典型形态——这类「路径」进入 guard 写范围
+    // 会让子智能体任何真实写文件都被拒（表现为只能读不能改）。
+    const env = parseEnvelope(
+      '---\nto: tm-developer\nfiles_to_modify: [<允许改的文件，互不重叠>]\nreport_path: <可选，全文报告写入路径>\n---\nx',
+    )!
+    expect(env.filesToModify).toEqual([])
+    expect(env.reportPath).toBeUndefined()
+    expect(envelopeToOverrides(env).writePaths).toBeUndefined()
+  })
+
+  it('keeps real paths while dropping only placeholder entries', () => {
+    const env = parseEnvelope(
+      '---\nto: tm-developer\nfiles_to_modify: [src/app.ts, <可选>]\nfiles_to_read: [docs/plan.md, <待定>]\n---\nx',
+    )!
+    expect(env.filesToModify).toEqual(['src/app.ts'])
+    expect(env.filesToRead).toEqual(['docs/plan.md'])
+  })
+
+  it('sanitizes placeholder to: so a junk role name is not dispatched', () => {
+    const env = parseEnvelope('---\nto: <角色名>\n---\nx')!
+    expect(env.to).toBe('')
+    expect(envelopeToOverrides(env).name).toBeUndefined()
+  })
 })

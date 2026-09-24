@@ -1,9 +1,12 @@
 /**
- * 底部对话条（V12 压缩版）：@角色 chips + 输入框 + 发送。
+ * 底部对话条（一人公司）：纯输入通道，只与架构总监对话。
  *
- * 对话流（OfficeStream）与内嵌决策区（InlineDecisionArea）已移入中央工作台
- * 「对话」页签——本条只保留输入通道（发现项 #8：@角色定向发言，点名后工作台
- * 自动切到该角色）。保留 data-testid="office-chat-pane"（e2e 依赖）。
+ * 设计初衷：用户不直接对话工作人员——所有消息发给总监，由总监按目标模式
+ * SPEC 把任务分发给各角色（需求分析/研发/UI/测试），角色回报回到本面板。
+ * 早前的「@角色 定向派活」chips 已按此初衷移除。
+ *
+ * 对话流（OfficeStream）与内嵌决策区（InlineDecisionArea）在中央工作台
+ * 「对话」页签——本条只保留输入。保留 data-testid="office-chat-pane"（e2e 依赖）。
  */
 import { useRef, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
@@ -14,18 +17,12 @@ import { MONO } from './officeTheme'
 import { IS_OFFICE } from '@/utils/windowMode'
 import { isComposingEvent } from '@/utils/composition'
 
-/** 目标模式 4 角色 chips（与 mapping.ROLE_LABELS 的 tm- 标签一致）。 */
-const ROLE_CHIPS = ['需求分析', '研发', 'UI 开发', '测试']
-
 export default function OfficeChatBar() {
   const t = useI18n()
   const activeSessionId = useChatStore((s) => s.activeSessionId)
   const running = useChatStore(
     (s) => !!s.activeSessionId && s.runningSessionIds.includes(s.activeSessionId),
   )
-  // 默认不选中任何角色：未点选时消息不带 @ 前缀，指令直接发给监管 Agent；
-  // 需要定向派活时再点选（或直接在文本里输入 @角色）。
-  const [chip, setChip] = useState<string | null>(null)
   const [text, setText] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -68,31 +65,14 @@ export default function OfficeChatBar() {
     )
   }
 
+  // 所有消息原样发给总监：不解析、不前缀、不定向——任务分派是总监的职责。
   const send = () => {
     const value = text.trim()
     if (!value) return
-    // 定向目标解析：文本内 @角色 优先（同时切换 chip 与工作台角色）；
-    // 否则用当前选中的 chip。文本内的 @角色 标记会被剥掉、统一由前缀表达，
-    // 避免「已选 @研发 + 文本写 @需求分析」时拼出双前缀/前缀角色错乱。
-    let target: string | null = chip
-    for (const label of ROLE_CHIPS) {
-      if (value.includes(`@${label}`)) {
-        target = label
-        if (chip !== label) setChip(label)
-        useUIStore.getState().setOfficeSelectedRole(label)
-        break
-      }
-    }
-    const clean = target ? value.replace(new RegExp(`@${target}`, 'g'), '') : value
-    const content = target ? `@${target} ${clean}`.trim() : value
     setText('')
-    void useChatStore.getState().sendMessage(activeSessionId, content)
+    void useChatStore.getState().sendMessage(activeSessionId, value)
     inputRef.current?.focus()
   }
-
-  const placeholder = chip
-    ? t('office.chatBarPlaceholderChip', { role: chip })
-    : t('office.chatBarPlaceholder')
 
   return (
     <div
@@ -104,41 +84,17 @@ export default function OfficeChatBar() {
         borderTop: '1px solid rgba(15,23,42,0.08)',
       }}
     >
-      {/* @角色 chips：点选 = 定向派活（消息自动带 @前缀，监管优先派给该角色）；
-          不选 = 指令直接发给监管。title 逐角色说明，行首常驻提示让新用户
-          一眼知道 @ 的用途。 */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        {chip === null && (
-          <span
-            className="shrink-0 rounded-full px-2 py-0.5"
-            style={{
-              fontSize: 10, color: MONO.t3, background: 'rgba(15,23,42,0.04)',
-              border: `1px dashed ${MONO.hairline}`, lineHeight: 1.6,
-            }}
-          >
-            {t('office.chipHint')}
-          </span>
-        )}
-        {ROLE_CHIPS.map((label) => (
-          <button
-            key={label}
-            onClick={() => {
-              setChip(chip === label ? null : label)
-              useUIStore.getState().setOfficeSelectedRole(chip === label ? null : label)
-            }}
-            title={t('office.chipTitle', { role: label })}
-            className="transition-colors rounded-full"
-            style={{
-              fontSize: 12, padding: '2px 11px', lineHeight: 1.6,
-              color: chip === label ? '#0058BC' : MONO.t2,
-              background: chip === label ? 'rgba(0,88,188,0.08)' : MONO.bg,
-              border: `1px solid ${chip === label ? 'rgba(0,88,188,0.35)' : MONO.hairline}`,
-              cursor: 'pointer',
-            }}
-          >
-            @{label}
-          </button>
-        ))}
+      {/* 常驻提示：对话仅面向架构总监 */}
+      <div className="flex items-center gap-1.5">
+        <span
+          className="shrink-0 rounded-full px-2 py-0.5"
+          style={{
+            fontSize: 10, color: MONO.t3, background: 'rgba(15,23,42,0.04)',
+            border: `1px dashed ${MONO.hairline}`, lineHeight: 1.6,
+          }}
+        >
+          {t('office.directorOnlyHint')}
+        </span>
         {running && (
           <span className="flex items-center gap-1.5 ml-auto" style={{ fontSize: 12, color: MONO.t2 }}>
             <span className="inline-block rounded-full" style={{ width: 7, height: 7, background: '#22C55E' }} />
@@ -156,7 +112,7 @@ export default function OfficeChatBar() {
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !isComposingEvent(e)) send()
           }}
-          placeholder={placeholder}
+          placeholder={t('office.chatBarPlaceholder')}
           className="flex-1"
           style={{
             height: 36, padding: '0 12px', fontSize: 13,

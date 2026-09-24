@@ -5,7 +5,7 @@ import { StreamingMarkdown } from '../Common/MarkdownRenderer'
 import ToolStepRow, { extractKey } from '../ChatPanel/ToolStepRow'
 import ErrorCard from '../ChatPanel/ErrorCard'
 import { MONO, GRADIENT, roleAvatar } from './officeTheme'
-import { roleLabel } from '@/services/office/mapping'
+import { roleLabel, summarizeTask } from '@/services/office/mapping'
 import type { ChatMessage } from '@/types'
 
 /**
@@ -43,13 +43,19 @@ type ToolResultEntry = NonNullable<ChatMessage['toolResults']>[number]
  * （150ms）/工具步骤都会换引用，订阅它会让整条对话流每秒重渲染好几次。
  */
 interface SubagentReport {
+  /** 父 run_subagent 的 toolCallId（条目稳定 key） */
+  toolCallId: string
   /** 角色中文标签（如「研发」「需求分析」） */
   role: string
   /** 子 Agent 自身名字（如 tm-developer），兜底展示用 */
   name: string
+  /** 派发任务文本（信封正文） */
+  task: string
   /** 子 Agent 最终报告文本（run_subagent 的 tool result） */
   report: string
   isError?: boolean
+  /** 结果是否已回填（未回填 → 派发条目；已回填 → 汇报条目） */
+  hasResult: boolean
 }
 
 /** 从一轮 assistant 消息的 run_subagent 调用中提取每个子 Agent 的汇报。 */
@@ -70,10 +76,13 @@ function collectSubagentReports(messages: ChatMessage[]): SubagentReport[] {
         }
       }
       out.push({
+        toolCallId: tc.id,
         role: task || agentName ? roleLabel(task, agentName) : '子任务',
         name: agentName || tc.id.slice(0, 8),
+        task,
         report: result?.result ?? '',
         isError: result?.isError,
+        hasResult: !!result,
       })
     }
   }
@@ -84,32 +93,6 @@ function collectSubagentReports(messages: ChatMessage[]): SubagentReport[] {
 function extractStatusLine(report: string): string {
   const first = report.split('\n')[0] ?? ''
   return /^状态\s*:/.test(first) ? first : ''
-}
-
-/**
- * 汇报正文压成一行可读摘要（老板视角：只看结论，不看过程）。
- * 取「摘要/完成情况」等段落的第一句，剥掉 markdown 标记与表格行，
- * 截断到 ~120 字。完整工作内容在团队状态的角色悬浮窗里看。
- */
-function summarizeReportBody(report: string): string {
-  const lines = report.split('\n').map((l) => l.trim()).filter(Boolean)
-  // 1) 信封格式：**摘要** 段落直接就是结论
-  const summaryLine = lines.find((l) => /^\*\*摘要\*\*[:：]/.test(l) || /^摘要[:：]/.test(l))
-  if (summaryLine) {
-    const text = summaryLine.replace(/^\*\*摘要\*\*[:：]\s*/, '').replace(/^摘要[:：]\s*/, '').replace(/\s+/g, ' ').trim()
-    return text.length > 120 ? text.slice(0, 120) + '…' : text
-  }
-  // 2) 普通格式：**结果** 段后的第一行是最终答复
-  const resultIdx = lines.findIndex((l) => /^\*\*结果\*\*\s*[:：]?$/.test(l))
-  if (resultIdx >= 0) {
-    const next = lines.slice(resultIdx + 1).find((l) => !/^\**$/.test(l))
-    const text = (next ?? '').replace(/^[#*>\-`]+\s*/, '').replace(/\s+/g, ' ').trim()
-    return text.length > 120 ? text.slice(0, 120) + '…' : text
-  }
-  // 3) 兜底：第一条非标题/非状态/非表格行
-  const fallback = lines.find((l) => !/^(#|\||状态[:：]|[-*]{2,})/.test(l)) ?? lines[0] ?? ''
-  const text = fallback.replace(/^[#*>\-`]+\s*/, '').replace(/\s+/g, ' ').trim()
-  return text.length > 120 ? text.slice(0, 120) + '…' : text
 }
 
 /** 连续 assistant 消息合并为一个汇报轮（与 ChatMessages 的 turn 分组同规则）。 */
@@ -156,18 +139,134 @@ function OrderRow({ message }: { message: ChatMessage }) {
   )
 }
 
-// ── 汇报卡 ──────────────────────────────────────────────────────────────────
+// ── 派发条目（总监 → 角色，结果未回填前显示）────────────────────────────────
+
+function DispatchEntry({ role, task }: { role: string; task: string }) {
+  const t = useI18n()
+  const avatar = roleAvatar(role)
+  return (
+    <div className="flex gap-2.5 min-w-0">
+      {/* 总监 → 角色 的竖向派发通道 */}
+      <div className="shrink-0 flex flex-col items-center gap-0.5 pt-0.5">
+        <div
+          className="rounded-full flex items-center justify-center"
+          style={{ width: 24, height: 24, background: GRADIENT.blueViolet, color: '#fff', fontSize: 10, fontWeight: 700 }}
+        >
+          监
+        </div>
+        <svg width="10" height="12" viewBox="0 0 10 12" fill="none" stroke={MONO.t3} strokeWidth="1.5">
+          <polyline points="1 2 5 8 9 2" />
+        </svg>
+        <div
+          className="rounded-full flex items-center justify-center"
+          style={{ width: 24, height: 24, background: avatar.bg, color: '#fff', fontSize: 10, fontWeight: 700 }}
+        >
+          {avatar.char}
+        </div>
+      </div>
+      <div className="flex flex-col min-w-0 flex-1 gap-1">
+        <span
+          style={{
+            fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
+            fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', color: '#0058BC',
+          }}
+        >
+          {t('office.dispatchLabel')}：{role}
+        </span>
+        <div
+          className="rounded-[14px] rounded-tl-sm px-3.5 py-2.5"
+          style={{ background: MONO.hover, border: `1px solid ${MONO.hairline}` }}
+        >
+          <div className="truncate" style={{ fontSize: 12, color: MONO.t2 }}>{summarizeTask(task, 120)}</div>
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="inline-block rounded-full animate-spin" style={{ width: 10, height: 10, border: '2px solid #0058BC', borderTopColor: 'transparent' }} />
+            <span style={{ fontSize: 11, color: MONO.t3 }}>{t('office.dispatchPending')}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── 角色汇报条目（子 Agent 结果回填后：角色向老板汇报）──────────────────────
 
 const REJECT_RE = /用户拒绝/
 
-function ReportCard({
+function RoleReportEntry({ role, report, isError }: Pick<SubagentReport, 'role' | 'report' | 'isError'>) {
+  const t = useI18n()
+  const statusLine = extractStatusLine(report)
+  const body = report
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => l !== statusLine)
+    .join('\n')
+  const avatar = roleAvatar(role)
+  const failed = isError || /失败|阻塞/.test(statusLine)
+  const [open, setOpen] = useState(false)
+  const COLLAPSE_AT = 240
+  const collapsed = !open && body.length > COLLAPSE_AT
+  const excerpt = collapsed ? body.slice(0, COLLAPSE_AT) + '…' : ''
+
+  return (
+    <div className="flex gap-2.5 min-w-0">
+      <div
+        className="shrink-0 rounded-full flex items-center justify-center relative"
+        style={{ width: 28, height: 28, background: avatar.bg, color: '#fff', fontSize: 11, fontWeight: 700, boxShadow: '0 1px 3px rgba(15,23,42,0.12)' }}
+      >
+        {avatar.char}
+        {failed && (
+          <span className="absolute -bottom-0.5 -right-0.5" style={{ width: 9, height: 9, borderRadius: '50%', background: '#DC2626', border: '2px solid #fff' }} />
+        )}
+      </div>
+      <div className="flex flex-col min-w-0 flex-1">
+        <span
+          className="shrink-0 mb-1"
+          style={{
+            fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
+            fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+            color: failed ? '#DC2626' : '#0058BC',
+          }}
+        >
+          {role.toUpperCase()} {t('office.roleReportLabel')}
+          {statusLine && <span style={{ color: MONO.t3, fontWeight: 400, marginLeft: 6 }}>{statusLine}</span>}
+        </span>
+        <div
+          className="rounded-[14px] rounded-tl-sm px-3.5 py-2.5"
+          style={{ background: '#fff', border: `1px solid ${MONO.hairline}`, boxShadow: '0 1px 3px rgba(15,23,42,0.04)' }}
+        >
+          {body ? (
+            <>
+              <div className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-words" style={{ color: MONO.t1 }}>
+                {collapsed ? excerpt : body}
+              </div>
+              {body.length > COLLAPSE_AT && (
+                <button
+                  onClick={() => setOpen((v) => !v)}
+                  className="w-fit transition-colors hover:text-[#111827] mt-1"
+                  style={{ fontSize: 11, color: '#0058BC', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  {open ? t('office.collapseReply') : t('office.expandReply')}
+                </button>
+              )}
+            </>
+          ) : (
+            <div style={{ fontSize: 11, color: MONO.t3 }}>{t('office.reportEmpty')}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── 总监汇总条目（监管最终答复 + 执行过程折叠）──────────────────────────────
+
+function SupervisorEntry({
   messages,
   sessionRunning,
-  subagentReports,
 }: {
   messages: ChatMessage[]
   sessionRunning: boolean
-  subagentReports: SubagentReport[]
 }) {
   const t = useI18n()
   const [processOpen, setProcessOpen] = useState(false)
@@ -198,79 +297,12 @@ function ReportCard({
 
   return (
     <div className="flex flex-col gap-1.5">
-      {/* K 版：汇报轮头部只留等宽时间戳（角色身份由各消息的头像+标签表达） */}
-      <span
-        style={{
-          fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
-          fontSize: 10, color: MONO.t3,
-        }}
-      >
-        {t('office.reportLabel')} · {fmtTime(messages[messages.length - 1]?.createdAt ?? Date.now())}
-      </span>
-
       <div
         style={{
           border: `1px solid ${MONO.hairline}`, borderRadius: 10, borderTopLeftRadius: 2,
           background: '#ffffff', padding: '10px 14px',
         }}
       >
-        {/* 各子 Agent 向老板的汇报 —— K 版角色消息:渐变头像 + 角色标签 + 白气泡 */}
-        {subagentReports.length > 0 && (
-          <div className="flex flex-col gap-3 mb-2" style={{ borderBottom: `1px solid ${MONO.hairline}`, paddingBottom: 12 }}>
-            {subagentReports.map((r, i) => {
-              const statusLine = extractStatusLine(r.report)
-              const summary = summarizeReportBody(r.report)
-              const avatar = roleAvatar(r.role)
-              const isError = r.isError || /失败|阻塞/.test(statusLine)
-              return (
-                <div key={`${r.name}-${i}`} className="flex gap-2.5 min-w-0">
-                  {/* 渐变角色头像(首字) */}
-                  <div
-                    className="shrink-0 rounded-full flex items-center justify-center relative"
-                    style={{ width: 28, height: 28, background: avatar.bg, color: '#fff', fontSize: 11, fontWeight: 700, boxShadow: '0 1px 3px rgba(15,23,42,0.12)' }}
-                  >
-                    {avatar.char}
-                    {isError && (
-                      <span className="absolute -bottom-0.5 -right-0.5" style={{ width: 9, height: 9, borderRadius: '50%', background: '#DC2626', border: '2px solid #fff' }} />
-                    )}
-                  </div>
-                  <div className="flex flex-col min-w-0 flex-1">
-                    <span
-                      className="shrink-0 mb-1"
-                      style={{
-                        fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
-                        fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
-                        color: isError ? '#DC2626' : '#0058BC',
-                      }}
-                    >
-                      {r.role.toUpperCase()}
-                      {statusLine && (
-                        <span style={{ color: MONO.t3, fontWeight: 400, marginLeft: 6 }}>{statusLine}</span>
-                      )}
-                    </span>
-                    <div
-                      className="rounded-[14px] rounded-tl-sm px-3.5 py-2.5"
-                      style={{
-                        background: '#fff', border: `1px solid ${MONO.hairline}`, boxShadow: '0 1px 3px rgba(15,23,42,0.04)',
-                      }}
-                    >
-                      {/* 老板视角：只给一句结论，完整工作内容在团队状态悬浮窗 */}
-                      {summary ? (
-                        <div style={{ fontSize: 12.5, lineHeight: 1.5, color: MONO.t2 }}>
-                          <span style={{ color: MONO.t1 }}>{summary}</span>
-                          <span style={{ color: MONO.t3, fontSize: 11 }}> · {t('office.reportDetailHint')}</span>
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 11, color: MONO.t3 }}>{t('office.reportEmpty')}</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-
         {/* 最终答复正文 —— 监管(架构总监)汇总消息 */}
         {finalContent ? (
           <div className="flex gap-2.5 min-w-0">
@@ -381,6 +413,42 @@ function ReportCard({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── 汇报轮（一个总监回合）─────────────────────────────────────────────────
+// 一人公司的对话结构：用户指令（OrderRow）→ 总监回合。回合内按时间展开为
+// 「总监 → 角色」派发条目（结果未回填时）、角色汇报条目（结果回填后）、
+// 以及总监的最终汇总。各角色的回报是第一等的对话条目，不再藏进总监卡片。
+
+function AssistantTurn({
+  messages,
+  sessionRunning,
+}: {
+  messages: ChatMessage[]
+  sessionRunning: boolean
+}) {
+  const t = useI18n()
+  const reports = useMemo(() => collectSubagentReports(messages), [messages])
+  return (
+    <div className="flex flex-col gap-2.5">
+      <span
+        style={{
+          fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
+          fontSize: 10, color: MONO.t3,
+        }}
+      >
+        {t('office.reportLabel')} · {fmtTime(messages[messages.length - 1]?.createdAt ?? Date.now())}
+      </span>
+      {reports.map((r) =>
+        r.hasResult ? (
+          <RoleReportEntry key={r.toolCallId} role={r.role} report={r.report} isError={r.isError} />
+        ) : (
+          <DispatchEntry key={r.toolCallId} role={r.role} task={r.task} />
+        ),
+      )}
+      <SupervisorEntry messages={messages} sessionRunning={sessionRunning} />
     </div>
   )
 }
@@ -498,15 +566,6 @@ export default function OfficeStream() {
   )
 
   const turns = useMemo(() => buildTurns(messages), [messages])
-  const subagentReportsByTurn = useMemo(() => {
-    const map = new Map<string, SubagentReport[]>()
-    for (const turn of turns) {
-      if (turn.kind === 'assistant') {
-        map.set(turn.id, collectSubagentReports(turn.messages))
-      }
-    }
-    return map
-  }, [turns])
 
   // 与 ChatMessages 同规则：最后一条已提交 assistant 消息还有未回填的工具调用
   // 时处于工具执行期——此时实时轮保持隐藏（其活动由下方「当前动作」行表达）。
@@ -626,11 +685,10 @@ export default function OfficeStream() {
         turn.kind === 'user' ? (
           <OrderRow key={turn.id} message={turn.message} />
         ) : (
-          <ReportCard
+          <AssistantTurn
             key={`turn-${turn.id}`}
             messages={turn.messages}
             sessionRunning={sessionRunning}
-            subagentReports={subagentReportsByTurn.get(turn.id) ?? []}
           />
         ),
       )}

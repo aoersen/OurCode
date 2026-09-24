@@ -22,6 +22,10 @@ export const GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'status', 'diff', 'show', 'log', 'rev-parse', 'rev-list', 'branch',
   'add', 'reset', 'commit', 'stash', 'checkout',
   'fetch', 'pull', 'push',
+  // tag is used by the one-person-company phase checkpoints
+  // (services/targetMode/phaseCheckpoint.ts); the exact argv shapes are pinned
+  // in vcs-compat.test.ts.
+  'tag',
   // merge/rebase are allowed ONLY in the recovery forms listed in
   // GIT_SUBCOMMAND_ARGS; apply only in the stdin shapes in GIT_TOKEN_ARGS.
   'merge', 'rebase', 'apply',

@@ -34,7 +34,6 @@ function truncate(text: string, max = 90): string {
 
 export default function PendingCenterCard({ active = true }: { active?: boolean }) {
   const t = useI18n()
-  const activeSessionId = useChatStore((s) => s.activeSessionId)
   const pendingApproval = useChatStore((s) => s.pendingApproval)
   const pendingQuestion = useChatStore((s) => s.pendingQuestion)
   const questionGate = useChatStore((s) => s.questionGate)
@@ -42,98 +41,111 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
 
   const [extras, setExtras] = useState<PendingItem[]>([])
   const seenRevisions = useRef<Set<string>>(new Set())
-  const budgetDismissed = useRef(false)
+  // 按会话记「已忽略」：预算触顶被忽略后不再重复弹，但一旦退出触顶状态
+  // （用户调高了 budget.md 上限），标记即清除——下次再触顶会重新提醒。
+  const budgetDismissed = useRef<Set<string>>(new Set())
   const cardRef = useRef<HTMLDivElement>(null)
 
-  // 预算触顶 / 目标修订检测（5s 轮询；approval/question 直接订阅 store）
+  // 预算触顶 / 目标修订检测（5s 轮询；approval/question 直接订阅 store）。
+  // 扫描本窗口**所有**目标模式会话（公司整体运营 = 可多项目并行）——此前只
+  // 盯激活会话：后台项目的预算触顶/目标修订在切到该会话前完全不可见。
   useEffect(() => {
     if (!active) return
     let alive = true
     const poll = () => {
       const cs = useChatStore.getState()
-      const session = cs.sessions.find((s) => s.id === cs.activeSessionId)
-      if (!session?.projectPath) return
-      initBudgetTracking(session.id, session.projectPath)
+      const tmSessions = cs.sessions.filter((s) => s.targetMode === true && s.projectPath)
       const next: PendingItem[] = []
-      // 预算触顶 → 待决（忽略后不再提示，直到退出触顶）
-      if (budgetExceeded(session.id) && !budgetDismissed.current) {
-        const u = getBudgetUsage(session.id)
-        next.push({
-          key: 'budget',
-          kind: 'budget',
-          type: 'amber',
-          title: t('office.pendBudgetTitle'),
-          sub: `${t('office.pendBudgetSub')} ${(u.used / 1e6).toFixed(1)}M / ${(u.limit / 1e6).toFixed(0)}M`,
-          actions: [
-            {
-              label: t('office.pendAck'),
-              primary: true,
-              run: () => {
-                budgetDismissed.current = true
-                useUIStore
-                  .getState()
-                  .showNotification(t('office.pendBudgetAck'), 'warning')
-                setExtras((cur) => cur.filter((x) => x.kind !== 'budget'))
-              },
-            },
-            {
-              label: t('office.pendIgnore'),
-              run: () => {
-                budgetDismissed.current = true
-                setExtras((cur) => cur.filter((x) => x.kind !== 'budget'))
-              },
-            },
-          ],
-        })
-      }
-      // finalGoal_v{N}.md 新增 → 目标修订待确认
-      const base = `${session.projectPath.replace(/[\\/]+$/, '')}/.ourcode/targemode`
-      window.electronAPI
-        .listDir(base)
-        .then((entries) => {
-          if (!alive) return
-          const revisions = entries
-            .filter((e) => !e.isDirectory && /^finalGoal_v\d+\.md$/.test(e.name))
-            .map((e) => e.name)
-          for (const name of revisions) {
-            if (seenRevisions.current.has(name)) continue
-            seenRevisions.current.add(name)
-            const v = name.match(/v(\d+)/)?.[1] ?? ''
+      for (const session of tmSessions) {
+        initBudgetTracking(session.id, session.projectPath!)
+        if (budgetExceeded(session.id)) {
+          if (!budgetDismissed.current.has(session.id)) {
+            const u = getBudgetUsage(session.id)
             next.push({
-              key: name,
-              kind: 'revision',
+              key: `budget:${session.id}`,
+              kind: 'budget',
               type: 'amber',
-              title: t('office.pendRevisionTitle', { v }),
-              sub: t('office.pendRevisionSub'),
+              title: `${t('office.pendBudgetTitle')} · ${session.title || t('chat.untitled')}`,
+              sub: `${t('office.pendBudgetSub')} ${(u.used / 1e6).toFixed(1)}M / ${(u.limit / 1e6).toFixed(0)}M`,
               actions: [
                 {
-                  label: t('office.pendConfirm'),
+                  label: t('office.pendAck'),
                   primary: true,
                   run: () => {
+                    budgetDismissed.current.add(session.id)
                     useUIStore
                       .getState()
-                      .showNotification(t('office.pendRevisionDone', { v }), 'success')
-                    setExtras((cur) => cur.filter((x) => x.key !== name))
+                      .showNotification(t('office.pendBudgetAck'), 'warning')
+                    setExtras((cur) => cur.filter((x) => x.key !== `budget:${session.id}`))
                   },
                 },
                 {
                   label: t('office.pendIgnore'),
-                  run: () => setExtras((cur) => cur.filter((x) => x.key !== name)),
+                  run: () => {
+                    budgetDismissed.current.add(session.id)
+                    setExtras((cur) => cur.filter((x) => x.key !== `budget:${session.id}`))
+                  },
                 },
               ],
             })
           }
-          if (alive && next.length) {
-            setExtras((cur) => {
-              const merged = [...cur]
-              for (const item of next) {
-                if (!merged.some((x) => x.key === item.key)) merged.push(item)
+        } else {
+          // 退出触顶：清除忽略标记，下次触顶重新提醒（注释与行为一致）
+          budgetDismissed.current.delete(session.id)
+        }
+      }
+      // finalGoal_v{N}.md 新增 → 目标修订待确认（按项目分键，两个项目同名文件不冲突）
+      void Promise.all(
+        tmSessions.map((session) => {
+          const base = `${session.projectPath!.replace(/[\\/]+$/, '')}/.ourcode/targemode`
+          return window.electronAPI
+            .listDir(base)
+            .then((entries) => {
+              const revisions = entries
+                .filter((e) => !e.isDirectory && /^finalGoal_v\d+\.md$/.test(e.name))
+                .map((e) => e.name)
+              for (const name of revisions) {
+                const revKey = `${session.projectPath}:${name}`
+                if (seenRevisions.current.has(revKey)) continue
+                seenRevisions.current.add(revKey)
+                const v = name.match(/v(\d+)/)?.[1] ?? ''
+                next.push({
+                  key: `revision:${revKey}`,
+                  kind: 'revision',
+                  type: 'amber',
+                  title: `${t('office.pendRevisionTitle', { v })} · ${session.title || t('chat.untitled')}`,
+                  sub: t('office.pendRevisionSub'),
+                  actions: [
+                    {
+                      label: t('office.pendConfirm'),
+                      primary: true,
+                      run: () => {
+                        useUIStore
+                          .getState()
+                          .showNotification(t('office.pendRevisionDone', { v }), 'success')
+                        setExtras((cur) => cur.filter((x) => x.key !== `revision:${revKey}`))
+                      },
+                    },
+                    {
+                      label: t('office.pendIgnore'),
+                      run: () => setExtras((cur) => cur.filter((x) => x.key !== `revision:${revKey}`)),
+                    },
+                  ],
+                })
               }
-              return merged
             })
+            .catch(() => {})
+        }),
+      ).then(() => {
+        if (!alive || next.length === 0) return
+        setExtras((cur) => {
+          const merged = [...cur]
+          for (const item of next) {
+            if (!merged.some((x) => x.key === item.key)) merged.push(item)
           }
+          return merged
         })
-        .catch(() => {})
+      })
     }
     poll()
     const timer = window.setInterval(poll, 5000)
@@ -143,11 +155,13 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
     }
   }, [active, t])
 
-  // 收集全部待决（store 单槽 + 本地 extras），计数同步 TopBar 铃铛
+  // 收集全部待决（store 单槽 + 本地 extras），计数同步 TopBar 铃铛。
+  // approval/question 是全局单槽——属于哪个会话都该在此呈现（后台会话的审批
+  // 若被激活会话过滤掉，就等于没入口处理）。
   const items = useMemo<PendingItem[]>(() => {
     const cs = useChatStore.getState()
     const list: PendingItem[] = []
-    if (pendingApproval && pendingApproval.sessionId === activeSessionId) {
+    if (pendingApproval) {
       const tool = pendingApproval.toolCall
       list.push({
         key: 'approval',
@@ -166,7 +180,6 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
     }
     if (
       pendingQuestion &&
-      pendingQuestion.sessionId === activeSessionId &&
       questionGate[pendingQuestion.sessionId] !== 'dismissed'
     ) {
       const q = pendingQuestion
@@ -194,7 +207,7 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
       })
     }
     return [...list, ...extras]
-  }, [pendingApproval, pendingQuestion, questionGate, activeSessionId, extras, t])
+  }, [pendingApproval, pendingQuestion, questionGate, extras, t])
 
   useEffect(() => {
     useUIStore.getState().setOfficePendingCount(items.length)

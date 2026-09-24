@@ -54,10 +54,18 @@ export async function isGitRepo(root: string): Promise<boolean> {
 
 /**
  * 为当前工作区打一个 checkpoint tag（指向当前 HEAD）。
+ * 子 Agent 的产出都在工作区（未提交）——直接 tag 只会指向旧 HEAD，回滚等于
+ * 什么都没退。先 `add -A` + `commit` 把工作区快照成一次提交，再打 tag：
+ * checkpoint 才是「任务完成时」的真实状态。
+ * 提交失败（无改动 / 仓库未配置提交身份）不阻塞：仍按当前 HEAD 打 tag，
+ * 回滚入口至少可用（退回到提交前的状态）。
  * 成功返回 tag 名；失败返回 null（非 git 仓库/命令失败）。
  */
 export async function createPhaseCheckpoint(root: string, label: string): Promise<string | null> {
   if (!root) return null
+  // 快照提交：先暂存全部改动（含新增/删除），提交失败不影响后续 tag。
+  await git(root, ['add', '-A'])
+  await git(root, ['commit', '-m', `[ourcode-tm] checkpoint: ${label}`])
   const tag = `${TAG_PREFIX}${sanitizeLabel(label)}-${Date.now().toString(36)}`
   const out = await git(root, ['tag', tag, '-m', label])
   if (out === null) return null
@@ -92,11 +100,14 @@ export async function listPhaseCheckpoints(root: string): Promise<PhaseCheckpoin
 export async function rollbackToPhase(root: string, tag: string): Promise<RollbackResult> {
   if (!root) return { ok: false, error: '无项目根目录' }
   const branch = `${ROLLBACK_PREFIX}${Date.now().toString(36)}`
-  const out = await git(root, ['switch', '-c', branch, tag])
+  // 用 checkout -b（与 GitPanel 新建分支同形态）而不是 switch -c：主进程
+  // vcs 白名单在 flag 级禁用 -c（防 `git -c core.pager=…` 注入），switch 的
+  // 建分支短选项同名会被一并拦下。
+  const out = await git(root, ['checkout', '-b', branch, tag])
   if (out === null) {
     return {
       ok: false,
-      error: '回滚失败：git switch 未成功（工作区可能有未提交改动，请先提交或暂存后再试）',
+      error: '回滚失败：git checkout 未成功（工作区可能有未提交改动，请先提交或暂存后再试）',
     }
   }
   return { ok: true, branch }

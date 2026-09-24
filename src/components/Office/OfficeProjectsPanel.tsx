@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, useEffect } from 'react'
 import { useChatStore, isGhostSession, sessionLastUserActivity } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { summarizeTask, roleLabel } from '@/services/office/mapping'
-import { listPhaseCheckpoints, rollbackToPhase } from '@/services/targetMode/phaseCheckpoint'
+import { listPhaseCheckpoints, rollbackToPhase, sanitizeLabel, isGitRepo } from '@/services/targetMode/phaseCheckpoint'
 import { MONO, GRADIENT, roleAvatar } from './officeTheme'
 import FileTree from '../Sidebar/FileTree'
 import { useThrottledValue } from '@/utils/useThrottledValue'
@@ -135,6 +135,20 @@ export default function OfficeProjectsPanel() {
     return ordered
   }, [projects, projectOrder])
 
+  // 项目是否为 git 仓库（决定「回滚到此」入口是否显示）。每个项目查一次并
+  // 缓存——非 git 项目没有 checkpoint 可回滚，入口直接隐藏而不是点了再报错。
+  const gitReposRef = useRef(new Map<string, boolean>())
+  const [, setGitRepoVersion] = useState(0)
+  useEffect(() => {
+    for (const p of displayedProjects) {
+      if (gitReposRef.current.has(p.path)) continue
+      void isGitRepo(p.path).then((ok) => {
+        gitReposRef.current.set(p.path, ok)
+        setGitRepoVersion((v) => v + 1)
+      })
+    }
+  }, [displayedProjects])
+
   // 一人公司任务：目标模式会话的子 Agent 进度，按项目归组（运行中在前，按启动时间倒序）
   const tasksByProject = useMemo(() => {
     const map = new Map<string, TaskItem[]>()
@@ -201,12 +215,15 @@ export default function OfficeProjectsPanel() {
 
   // V12 审查 #5：阶段级 checkpoint 回滚（SPEC 第十章）。查找该角色的最近一个
   // checkpoint tag → 确认 → git switch 新建分支（非破坏，原分支保留）。
+  // 标签比较走 sanitizeLabel 同源清洗（「UI 开发」→「UI-开发」），否则带空格
+  // 的角色标签永远匹配不上、静默落到 tags[0]（别的角色的 checkpoint）。
   const doRollback = (label: string, session: ChatSession) => {
     const root = session.projectPath
     if (!root) return
+    const sanitized = sanitizeLabel(label)
     void (async () => {
       const tags = await listPhaseCheckpoints(root)
-      const mine = tags.find((c) => c.label === label) ?? tags[0]
+      const mine = tags.find((c) => c.label === sanitized) ?? tags[0]
       if (!mine) {
         useUIStore.getState().showNotification(t('office.rbNone'), 'warning')
         return
@@ -613,8 +630,9 @@ export default function OfficeProjectsPanel() {
                             >
                               {statusText}
                             </span>
-                            {/* V12 审查 #5：已完成任务行 → 回滚到此 checkpoint */}
-                            {done && (
+                            {/* V12 审查 #5：已完成任务行 → 回滚到此 checkpoint；
+                                非 git 仓库没有 checkpoint，入口隐藏 */}
+                            {done && gitReposRef.current.get(project.path) === true && (
                               <span
                                 role="button"
                                 title={t('office.rbTitle')}
