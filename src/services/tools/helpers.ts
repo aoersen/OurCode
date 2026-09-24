@@ -31,10 +31,15 @@ import {
 
 const EXCLUDED_DIRS = ['node_modules', '.git', 'dist', 'build', 'out', '.next', '__pycache__', 'vendor', '.vscode', '.idea']
 
-/** Current workspace root — the file tree's data attribute when mounted,
+/** Current workspace root — the in-flight tool call's project takes precedence
+ *  (session-bound, matches the agent's own view; the browsed tree may show a
+ *  different folder), then the file tree's data attribute when mounted,
  *  falling back to the selected project (the tree only mounts in tree view). */
 function workspaceRoot(): string {
-  return document.getElementById('file-tree-root')?.getAttribute('data-root-path') || useUIStore.getState().rootPath || ''
+  return getActiveToolContext()?.projectPath
+    || document.getElementById('file-tree-root')?.getAttribute('data-root-path')
+    || useUIStore.getState().rootPath
+    || ''
 }
 
 /** Load .ourcodeignore patterns once per workspace root */

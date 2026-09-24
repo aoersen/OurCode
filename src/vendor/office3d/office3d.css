@@ -12,7 +12,6 @@
   height: 100%;
   overflow: hidden;
   background: #f6f7fb;
-  user-select: none;
   -webkit-font-smoothing: antialiased;
 
   /* 「一人公司」整体走极简纯净白：在办公室子树内强制覆盖浅色 token，
@@ -69,6 +68,9 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* 拖动取景时禁止文本选中（选中只应在 3D 画布区禁掉，不能覆盖整个
+     #office3d-root——否则对话流/面板里的文本都无法选择复制）。 */
+  user-select: none;
   /* letterbox：画布按固定投影宽高比居中放置（取景冻结，拖动只整体缩放） */
   display: flex;
   align-items: center;

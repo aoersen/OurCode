@@ -74,12 +74,13 @@ process.on('unhandledRejection', (reason) => appendCrashLog('unhandledRejection'
 app.on('child-process-gone', (_event, details) => appendCrashLog('child-process-gone', details))
 
 /**
- * Paths the renderer is allowed to touch. Populated from the dialogs the user
- * explicitly answered and from renderer-named paths that workspace trust already
- * covers (see authorizeRendererPath / WorkspaceTrust). Every fs:* handler
- * validates against this allowlist so that a compromised renderer (e.g. via the
- * Markdown surface) cannot read/write/delete arbitrary files outside what the
- * user opened.
+ * Paths the renderer is allowed to touch. Populated from paths the user opened
+ * in the workspace — 「打开即信任」: opening a project (native folder dialog,
+ * project-list entry, session activation) is itself the trust decision, so the
+ * renderer reports it via `fs:openProject`, which persists the grant and
+ * registers the root here. Every fs:* handler validates against this allowlist
+ * so that a compromised renderer (e.g. via the Markdown surface) cannot
+ * read/write/delete arbitrary files outside what the user opened.
  */
 const allowedRoots: Set<string> = new Set()
 
@@ -97,9 +98,31 @@ function registerRoot(p: string): void {
 }
 
 /**
+ * 「打开即信任」：用户在工作区里打开一个项目时，打开动作本身就是信任声明——
+ * 记入持久信任表并注册根，该项目下所有读写从此免问。仅渲染层在用户发起的
+ * 打开流程（项目列表进入 / 会话激活 / 启动恢复上次项目）中调用；
+ * 探测类调用（技能目录扫描等）继续走 fs:authorize，不会产生信任。
+ */
+function grantRendererProject(p: string): boolean {
+  if (!p || !isAbsolute(p)) return false
+  if (!trust) return false
+  // Only trust folders that really exist — a session bound to a since-deleted
+  // project must not re-plant a stale grant into the trust table.
+  try {
+    if (!statSync(p).isDirectory()) return false
+  } catch {
+    return false
+  }
+  trust.grant(p)
+  registerRoot(p)
+  return true
+}
+
+/**
  * Register a path the renderer named, but only if trust for it was established
- * somewhere the renderer can't forge — a native dialog the user answered, or a
- * grant persisted by an earlier run. Returns false when the path is untrusted;
+ * somewhere the renderer can't forge — a native dialog the user answered, a
+ * project the user opened in the workspace (fs:openProject), or a grant
+ * persisted by an earlier run. Returns false when the path is untrusted;
  * callers must then surface the trust affordance instead of pretending the
  * workspace is merely empty.
  */
@@ -1202,13 +1225,23 @@ function registerIpcHandlers(): void {
   })
 
   // Authorize a path (and everything under it) without starting a watcher or
-  // loading MCP config. The renderer probes paths at startup (restoring the
-  // last project) when the allowlist is still empty — fs:watch can't be reused
-  // there because it would start a watcher / reload MCP servers as a side
-  // effect. Registration is refused unless trust exists; the renderer reports
-  // back and offers trust:request.
+  // loading MCP config, but ONLY when trust already exists (persisted grant or
+  // an earlier fs:openProject). The renderer probes paths at startup (restoring
+  // the last project) when the allowlist is still empty, and the skill scanners
+  // probe home/config dirs — probing must never grant trust on its own;
+  // fs:openProject is the only renderer channel that does. Registration is
+  // refused unless trust exists; the renderer reports back and offers
+  // trust:request.
   ipcMain.handle('fs:authorize', async (_event, path: string) => {
     return authorizeRendererPath(path)
+  })
+
+  // 「打开即信任」——the renderer reports that the user opened/activated a
+  // project in the workspace. The open action is the trust decision: the grant
+  // is persisted and the root registered, no extra dialog. Only user-initiated
+  // open flows may call this; probing callers use fs:authorize above.
+  ipcMain.handle('fs:openProject', async (_event, path: string) => {
+    return grantRendererProject(path)
   })
 
   // Ask the user to trust a workspace. The confirmation is a NATIVE dialog that

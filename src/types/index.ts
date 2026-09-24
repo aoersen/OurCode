@@ -23,6 +23,8 @@ export interface ElectronAPI {
   stat: (path: string) => Promise<import('@shared/types').FileStat | null>
   /** False when the main process refused to register the path (untrusted workspace) */
   authorize: (path: string) => Promise<boolean>
+  /** 「打开即信任」：注册用户在工作区打开的项目为受信任根（持久化信任 + allowlist）。只由用户发起的打开流程调用 */
+  openProject: (path: string) => Promise<boolean>
   watch: (path: string) => Promise<{ ok: boolean; untrusted?: boolean } | undefined>
   unwatch: (path: string) => Promise<void>
   trustRequest: (path: string) => Promise<boolean>

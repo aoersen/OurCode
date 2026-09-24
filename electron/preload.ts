@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   delete: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_DELETE, path),
   stat: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_STAT, path),
   authorize: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_AUTHORIZE, path),
+  // 「打开即信任」：用户在工作区打开/激活一个项目时，渲染层调此通道把该项目
+  // 注册为受信任根（持久化信任 + 会话 allowlist）。只应由用户发起的打开流程调用。
+  openProject: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_OPEN_PROJECT, path),
   watch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_WATCH, path),
   unwatch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.FS_UNWATCH, path),
   // Workspace trust. authorize() now reports whether the path was accepted;

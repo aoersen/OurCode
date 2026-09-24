@@ -237,9 +237,9 @@ function FileTree({ rootPath, refreshSignal, onOpenFile }: FileTreeProps) {
 
   // Load the tree IMMEDIATELY — the watcher must not gate the first paint.
   // fs:* calls are rejected by the main process until the root is registered;
-  // enterProject / setRootPath / restoreLastProject authorize it up front, and
-  // we authorize again here (belt-and-suspenders) so the first listDir can
-  // never be rejected.
+  // enterProject / setRootPath / restoreLastProject openProject it up front
+  // (「打开即信任」), and we authorize again here (belt-and-suspenders) so the
+  // first listDir can never be rejected.
   useEffect(() => {
     let cancelled = false
     ;(async () => {

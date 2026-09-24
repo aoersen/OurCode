@@ -79,17 +79,17 @@ describe('restoreLastProject', () => {
     })
   }
 
-  it('authorizes the path before probing it, then restores the project', async () => {
+  it('opens (trusts) the project before probing it, then restores it', async () => {
     stubSavedProject()
     useUIStore.setState({ recentProjects: ['C:/proj/restored'] })
-    const authorize = vi.fn(async () => {})
+    const openProject = vi.fn(async () => {})
     const stat = vi.fn(async () => existingStat)
-    vi.stubGlobal('window', { electronAPI: { authorize, stat } })
+    vi.stubGlobal('window', { electronAPI: { openProject, stat } })
 
     await useUIStore.getState().restoreLastProject()
 
-    // The allowlist is empty at startup — the probe must happen after authorize
-    expect(authorize).toHaveBeenCalledWith('C:/proj/restored')
+    // 打开即信任：恢复上次项目 = 再次打开它，openProject 先于 stat 探测
+    expect(openProject).toHaveBeenCalledWith('C:/proj/restored')
     expect(stat).toHaveBeenCalledWith('C:/proj/restored')
     expect(useUIStore.getState().activeProjectPath).toBe('C:/proj/restored')
     expect(useUIStore.getState().projectListView).toBe('tree')
@@ -98,9 +98,9 @@ describe('restoreLastProject', () => {
   it('does not restore when the folder no longer exists on disk', async () => {
     stubSavedProject()
     useUIStore.setState({ recentProjects: ['C:/proj/restored'] })
-    const authorize = vi.fn(async () => {})
+    const openProject = vi.fn(async () => {})
     const stat = vi.fn(async () => { throw new Error('ENOENT') })
-    vi.stubGlobal('window', { electronAPI: { authorize, stat } })
+    vi.stubGlobal('window', { electronAPI: { openProject, stat } })
 
     await useUIStore.getState().restoreLastProject()
 
@@ -109,54 +109,54 @@ describe('restoreLastProject', () => {
     expect(useUIStore.getState().projectListView).toBe('list')
   })
 
-  it('does not authorize paths that were never opened before', async () => {
+  it('does not open paths that were never opened before', async () => {
     stubSavedProject()
     // recentProjects is empty → the restore is skipped entirely
-    const authorize = vi.fn(async () => {})
-    vi.stubGlobal('window', { electronAPI: { authorize } })
+    const openProject = vi.fn(async () => {})
+    vi.stubGlobal('window', { electronAPI: { openProject } })
 
     await useUIStore.getState().restoreLastProject()
 
-    expect(authorize).not.toHaveBeenCalled()
+    expect(openProject).not.toHaveBeenCalled()
     expect(useUIStore.getState().activeProjectPath).toBeNull()
   })
 
   it('does nothing when no project was saved', async () => {
     useUIStore.setState({ recentProjects: ['C:/proj/restored'] })
-    const authorize = vi.fn(async () => {})
-    vi.stubGlobal('window', { electronAPI: { authorize } })
+    const openProject = vi.fn(async () => {})
+    vi.stubGlobal('window', { electronAPI: { openProject } })
 
     await useUIStore.getState().restoreLastProject()
 
-    expect(authorize).not.toHaveBeenCalled()
+    expect(openProject).not.toHaveBeenCalled()
     expect(useUIStore.getState().activeProjectPath).toBeNull()
   })
 })
 
 describe('setRootPath', () => {
-  it('registers the workspace root in the allowlist via fs:authorize', () => {
-    const authorize = vi.fn(async () => {})
-    vi.stubGlobal('window', { electronAPI: { authorize } })
+  it('registers the workspace root via fs:openProject (打开即信任)', () => {
+    const openProject = vi.fn(async () => {})
+    vi.stubGlobal('window', { electronAPI: { openProject } })
 
     useUIStore.getState().setRootPath('D:/gitee/pubgg502')
 
     // The file tree only mounts in tree view — list-view opens never mount it,
-    // so the root must be authorized here or fs:* calls get rejected.
-    expect(authorize).toHaveBeenCalledWith('D:/gitee/pubgg502')
+    // so the root must be trusted here or fs:* calls get rejected.
+    expect(openProject).toHaveBeenCalledWith('D:/gitee/pubgg502')
     expect(useUIStore.getState().rootPath).toBe('D:/gitee/pubgg502')
   })
 
-  it('does not authorize when the root is cleared', () => {
-    const authorize = vi.fn(async () => {})
-    vi.stubGlobal('window', { electronAPI: { authorize } })
+  it('does not openProject when the root is cleared', () => {
+    const openProject = vi.fn(async () => {})
+    vi.stubGlobal('window', { electronAPI: { openProject } })
 
     useUIStore.getState().setRootPath(null)
 
-    expect(authorize).not.toHaveBeenCalled()
+    expect(openProject).not.toHaveBeenCalled()
   })
 
   it('keeps the project list stable — re-opening a project never bumps it to the front', () => {
-    vi.stubGlobal('window', { electronAPI: { authorize: vi.fn(async () => {}) } })
+    vi.stubGlobal('window', { electronAPI: { openProject: vi.fn(async () => {}) } })
 
     useUIStore.getState().setRootPath('A')
     useUIStore.getState().setRootPath('B')

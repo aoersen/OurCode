@@ -13,6 +13,7 @@ const mockApi = {
   getSessions: vi.fn(async () => []),
   saveSession: vi.fn(async () => {}),
   deleteSession: vi.fn(async () => {}),
+  openProject: vi.fn(async () => true),
   checkpointList: vi.fn(async () => []),
   checkpointListReverted: vi.fn(async () => []),
   checkpointSave: vi.fn(async () => {}),

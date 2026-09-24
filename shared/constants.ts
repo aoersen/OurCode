@@ -8,6 +8,7 @@ export const IPC_CHANNELS = {
   FS_WRITE_FILE: 'fs:writeFile',
   FS_LIST_DIR: 'fs:listDir',
   FS_AUTHORIZE: 'fs:authorize',
+  FS_OPEN_PROJECT: 'fs:openProject',
   FS_WATCH: 'fs:watch',
   FS_UNWATCH: 'fs:unwatch',
   FS_CREATE_FILE: 'fs:createFile',

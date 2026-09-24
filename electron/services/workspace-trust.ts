@@ -1,12 +1,14 @@
 /**
- * Workspace trust — who may decide what the renderer is allowed to reach.
+ * Workspace trust — the durable record of which folders the user opened.
  *
- * The main process gates every `fs:*` call on an allowlist, but the allowlist
- * used to be self-service: `fs:authorize` / `fs:watch` registered any path the
- * renderer named, so a compromised renderer (or an agent steered into one)
- * could read and write anything the OS user can. Registration now requires a
- * reason that does not depend on the renderer's word: a folder the user picked
- * in a native dialog, a path the app owns, or an earlier grant stored on disk.
+ * The main process gates every `fs:*` call on an allowlist. Trust follows the
+ * 「打开即信任」 model: when the user opens a project in the workspace (native
+ * folder dialog, project-list entry, session activation, startup restore), the
+ * renderer reports it through `fs:openProject`, which persists the grant here
+ * and registers the root for the session. Anything the user opened is trusted;
+ * probing callers (`fs:authorize`, used by skill scanners) register nothing on
+ * their own and never grant. Folders outside the workspace still require the
+ * native trust dialogs (`trust:request` / `trust:requestFile`).
  */
 import { basename, dirname, join, resolve } from 'path'
 import { existsSync, realpathSync } from 'fs'

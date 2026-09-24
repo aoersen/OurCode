@@ -297,17 +297,11 @@ export const useUIStore = create<UIState>((set, get) => ({
   setRootPath: (path) => {
     set({ rootPath: path })
     if (path) {
-      // Register the workspace root in the main-process allowlist up front.
-      // The file tree only mounts in tree view, so opening a project from the
-      // list view (new session / saved session / settings picker) never mounts
-      // it — without this, every fs:*/search:* call for the workspace would be
-      // rejected with "路径不在允许范围内".
-      //
-      // Main now answers this call: false means the folder is not trusted, so
-      // nothing under it is readable until the user grants trust (a native
-      // dialog main itself raises). Only an explicit false counts — a stubbed
-      // bridge answering nothing is not evidence of distrust.
-      void Promise.resolve(window.electronAPI?.authorize?.(path))
+      // 「打开即信任」：进入一个项目（新建会话 / 保存会话 / 设置选择器 / 会话
+      // 激活）即把它注册为主进程受信任根——工作区里的项目无需再逐个弹授权。
+      // openProject 持久化信任并注册 allowlist；false 只表示主进程不可用或
+      // 路径非法（例如指向不存在的目录）。
+      void Promise.resolve(window.electronAPI?.openProject?.(path))
         .then((ok) => {
           set((s) =>
             s.rootPath !== path
@@ -501,8 +495,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       }
     })
     localStorage.setItem(LAST_PROJECT_KEY, JSON.stringify({ path, view: 'tree' }))
-    // Belt-and-suspenders for the allowlist (see setRootPath).
-    window.electronAPI?.authorize?.(path)
+    // 「打开即信任」——belt-and-suspenders for the allowlist (see setRootPath).
+    window.electronAPI?.openProject?.(path)
   },
   backToProjectList: () => {
     set({ projectListView: 'list', activeProjectPath: null })
@@ -518,16 +512,13 @@ export const useUIStore = create<UIState>((set, get) => ({
     // Only restore projects that were actually opened before (in recentProjects)
     const recent = get().recentProjects
     if (!recent.includes(path)) return
-    // Verify the folder still exists on disk; otherwise fall back to the list.
-    // The main process only serves fs: calls for paths the renderer authorized
-    // (the allowlist is empty at startup), so authorize first — otherwise this
-    // stat is rejected and the last project never restores.
+    // 「打开即信任」：恢复上次项目 = 再次打开它。openProject 持久化信任并注册
+    // allowlist（幂等），随后 stat 才不会被拒绝；false 只表示主进程不可用。
     try {
-      const ok = await window.electronAPI.authorize(path)
+      const ok = await window.electronAPI.openProject(path)
       if (ok === false) {
-        // Restored from an earlier run but never trusted (or trust was
-        // withdrawn) — don't open a workspace we can't read; the project list
-        // offers the 信任 action instead.
+        // Path invalid or the bridge refused — don't open a workspace we can't
+        // read; the project list offers the 信任 action instead.
         set({ untrustedProjectPath: path })
         return
       }
@@ -541,8 +532,8 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   ensureDefaultProject: async () => {
     // The main process creates the folder (idempotent) and returns its path.
-    // setRootPath registers it in the project list + authorize allowlist, so
-    // agent mode has a workspace to operate on right after launch.
+    // setRootPath registers it in the project list + trusts it（打开即信任）,
+    // so agent mode has a workspace to operate on right after launch.
     // 按窗口模式取独立默认项目：办公室窗口与对话窗口互不共用同一个默认项目。
     try {
       const path = await window.electronAPI?.ensureDefaultProject?.(IS_OFFICE ? 'office' : 'main')
