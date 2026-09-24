@@ -303,7 +303,7 @@ function SupervisorEntry({
           background: '#ffffff', padding: '10px 14px',
         }}
       >
-        {/* 最终答复正文 —— 监管(架构总监)汇总消息 */}
+        {/* 最终答复正文 —— 监管(总监)汇总消息 */}
         {finalContent ? (
           <div className="flex gap-2.5 min-w-0">
             <div

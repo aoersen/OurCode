@@ -1,7 +1,7 @@
 export const agentsData = [
   {
     id: 1,
-    role: "架构总监",
+    role: "总监",
     codeName: "Director-01",
     type: "director",
     status: "thinking",
@@ -47,7 +47,7 @@ export const agentsData = [
     deskPos: { x: -1.9, z: -3.5, row: 0, col: 1 },
     stats: { completed: 34, pending: 3, efficiency: "97.2%" },
     logs: [
-      { t: "14:41:00", k: "receiving", title: "接收任务", desc: "接收来自 架构总监 的系统交互规约" },
+      { t: "14:41:00", k: "receiving", title: "接收任务", desc: "接收来自 总监 的系统交互规约" },
       { t: "14:15:20", k: "work", title: "需求细化", desc: "完成 3D 抛物线文件传递触发机制文档" },
       { t: "13:40:10", k: "completed", title: "需求定稿", desc: "评审通过工位状态驱动规范" }
     ]

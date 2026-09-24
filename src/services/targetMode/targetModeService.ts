@@ -109,12 +109,20 @@ export interface TargetModeStatus {
 
 export function parseStatus(md: string): TargetModeStatus {
   const roundMatch = md.match(/当前轮次[：:]\s*(\d+)/)
-  const percentMatch = md.match(/总体百分比[：:]\s*(\d+(?:\.\d+)?)\s*%/)
   const progressMatch = md.match(/实施进度[：:]\s*([^\n]+)/)
   const progressText = progressMatch?.[1]?.trim() || ''
+  // 百分比宽松解析：SPEC 要求写「总体百分比：N%」，但监管实际常写成
+  // 「比对达成率 100%」/「全部完成」——优先取总体百分比字段，缺失则从
+  // 实施进度行里抓任意百分数（达成率语义即总体进度）。
+  const percentMatch =
+    md.match(/总体百分比[：:]\s*(\d+(?:\.\d+)?)\s*%/) ??
+    progressText.match(/(\d+(?:\.\d+)?)\s*%/)
   let stageCurrent: number | null = null
   let stageTotal: number | null = null
-  const stageMatch = progressText.match(/阶段\s*(\d+)\s*\/\s*(\d+)/)
+  // 两种写法都要能解析：「阶段 3/5」与「5/5 阶段验收通过」
+  const stageMatch =
+    progressText.match(/阶段\s*(\d+)\s*\/\s*(\d+)/) ??
+    progressText.match(/(\d+)\s*\/\s*(\d+)\s*阶段/)
   if (stageMatch) {
     stageCurrent = parseInt(stageMatch[1], 10)
     stageTotal = parseInt(stageMatch[2], 10)

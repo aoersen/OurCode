@@ -11,7 +11,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { humanBadge } from '@/services/targetMode/goalChecklist'
-import { getBudgetUsage, initBudgetTracking } from '@/services/targetMode/budget'
+import { getBudgetUsage, initBudgetTracking, parseBudgetLimitInput, setBudgetLimit } from '@/services/targetMode/budget'
 import { roleLabel } from '@/services/office/mapping'
 import { useGoalChecklist } from './useGoalChecklist'
 import { useThrottledValue } from '@/utils/useThrottledValue'
@@ -35,13 +35,16 @@ export default function OfficeTopBar() {
   // 进度表逐次推送换引用（思考节流/工具步骤），800ms 节流避免顶栏随每次推送
   // 整块重渲染——与看板/项目栏同一节流粒度（角色分布只是「约」统计）。
   const subagentProgress = useThrottledValue(useChatStore((s) => s.subagentProgress), 800)
-  const rootPath = useUIStore((s) => s.rootPath)
+  // 徽章数据根 = 激活会话绑定的项目（目标模式文档都在会话项目下），与右栏
+  // 目标达成卡同源——窗口级 rootPath 在跨会话切换时可能指向别的项目。
+  const rootPath = useChatStore((s) =>
+    s.activeSessionId ? s.sessions.find((x) => x.id === s.activeSessionId)?.projectPath ?? null : null,
+  )
   const pendingCount = useUIStore((s) => s.officePendingCount)
   const pulsePending = useUIStore((s) => s.pulseOfficePending)
 
   const summary = useGoalChecklist(rootPath, !!activeSessionId)
   const badge = humanBadge(targetModeStatus, summary?.coverage ?? null)
-
   // 预算（5s 轮询刷新上限/消耗；页面首次挂载即初始化追踪）
   const [usage, setUsage] = useState(() => ({ used: 0, limit: 2_000_000 }))
   useEffect(() => {
@@ -111,6 +114,31 @@ export default function OfficeTopBar() {
       return
     }
     for (const id of [...state.runningSessionIds]) state.stopGeneration(id)
+  }
+
+  // 预算上限编辑：解析「2m / 2000000 / 1.5m」等输入，持久化到 budget.md 并
+  // 立即生效（下次续跑门控读的就是新上限）。此前上限只能手改 budget.md——
+  // 用户在这里改才是产品该有的入口。
+  const [limitInput, setLimitInput] = useState('')
+  const saveLimit = () => {
+    const parsed = parseBudgetLimitInput(limitInput)
+    const session = useChatStore.getState().sessions.find((s) => s.id === activeSessionId)
+    if (!session) return
+    if (parsed == null) {
+      useUIStore.getState().showNotification(t('office.budgetInvalidInput'), 'error')
+      return
+    }
+    void setBudgetLimit(session.id, parsed).then((ok) => {
+      if (ok) {
+        setUsage(getBudgetUsage(session.id))
+        setLimitInput('')
+        useUIStore
+          .getState()
+          .showNotification(t('office.budgetSaved', { limit: fmtTokens(parsed) }), 'success')
+      } else {
+        useUIStore.getState().showNotification(t('office.budgetSaveFail'), 'error')
+      }
+    })
   }
 
   return (
@@ -200,6 +228,31 @@ export default function OfficeTopBar() {
               <span className="text-xs whitespace-nowrap" style={{ fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace", color: budgetColor }}>
                 {Math.round(ratio * 100)}%
               </span>
+            </div>
+            <div className="flex items-center gap-2 mb-2.5">
+              <input
+                value={limitInput}
+                onChange={(e) => setLimitInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveLimit()
+                }}
+                placeholder={t('office.budgetEditPlaceholder')}
+                style={{
+                  flex: 1, height: 26, padding: '0 8px', fontSize: 12,
+                  color: MONO.t1, background: '#fff',
+                  border: '1px solid rgba(15,23,42,0.12)', borderRadius: 6, outline: 'none',
+                }}
+              />
+              <button
+                onClick={saveLimit}
+                className="shrink-0 transition-colors hover:bg-[#F4F4F5]"
+                style={{
+                  height: 26, padding: '0 10px', fontSize: 11.5, fontWeight: 500,
+                  color: '#fff', background: '#0058BC', border: 'none', borderRadius: 6, cursor: 'pointer',
+                }}
+              >
+                {t('office.budgetSave')}
+              </button>
             </div>
             {roleUsage.length === 0 ? (
               <div className="text-xs" style={{ color: MONO.t3 }}>{t('office.budgetNoRoles')}</div>

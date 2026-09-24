@@ -91,12 +91,12 @@ interface GroupedTask {
 /** 子 Agent 状态排序:运行中在前,其余按启动时间倒序。 */
 const rankTask = (s: SubAgentProgress['status']) => (s === 'running' ? 0 : s === 'done' ? 1 : 2)
 
-/** 工作记录/选中目标:4 大角色组或 1 号监管(架构总监,无 subagent 进度,看经营日志)。 */
+/** 工作记录/选中目标:4 大角色组或 1 号监管(总监,无 subagent 进度,看经营日志)。 */
 type BoardSelection = RoleGroup | '监管'
 
-/** 选中目标的展示名:监管显示工位角色名(架构总监),角色组用组名。 */
+/** 选中目标的展示名:监管显示工位角色名(总监),角色组用组名。 */
 function selectionName(sel: BoardSelection): string {
-  return sel === '监管' ? '架构总监' : sel
+  return sel === '监管' ? '总监' : sel
 }
 
 /** 团队状态栏 8 工位常驻卡的展示信息。 */
@@ -189,7 +189,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
     const phase = phaseEntry?.phase
     const cards: SlotCard[] = OFFICE_SLOTS.map((slot) => {
       if (slot.id === 1) {
-        // 1 号监管(架构总监):主循环运行相位驱动,不参与子任务占位
+        // 1 号监管(总监):主循环运行相位驱动,不参与子任务占位
         return {
           slot,
           st: phase ? 'working' : 'idle',

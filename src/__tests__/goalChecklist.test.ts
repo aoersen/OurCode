@@ -49,6 +49,45 @@ describe('goalChecklist.parseComparisonStates', () => {
   it('skips non-table / non-status lines', () => {
     expect(parseComparisonStates('达成率：41%\n- 普通行')).toEqual([])
   })
+
+  it('parses list-format lines and ⏸ deferred status (real-run format)', () => {
+    const md = `- A1 工程+typecheck+build：✅ 已实现
+- B6 真实 Key 联调：⏸ 延后（已确认）
+- C2 请求体构造：部分实现
+- D5 mac 实机：❌ 未实现
+`
+    expect(parseComparisonStates(md)).toEqual([
+      { text: 'A1 工程+typecheck+build', state: 'done' },
+      { text: 'B6 真实 Key 联调', state: 'waiting' },
+      { text: 'C2 请求体构造', state: 'waiting' },
+      { text: 'D5 mac 实机', state: 'todo' },
+    ])
+  })
+})
+
+describe('goalChecklist.mergeChecklist (ID matching)', () => {
+  it('matches comparison short labels to finalGoal long items by item id', () => {
+    // 真实运行证据（AI-Wallpaper-Generator loop1）：comparison 表用短标签
+    // 「A1 工程+typecheck+build」，finalGoal 是长描述「A1 `auto` 项目位于…」，
+    // 文本无法全等匹配——此前整卡永远停在 finalGoal 勾选态。
+    const goals = [
+      { text: 'A1 `auto` 项目位于 `aurora-wallpaper/`，typecheck 0 错误', checked: false },
+      { text: 'B6 `manual` 真实 Key 联调生成 1+ 张', checked: false },
+      { text: 'C2 请求体构造符合文档', checked: false },
+    ]
+    const comparison = [
+      { text: 'A1 工程+typecheck+build', state: 'done' as const },
+      { text: 'B6 真实 Key 联调', state: 'waiting' as const },
+      { text: 'C2 请求体构造符合文档', state: 'done' as const },
+    ]
+    expect(mergeChecklist(goals, comparison).map((g) => g.state)).toEqual(['done', 'waiting', 'done'])
+  })
+
+  it('falls back to normalized text then finalGoal checkbox when no id', () => {
+    const goals = [{ text: '无编号的目标', checked: false }]
+    expect(mergeChecklist(goals, [{ text: '无编号的目标', state: 'done' }])[0].state).toBe('done')
+    expect(mergeChecklist(goals, [{ text: '另一个目标', state: 'done' }])[0].state).toBe('todo')
+  })
 })
 
 describe('goalChecklist.computeCoverage', () => {

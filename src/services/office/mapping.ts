@@ -9,7 +9,7 @@ import type { OfficeAgentState, OfficeStatus, SubAgentProgress } from '@shared/t
 
 /** 8 个工位的静态基础信息（与 office-v3 src/data/agentsData.js 对齐）。 */
 export const OFFICE_SLOTS: Array<{ id: number; role: string; codeName: string }> = [
-  { id: 1, role: '架构总监', codeName: 'Director-01' },
+  { id: 1, role: '总监', codeName: 'Director-01' },
   { id: 2, role: '需求分析师', codeName: 'PM-02' },
   { id: 3, role: 'UI/UX 设计师', codeName: 'Design-03' },
   { id: 4, role: '核心架构师', codeName: 'Dev-04' },

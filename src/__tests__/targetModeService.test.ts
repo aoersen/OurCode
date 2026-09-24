@@ -46,6 +46,19 @@ describe('targetModeService.parseStatus', () => {
     expect(s.progressText).toContain('阶段 3/5')
   })
 
+  it('falls back to 达成率 percent and X/Y 阶段 wording (real-run format)', () => {
+    // 真实运行证据（AI-Wallpaper-Generator）：监管写的是
+    // 「实施进度：**全部完成** —— 5/5 阶段验收通过，比对达成率 100%」——
+    // 没有「总体百分比」字段，此前 percent 恒为 null（看板进度条 0%）。
+    const s = parseStatus(
+      '当前轮次：1（完成）\n实施进度：**全部完成** —— 5/5 阶段验收通过，比对达成率 100%',
+    )
+    expect(s.round).toBe(1)
+    expect(s.percent).toBe(100)
+    expect(s.stageCurrent).toBe(5)
+    expect(s.stageTotal).toBe(5)
+  })
+
   it('leaves stage null when absent', () => {
     const s = parseStatus('当前轮次：2\n总体百分比：62.5%')
     expect(s.stageCurrent).toBeNull()

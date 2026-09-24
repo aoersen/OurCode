@@ -53,7 +53,7 @@ export const ROLE_AVATAR: Record<string, { bg: string; char: string }> = {
   测试生成: { bg: 'linear-gradient(135deg, #34d399, #059669)', char: '测' },
   调研: { bg: 'linear-gradient(135deg, #f59e0b, #d97706)', char: '调' },
   监管: { bg: 'linear-gradient(135deg, #0058bc, #8b5cf6)', char: '监' },
-  架构总监: { bg: 'linear-gradient(135deg, #0058bc, #8b5cf6)', char: '监' },
+  总监: { bg: 'linear-gradient(135deg, #0058bc, #8b5cf6)', char: '监' },
   子任务: { bg: 'linear-gradient(135deg, #94a3b8, #64748b)', char: '子' },
 }
 

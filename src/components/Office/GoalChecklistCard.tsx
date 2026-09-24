@@ -3,13 +3,17 @@
  * 覆盖率 + 轮间 delta。数据来自 useGoalChecklist（5s 轮询），无清单时显示空态。
  */
 import { useI18n } from '@/i18n/useI18n'
-import { useUIStore } from '@/stores/uiStore'
+import { useChatStore } from '@/stores/chatStore'
 import { useGoalChecklist } from './useGoalChecklist'
 import { TASK_5STATE } from './officeTheme'
 
 export default function GoalChecklistCard({ active = true }: { active?: boolean }) {
   const t = useI18n()
-  const rootPath = useUIStore((s) => s.rootPath)
+  // 数据根 = 激活会话绑定的项目（目标模式文档都在会话项目下），而不是窗口
+  // 级 rootPath——两者在跨会话切换时可能不一致，读错项目会让整卡永不更新。
+  const rootPath = useChatStore((s) =>
+    s.activeSessionId ? s.sessions.find((x) => x.id === s.activeSessionId)?.projectPath ?? null : null,
+  )
   const summary = useGoalChecklist(rootPath, active)
 
   const pct = summary?.coverage ?? 0

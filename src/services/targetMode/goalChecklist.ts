@@ -41,23 +41,35 @@ export function parseGoalChecklist(md: string): Array<{ text: string; checked: b
   return items
 }
 
-/** 从一轮 comparison.md 提取 检查项 → 状态（✅/已实现 → done；⚠️/部分 → waiting；❌/未实现 → todo）。 */
+/** 从一轮 comparison.md 提取 检查项 → 状态（✅/已实现 → done；⚠️/部分 → waiting；
+ *  ❌/未实现 → todo；⏸/延后 → waiting——已确认口径的延后项按待办展示，不虚增达成率）。
+ *  兼容两种形态：markdown 表格行（`| 项 | 状态 | 证据 |`）与列表行（`- 项：✅`）。 */
 export function parseComparisonStates(md: string): Array<{ text: string; state: GoalItemState }> {
   const states: Array<{ text: string; state: GoalItemState }> = []
   for (const line of md.split(/\r?\n/)) {
-    if (!line.trim().startsWith('|')) continue
-    const cells = line
-      .split('|')
-      .map((c) => c.trim())
-      .filter(Boolean)
-    if (cells.length < 2) continue
-    const stateCell = cells[1]
+    const trimmed = line.trim()
+    let text = ''
+    let stateCell = ''
+    if (trimmed.startsWith('|')) {
+      const cells = trimmed
+        .split('|')
+        .map((c) => c.trim())
+        .filter(Boolean)
+      if (cells.length < 2) continue
+      text = cells[0]
+      stateCell = cells[1]
+    } else {
+      const m = /^[-*+]\s+(.+?)[：:]\s*(✅|⏸|⚠️|❌|已实现|已完成|部分实现|未实现|延后|待人工|通过|未通过|失败|阻塞).*$/.exec(trimmed)
+      if (!m) continue
+      text = m[1]
+      stateCell = m[2]
+    }
     let state: GoalItemState | null = null
-    if (/✅|已实现|通过/.test(stateCell)) state = 'done'
-    else if (/⚠️|部分/.test(stateCell)) state = 'waiting'
-    else if (/❌|未实现|未通过|失败/.test(stateCell)) state = 'todo'
+    if (/✅|已实现|已完成|通过/.test(stateCell)) state = 'done'
+    else if (/⚠️|部分|⏸|延后|待人工/.test(stateCell)) state = 'waiting'
+    else if (/❌|未实现|未通过|失败|阻塞/.test(stateCell)) state = 'todo'
     if (!state) continue
-    states.push({ text: cells[0].replace(/[*`]/g, '').trim(), state })
+    states.push({ text: text.replace(/[*`]/g, '').trim(), state })
   }
   return states
 }
@@ -75,17 +87,34 @@ function normalize(text: string): string {
   return text.replace(/[*`\s（()）]/g, '').toLowerCase()
 }
 
+/** 条目 ID（A1 / A4.1 / B3.1 …）。comparison 表里监管常用短标签（如
+ *  「A1 工程+typecheck+build」），与 finalGoal 的长描述（「A1 `auto` 项目位于…」）
+ *  文本无法全等匹配——ID 前缀是两者都保留的稳定锚点，优先按 ID 匹配，否则
+ *  整卡永远停留在 finalGoal 勾选态（0% 不动）。 */
+function itemId(text: string): string | null {
+  const m = /^([A-Z]\d+(?:\.\d+)?)/.exec(text.trim())
+  return m ? m[1] : null
+}
+
 /**
  * 合并 finalGoal 勾选态与 comparison 状态：comparison 优先（更贴近本轮验收
- * 结果），finalGoal 勾选态兜底（已勾 → done，未勾 → todo）。
+ * 结果），finalGoal 勾选态兜底（已勾 → done，未勾 → todo）。匹配顺序：
+ * 条目 ID 精确匹配 → 全文规范化匹配 → finalGoal 勾选兜底。
  */
 export function mergeChecklist(
   goalItems: Array<{ text: string; checked: boolean }>,
   comparisonStates: Array<{ text: string; state: GoalItemState }>,
 ): GoalItem[] {
-  const map = new Map(comparisonStates.map((s) => [normalize(s.text), s.state]))
+  const byText = new Map(comparisonStates.map((s) => [normalize(s.text), s.state]))
+  const byId = new Map<string, GoalItemState>()
+  for (const s of comparisonStates) {
+    const id = itemId(s.text)
+    if (id && !byId.has(id)) byId.set(id, s.state)
+  }
   return goalItems.map((g) => {
-    const fromComparison = map.get(normalize(g.text))
+    const gId = itemId(g.text)
+    const fromComparison =
+      (gId ? byId.get(gId) : undefined) ?? byText.get(normalize(g.text))
     const state: GoalItemState = fromComparison ?? (g.checked ? 'done' : 'todo')
     return { text: g.text, state }
   })

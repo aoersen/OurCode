@@ -1,5 +1,5 @@
 /**
- * 底部对话条（一人公司）：纯输入通道，只与架构总监对话。
+ * 底部对话条（一人公司）：纯输入通道，只与总监对话。
  *
  * 设计初衷：用户不直接对话工作人员——所有消息发给总监，由总监按目标模式
  * SPEC 把任务分发给各角色（需求分析/研发/UI/测试），角色回报回到本面板。
@@ -84,7 +84,7 @@ export default function OfficeChatBar() {
         borderTop: '1px solid rgba(15,23,42,0.08)',
       }}
     >
-      {/* 常驻提示：对话仅面向架构总监 */}
+      {/* 常驻提示：对话仅面向总监 */}
       <div className="flex items-center gap-1.5">
         <span
           className="shrink-0 rounded-full px-2 py-0.5"
