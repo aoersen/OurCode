@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { useChatStore } from '@/stores/chatStore'
+import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+import { DEV_SLOTS, TEST_SLOTS } from '@/services/office/workers'
 import { readStatus, type TargetModeStatus } from '@/services/targetMode/targetModeService'
 import { readSupervisorLog, type LogEntry } from '@/services/targetMode/dashboardData'
 import {
@@ -105,6 +107,8 @@ interface SlotCard {
   st: SlotStatus
   doing: string
   selection: BoardSelection
+  /** 该工位对应的员工会话（M4）——有值才能解雇（− 按钮）。 */
+  workerSessionId?: string
 }
 
 /**
@@ -182,8 +186,39 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
     return map
   }, [sessionTasks])
 
-  // 8 工位常驻卡:子任务按角色槽位池占位(运行中优先),1 号监管由主循环相位
-  // 驱动;按状态排列(工作中 → 失败 → 已完成 → 空闲中),同状态按工位号。
+  // 8 工位常驻卡:员工会话（M4 主通道）按固定工位驱动；子任务（run_subagent
+  // 降级通道）按角色槽位池占位；1 号总监由主循环相位驱动。
+  // 会话表 800ms 节流——员工流式输出会高频换 sessions 引用，整看板跟不起。
+  const sessionsThrottled = useThrottledValue(useChatStore((s) => s.sessions), 800)
+  const runningSessionIds = useChatStore((s) => s.runningSessionIds)
+  const workerStates = useMemo(() => {
+    const map = new Map<number, { working: boolean; doing: string; sessionId: string }>()
+    const projectPath = activeSession?.projectPath
+    if (!projectPath) return map
+    for (const s of sessionsThrottled) {
+      if (!s.workerRole || !s.workerSlot || s.projectPath !== projectPath) continue
+      const lastInbound = [...s.messages].reverse().find((m) => m.role === 'user')
+      const doing = lastInbound
+        ? summarizeTask(lastInbound.content.replace(/^\[来自会话「.+?」的会话间消息\]\n\n?/, ''), 30)
+        : '待命中 · 等待总监派发'
+      map.set(s.workerSlot, { working: runningSessionIds.includes(s.id), doing, sessionId: s.id })
+    }
+    return map
+  }, [sessionsThrottled, runningSessionIds, activeSession?.projectPath])
+
+  // ── 动态增员/解雇（M4）：研发与测试各最少保留 1 名 ──────────────────────
+  const devWorkerCount = [...workerStates.keys()].filter((n) => DEV_SLOTS.includes(n)).length
+  const testWorkerCount = [...workerStates.keys()].filter((n) => TEST_SLOTS.includes(n)).length
+  const addWorkerFor = (role: 'dev' | 'test') => {
+    const projectPath = activeSession?.projectPath
+    if (!projectPath) return
+    const id = useChatStore.getState().addWorker(projectPath, role)
+    if (!id) useUIStore.getState().showNotification(t('office.addWorkerFull'), 'warning')
+  }
+  const removeWorkerFor = (sessionId: string) => {
+    useChatStore.getState().removeWorker(sessionId)
+  }
+
   const slotCards = useMemo<SlotCard[]>(() => {
     const assignments = computeSlotAssignments(sessionTasks.map(([key, p]) => ({ key, p })))
     const phase = phaseEntry?.phase
@@ -197,6 +232,17 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
           selection: '监管',
         }
       }
+      // 员工会话固定工位优先——降级通道子任务不与其抢位
+      const w = workerStates.get(slot.id)
+      if (w) {
+        return {
+          slot,
+          st: w.working ? 'working' : 'idle',
+          doing: w.doing,
+          selection: SLOT_GROUP[slot.id] ?? '研发',
+          workerSessionId: w.sessionId,
+        }
+      }
       const a = assignments[slot.id - 1]
       const task = a.key != null ? sessionTasks.find(([k]) => k === a.key)?.[1] : undefined
       return {
@@ -208,7 +254,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
     })
     const rank: Record<SlotStatus, number> = { working: 0, error: 1, completed: 2, idle: 3 }
     return cards.sort((x, y) => rank[x.st] - rank[y.st] || x.slot.id - y.slot.id)
-  }, [sessionTasks, phaseEntry])
+  }, [sessionTasks, phaseEntry, workerStates])
 
   // 默认选中:优先第一个有运行中任务的组;选中的组没有任务时回落到第一个活跃组
   const [selectedGroup, setSelectedGroup] = useState<BoardSelection>('研发')
@@ -495,6 +541,25 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
             <h2 className="text-[13px] font-bold flex items-center gap-1.5" style={{ color: '#0d1c2d' }}>
               <span style={{ fontSize: 15, color: MONO.t2 }}>◈</span>
               {t('office.teamStatus')}
+              {/* M4 动态编制：研发/测试增员（各最少 1 名，满员提示） */}
+              <span className="flex items-center gap-1 ml-2">
+                <button
+                  onClick={() => addWorkerFor('dev')}
+                  title={t('office.addDev')}
+                  className="rounded px-1.5 transition-colors hover:bg-black/5"
+                  style={{ fontSize: 10.5, fontWeight: 500, color: '#0058bc', background: 'transparent', border: `1px solid ${HAIRLINE}`, cursor: 'pointer' }}
+                >
+                  ＋{t('office.devGroup')}
+                </button>
+                <button
+                  onClick={() => addWorkerFor('test')}
+                  title={t('office.addTest')}
+                  className="rounded px-1.5 transition-colors hover:bg-black/5"
+                  style={{ fontSize: 10.5, fontWeight: 500, color: '#0058bc', background: 'transparent', border: `1px solid ${HAIRLINE}`, cursor: 'pointer' }}
+                >
+                  ＋{t('office.testGroup')}
+                </button>
+              </span>
               <span className="shrink-0 ml-auto" style={{ fontFamily: MONO_FONT, fontSize: 9.5, fontWeight: 600, color: MONO.t3 }}>
                 {OFFICE_SLOTS.length} 工位
               </span>
@@ -509,10 +574,13 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
             className="flex-1 min-h-0 overflow-y-auto p-3 grid grid-cols-4 auto-rows-max content-start gap-2"
             style={{ background: 'rgba(15,23,42,0.02)' }}
           >
-            {slotCards.map(({ slot, st, selection }) => {
+            {slotCards.map(({ slot, st, selection, workerSessionId }) => {
               const meta = GROUP_STATUS[st]
               const selected = selection === selectedGroup
               const working = st === 'working'
+              // 解雇入口：仅员工会话且同类员工 >1 名时可移除（最少保留 1 名）
+              const isDev = DEV_SLOTS.includes(slot.id)
+              const removable = !!workerSessionId && (isDev ? devWorkerCount > 1 : testWorkerCount > 1)
               return (
                 <button
                   key={slot.id}
@@ -524,7 +592,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                     setHoveredGroup(selection)
                   }}
                   onMouseLeave={scheduleHoverClose}
-                  className="flex flex-col gap-1 text-left transition-colors"
+                  className="relative group flex flex-col gap-1 text-left transition-colors"
                   style={{
                     padding: '8px 10px',
                     borderRadius: 8,
@@ -534,6 +602,23 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                   }}
                   title={`${t('office.viewWorkLog')}: ${slot.role}`}
                 >
+                  {removable && (
+                    <span
+                      role="button"
+                      title={t('office.removeWorker')}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeWorkerFor(workerSessionId!)
+                      }}
+                      className="absolute -top-1.5 -right-1.5 z-10 flex items-center justify-center rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                      style={{
+                        width: 16, height: 16, background: '#fff',
+                        border: '1px solid rgba(220,38,38,0.4)', color: '#DC2626', fontSize: 11, lineHeight: 1,
+                      }}
+                    >
+                      −
+                    </span>
+                  )}
                   {/* 状态点 + 角色名(运行中状态点脉冲) */}
                   <span className="flex items-center gap-1.5 min-w-0 w-full">
                     <span

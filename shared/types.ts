@@ -127,6 +127,13 @@ export interface ChatSession {
   /** 会话所属窗口模式：'main' = 对话窗口（默认），'office' = 一人公司独立
    *  窗口。两个模式的会话完全隔离（SQLite 按 mode 过滤），互不显示。 */
   mode?: 'main' | 'office'
+  /** 一人公司角色员工（M4）：本会话是某个工位的员工。workerRole = 角色类型
+   *  （tm-developer / tm-ui-developer / tm-requirement-analyst / tm-tester），
+   *  workerSlot = 1~8 工位号。此类会话对用户隐藏（hidden），只在 list_agents /
+   *  派发协议里出现；总监通过 send_message 派活，员工完成后主动回报。 */
+  workerRole?: string
+  workerSlot?: number
+  hidden?: boolean
 }
 
 // Agent todo list item (managed via the manage_todo tool)

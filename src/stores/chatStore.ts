@@ -10,8 +10,16 @@ import { useMemoryStore } from './memoryStore'
 import { useUIStore } from './uiStore'
 import { getLastModelForGroup } from './configStore'
 import { TARGET_MODE_INSTRUCTION } from './targetModeInstruction'
-import { budgetExceeded, getBudgetUsage, refreshBudgetLimit } from '@/services/targetMode/budget'
+import { refreshBudgetLimit, projectBudgetExceeded, getProjectBudgetUsage } from '@/services/targetMode/budget'
 import { ensureInitialized, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
+import {
+  WORKER_ROSTER,
+  DEV_SLOTS,
+  TEST_SLOTS,
+  roleForSlot,
+  titleForSlot,
+  buildWorkerSystemPrompt,
+} from '@/services/office/workers'
 import { t } from '@/i18n'
 import { getFileContent } from '@/editor/modelRegistry'
 import { sendLLMRequest, configureLLMCache, configureLLMRetry, configureWireLog, type WireLogContext } from '@/services/llm/LLMClient'
@@ -25,6 +33,7 @@ import { ToolCall, ToolResult } from '@/services/tools/types'
 import { writeToolPaths } from '@/services/tools/writePaths'
 import { createApprovalPreHook } from './approvalHook'
 import { runWithConcurrency } from '@/services/subagents/parallel'
+import { loadAgentDefinition, SubagentGuard } from '@/services/subagents/subagentDefinitions'
 import {
   extractKeywords,
   scoreAgainstKeywords,
@@ -849,6 +858,13 @@ interface ChatState {
   // Session management
   loadSessions: () => Promise<void>
   createSession: (configGroupId: string, projectPath?: string) => string
+  // 一人公司角色员工（M4）：员工会话对用户隐藏，由总监经 send_message 派活，
+  // 完成后主动回报。ensureWorkers 幂等补齐项目的最低编制；addWorker/removeWorker
+  // 支持研发/测试动态增员（各保留最少 1 名——调用方保证）。
+  createWorkerSession: (configGroupId: string, projectPath: string, role: string, slot: number, title: string) => string
+  ensureWorkers: (projectPath: string) => void
+  addWorker: (projectPath: string, role: 'dev' | 'test') => string | null
+  removeWorker: (sessionId: string) => void
   deleteSession: (sessionId: string) => void
   renameSession: (sessionId: string, title: string) => void
   setActiveSession: (sessionId: string) => void
@@ -2025,6 +2041,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (hold) {
       return '已投递到目标会话历史（hold 模式，未触发处理）。'
     }
+    // M4：预算保险丝同样拦入站触发的续跑（员工回报 → 总监续跑不能绕过预算）。
+    // 消息照常投递（用户看得到回报），触顶时不自动续跑——用户调高上限后点
+    // 「继续」恢复。同步判断用内存预算状态，异步刷新在 continueGeneration 里做。
+    if (target.targetMode === true && projectBudgetExceeded(target.projectPath || '')) {
+      return '已投递到目标会话历史（公司预算触顶，未自动续跑）。'
+    }
     markInboundLaunch(targetSessionId)
     void runAgentLoop(targetSessionId).finally(() => { markInboundSettled(targetSessionId) })
     return '已投递并触发目标会话处理。'
@@ -2197,6 +2219,82 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 调用 saveSession；从未发过消息的空白会话随进程退出自然消失。
 
     return id
+  },
+
+  // ── 一人公司角色员工（M4）───────────────────────────────────────────────
+  // 员工会话 = 独立 agent 会话：自己的上下文、自己的运行循环、按角色定义
+  // 的工具边界。hidden 对用户不可见，但出现在 list_agents 里供总监派发。
+
+  createWorkerSession: (configGroupId, projectPath, role, slot, title) => {
+    const id = uuidv4()
+    const session: ChatSession = {
+      id,
+      title,
+      configGroupId,
+      model: getLastModelForGroup(configGroupId),
+      modelParams: DEFAULT_MODEL_PARAMS,
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      agentMode: 'agent',
+      // 员工自主执行：工具调用自动放行（公司内部信任）。审批对话框只属于
+      // 总监会话（全局单槽），员工会话绝不能往里面塞审批。
+      projectEditMode: 'full_access',
+      todos: [],
+      planStatus: 'none',
+      projectPath,
+      mode: WINDOW_MODE,
+      workerRole: role,
+      workerSlot: slot,
+      hidden: true,
+    }
+    set((s) => ({ sessions: [session, ...s.sessions] }))
+    void get().saveSession(id)
+    return id
+  },
+
+  /** 幂等补齐项目的最低编制（固定：需求分析师/UI 研发 + 各 1 名研发与测试）。 */
+  ensureWorkers: (projectPath) => {
+    if (!projectPath) return
+    const bySlot = new Map(
+      get()
+        .sessions.filter((s) => s.workerRole && s.projectPath === projectPath)
+        .map((s) => [s.workerSlot, s]),
+    )
+    const configGroupId = useConfigStore.getState().activeConfigGroupId
+    if (!configGroupId) return
+    for (const def of WORKER_ROSTER) {
+      if (!bySlot.has(def.slot)) {
+        get().createWorkerSession(configGroupId, projectPath, def.role, def.slot, def.title)
+      }
+    }
+  },
+
+  /** 动态增员：在研发（4/5/6）或测试（7/8）工位池里取第一个空位。满员返回 null。 */
+  addWorker: (projectPath, role) => {
+    const pool = role === 'test' ? TEST_SLOTS : DEV_SLOTS
+    const occupied = new Set(
+      get()
+        .sessions.filter((s) => s.workerRole && s.projectPath === projectPath)
+        .map((s) => s.workerSlot),
+    )
+    const slot = pool.find((n) => !occupied.has(n))
+    if (slot == null) return null
+    const configGroupId = useConfigStore.getState().activeConfigGroupId
+    if (!configGroupId) return null
+    return get().createWorkerSession(
+      configGroupId,
+      projectPath,
+      roleForSlot(slot),
+      slot,
+      titleForSlot(slot),
+    )
+  },
+
+  /** 解雇员工：先停跑再删除会话（最少保留 1 名的约束由调用方保证）。 */
+  removeWorker: (sessionId) => {
+    get().stopGeneration(sessionId)
+    get().deleteSession(sessionId)
   },
 
   deleteSession: (sessionId) => {
@@ -2388,10 +2486,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Experimental warning — the agent runs autonomously and burns tokens.
       useUIStore.getState().showNotification(t('chat.targetModeFirstHint'), 'info')
       // Bootstrap the skeleton in the session's own project (idempotent) —
-      // never the globally opened folder.
+      // never the globally opened folder. 先注册项目（打开即信任），否则
+      // 骨架写入会因「路径不在允许范围内」失败。
       const root = session.projectPath || getWorkspaceRoot()
       if (root) {
-        ensureInitialized(root).then(() => get().refreshTargetModeStatus())
+        const init = () => ensureInitialized(root).then(() => get().refreshTargetModeStatus())
+        if (window.electronAPI?.openProject) {
+          void window.electronAPI.openProject(root).then(init).catch(init)
+        } else {
+          void init()
+        }
       }
     } else {
       set({ targetModeStatus: null })
@@ -2482,11 +2586,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // untouched — only the auto-resume path is gated. Normal chat / agent
     // sessions never hit this branch (budget tracks target-mode sessions only).
     // The limit is re-read from budget.md first so a mid-run cap raise works.
+    // M4：触顶判定按**项目合计**（总监 + 全体员工的消耗），公司级语义。
     const tmSession = get().sessions.find((s) => s.id === sessionId)
     if (tmSession?.targetMode) {
       await refreshBudgetLimit(sessionId)
-      if (budgetExceeded(sessionId)) {
-        const { used, limit } = getBudgetUsage(sessionId)
+      if (projectBudgetExceeded(tmSession.projectPath || '')) {
+        const { used, limit } = getProjectBudgetUsage(tmSession.projectPath || '')
         useUIStore.getState().showNotification(t('chat.targetModeBudgetExceeded'), 'warning')
         get().addMessage(sessionId, {
           role: 'assistant',
@@ -3105,12 +3210,13 @@ function flushUsageEvents(events: UsageEvent[]): void {
   if (!events || events.length === 0) return
   window.electronAPI.recordUsage(events).catch(() => { /* stats are best-effort */ })
   // Target-mode budget fuse payload (v2 §13.3): per-session token totals for
-  // TARGET-MODE sessions only — budget.ts accumulates these; other listeners
-  // (usage dashboard) ignore the detail.
+  // TARGET-MODE sessions AND 角色员工会话（M4）——公司预算 = 总监 + 全体员工的
+  // 消耗；budget.ts accumulates these; other listeners (usage dashboard) ignore
+  // the detail.
   const bySession: Record<string, { tokens: number; projectPath: string }> = {}
   for (const e of events) {
     if (!e.sessionId || !e.projectPath) continue
-    if (!useChatStore.getState().sessions.some((s) => s.id === e.sessionId && s.targetMode === true)) continue
+    if (!useChatStore.getState().sessions.some((s) => s.id === e.sessionId && (s.targetMode === true || !!s.workerRole))) continue
     const tokens = (e.tokensIn || 0) + (e.tokensOut || 0)
     if (tokens <= 0) continue
     const prev = bySession[e.sessionId]
@@ -3162,6 +3268,9 @@ async function runAgentLoop(
       useUIStore.getState().showNotification(t('chat.targetModePeerRunning'), 'warning')
       return
     }
+    // M4：公司开工前补齐项目的最低编制（固定 需求分析师/UI 研发 + 各 1 名
+    // 研发与测试）。员工会话幂等复用，不随任务重建。
+    chatStore.ensureWorkers(session.projectPath)
   }
 
   // Agent mode operates on the workspace, so a *currently selected* project
@@ -3301,6 +3410,14 @@ async function runAgentLoop(
   }
 
   try {
+    // 「打开即信任」兜底：会话可能绑定到尚未在本窗口打开过的项目（一人公司
+    // 目标模式会话、跨窗口恢复的会话等）。run 启动前把它的项目注册为受信任
+    // 根，保证整个任务期间的读写不会因「路径不在允许范围内」中途失败或弹
+    // 逐文件读取授权框。幂等：已信任/已注册的项目直接返回 true。
+    const runRoot = session.projectPath || getWorkspaceRoot()
+    if (runRoot) {
+      await timePrepStep('授权项目目录', () => window.electronAPI.openProject(runRoot))
+    }
     // Refresh dynamic tools (MCP servers + workspace skills) before building the tool list.
     // Skill tools scope to the RUNNING session's project (global skills always
     // included) — the browsing root would leak other projects' skills in.
@@ -3310,7 +3427,18 @@ async function runAgentLoop(
   // Build the system prompt with memories / rules / skills / retrieved context
   const lastUserMessage = [...session.messages].reverse().find((m) => m.role === 'user')
   const userContent = lastUserMessage?.content || ''
-  const baseSystemPrompt = configGroup.systemPrompt || 'You are a helpful AI coding assistant.'
+  // 角色员工（M4）：系统提示 = 角色定义人设 + 员工规则（回报总监/只读子智能体），
+  // 不复用配置组的全局 systemPrompt——员工是独立的执行者，不是总监。
+  let baseSystemPrompt = configGroup.systemPrompt || 'You are a helpful AI coding assistant.'
+  let workerGuard: SubagentGuard | null = null
+  if (session.workerRole) {
+    const workerDef = await loadAgentDefinition(session.workerRole, session.projectPath || undefined)
+    baseSystemPrompt = await buildWorkerSystemPrompt(
+      session.workerRole,
+      workerDef?.systemPrompt ?? '',
+    )
+    workerGuard = new SubagentGuard(workerDef, session.projectPath || '')
+  }
   // Split the prompt into a byte-stable prefix + per-turn dynamic context so
   // provider prefix caches (OpenAI / DeepSeek / Anthropic) keep hitting across
   // turns instead of re-billing the whole history every time.
@@ -3793,10 +3921,15 @@ async function runAgentLoop(
       // takes effect on the very next round.
       const projectEditMode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE
       const usePlanTools = agentMode === 'agent' && projectEditMode === 'plan' && !opts?.planApproved && !targetMode
+      // 角色员工（M4）：工具边界 = 角色定义的 guard（tools 白名单 + 读写路径），
+      // 与子智能体同机制——员工只能碰自己角色允许的工具。
+      const workerToolFilter = workerGuard ? (name: string) => workerGuard!.toolAllowed(name) : undefined
       // The auto-memory tool is opt-in — hide it when the user disabled it
       const toolDefinitions = (usePlanTools
         ? toolExecutor.getToolDefinitions((name) => PLAN_TOOLS.has(name))
-        : toolExecutor.getToolDefinitions(targetMode ? (name) => !TARGET_MODE_SUPERVISOR_DENIED.has(name) : undefined))
+        : toolExecutor.getToolDefinitions(
+            workerToolFilter ?? (targetMode ? (name) => !TARGET_MODE_SUPERVISOR_DENIED.has(name) : undefined),
+          ))
         .filter((d) => useEditorStore.getState().preferences.aiAutoMemory || d.function.name !== 'remember')
 
       // Cache-break diagnostics: sign the byte-stable prefix (system + tools)
@@ -4710,6 +4843,30 @@ async function runAgentLoop(
         cacheReadTokens: runCacheReadTokens,
         cacheWriteTokens: runCacheWriteTokens,
       })
+    }
+    // ── 角色员工回报（M4）：完成/出错/停止都主动 send_message 向总监汇报 ──
+    // 总监收到入站回报后自动续跑（receiveInboundMessage 的 idle 触发）——
+    // 派发 → 干活 → 回报 → 总监续跑 的闭环在这里收尾，不依赖任何人催。
+    if (session.workerRole && session.projectPath) {
+      const st = useChatStore.getState()
+      const director = st.sessions.find(
+        (s) => s.targetMode === true && !s.workerRole && s.projectPath === session.projectPath,
+      )
+      const liveSession = st.sessions.find((s) => s.id === sessionId)
+      const lastUser = [...(liveSession?.messages ?? [])].reverse().find((m) => m.role === 'user')
+      const lastAssistant = [...(liveSession?.messages ?? [])].reverse().find((m) => m.role === 'assistant')
+      // 只回报「被派发过」的运行（入站消息触发）——员工被手动/系统触发而没
+      // 接活时，不打扰总监。
+      const wasDispatched = !!lastUser?.content?.includes('会话间消息')
+      if (director && liveSession && wasDispatched) {
+        const aborted = abortController.signal.aborted
+        const failed = !!lastAssistant?.error || (liveSession.agentRuns?.find((r) => r.id === runId)?.status === 'error')
+        const status = aborted ? '已停止' : failed ? '失败' : '完成'
+        const body =
+          (lastAssistant?.error ? `错误：${lastAssistant.error}\n` : '') +
+          (lastAssistant?.content?.trim() || '（无文字汇报）')
+        void st.receiveInboundMessage(session.title, director.id, `状态: ${status}\n${body}`)
+      }
     }
     // Clear ONLY this session's run state — parallel conversations keep their
     // own running flags / controllers / dialogs untouched.

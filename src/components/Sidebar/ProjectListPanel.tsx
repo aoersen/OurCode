@@ -173,8 +173,9 @@ export default function ProjectListPanel() {
     const byPath = new Map<string, { name: string; path: string; lastOpened: number; sessionCount: number; firstAdded: number }>()
 
     for (const s of sessions) {
-      // 从未用过的空会话不进入项目统计，也不会凭空"造"出只含空会话的项目。
-      if (isGhostSession(s)) continue
+      // 从未用过的空会话不进入项目统计，也不会凭空"造"出只含空会话的项目；
+      // 角色员工会话（M4）对用户隐藏，同样不进项目统计。
+      if (isGhostSession(s) || s.hidden) continue
       if (!s.projectPath) continue
       if (map.has(s.projectPath)) {
         const entry = map.get(s.projectPath)!
@@ -268,7 +269,7 @@ export default function ProjectListPanel() {
   // sessions (never used) are hidden until their first message arrives.
   const getProjectSessions = (projectPath: string) => {
     return sessions
-      .filter((s) => s.projectPath === projectPath && !isGhostSession(s))
+      .filter((s) => s.projectPath === projectPath && !isGhostSession(s) && !s.hidden)
       // 按最近用户发消息时间排序（回退 updatedAt 兼容旧数据）——agent 运行
       // 中的工具/进度刷新只改 updatedAt，不会让会话位置一直跳动。
       .sort((a, b) => sessionLastUserActivity(b) - sessionLastUserActivity(a))
@@ -278,7 +279,7 @@ export default function ProjectListPanel() {
   // time). They used to be invisible here — "conversations got lost" — so they
   // get their own group at the bottom of the list instead.
   const orphanSessions = useMemo(() => {
-    let list = sessions.filter((s) => !s.projectPath && !isGhostSession(s))
+    let list = sessions.filter((s) => !s.projectPath && !isGhostSession(s) && !s.hidden)
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase()
       list = list.filter((s) => s.title.toLowerCase().includes(q))

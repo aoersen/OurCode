@@ -29,7 +29,7 @@ describe('office/mapping: buildInitialOfficeAgents', () => {
 
   it('槽位静态信息与 office-v3 agentsData 对齐', () => {
     expect(OFFICE_SLOTS[0]).toMatchObject({ id: 1, role: '总监', codeName: 'Director-01' })
-    expect(OFFICE_SLOTS[6]).toMatchObject({ id: 7, role: '自动化测试-1', codeName: 'QA-07' })
+    expect(OFFICE_SLOTS[6]).toMatchObject({ id: 7, role: '测试-1', codeName: 'QA-07' })
   })
 })
 

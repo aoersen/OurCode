@@ -591,6 +591,8 @@ export function createToolRegistry(): Tool[] {
           name: String(args.name || 'subagent'),
           task: String(args.prompt || ''),
           description: args.description ? String(args.description) : undefined,
+          // 只读子智能体（M4）：角色员工创建的调研助手只能读不能改。
+          readonly: args.readonly === true,
           // Route the sub-agent's live progress to the UI (SubAgentProgressBlock)
           // and let the user's Stop button cancel the run.
           toolCallId: context?.toolCallId,

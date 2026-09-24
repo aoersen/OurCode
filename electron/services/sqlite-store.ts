@@ -200,6 +200,17 @@ export class SQLiteStore {
       // 升级后应保持公司形态，而不是退化成普通对话。
       this.db.exec("UPDATE chat_sessions SET target_mode = 1 WHERE mode = 'office'")
     }
+    // M4 角色员工会话：worker_role = 角色类型（tm-developer 等）、worker_slot =
+    // 1~8 工位号、hidden = 对用户隐藏（只出现在派发协议 / list_agents 里）。
+    if (!sessColumns.some((c: any) => c.name === 'worker_role')) {
+      this.db.exec("ALTER TABLE chat_sessions ADD COLUMN worker_role TEXT DEFAULT ''")
+    }
+    if (!sessColumns.some((c: any) => c.name === 'worker_slot')) {
+      this.db.exec("ALTER TABLE chat_sessions ADD COLUMN worker_slot INTEGER DEFAULT 0")
+    }
+    if (!sessColumns.some((c: any) => c.name === 'hidden')) {
+      this.db.exec("ALTER TABLE chat_sessions ADD COLUMN hidden INTEGER DEFAULT 0")
+    }
     // Add project_path column to memories if missing (project-scoped memories)
     const memColumns = this.db.prepare("PRAGMA table_info(memories)").all() as any[]
     if (!memColumns.some((c: any) => c.name === 'project_path')) {
@@ -587,6 +598,9 @@ export class SQLiteStore {
         summaryMessageCount: session.summary_message_count || undefined,
         mode: (session.mode === 'office' ? 'office' : 'main') as 'main' | 'office',
         targetMode: session.target_mode ? true : undefined,
+        workerRole: session.worker_role || undefined,
+        workerSlot: session.worker_slot > 0 ? session.worker_slot : undefined,
+        hidden: session.hidden === 1 ? true : undefined,
       }
     })
   }
@@ -604,7 +618,7 @@ export class SQLiteStore {
             active_branch_id = ?, branches = ?, pinned_at = ?, archived_at = ?,
             agent_mode = ?, todos = ?, plan_content = ?, plan_status = ?, agent_runs = ?, project_path = ?,
             summary = ?, summary_message_count = ?, project_edit_mode = ?, last_user_message_at = ?,
-            compaction_in_progress = ?, mode = ?, target_mode = ?
+            compaction_in_progress = ?, mode = ?, target_mode = ?, worker_role = ?, worker_slot = ?, hidden = ?
         WHERE id = ?
       `).run(
         session.title,
@@ -629,14 +643,18 @@ export class SQLiteStore {
         (session as any).compactionInProgress ? 1 : 0,
         (session as any).mode === 'office' ? 'office' : 'main',
         (session as any).targetMode ? 1 : 0,
+        (session as any).workerRole || '',
+        (session as any).workerSlot || 0,
+        (session as any).hidden ? 1 : 0,
         id
       )
     } else {
       this.db.prepare(`
         INSERT INTO chat_sessions (id, title, config_group_id, model, model_params, created_at, updated_at,
           active_branch_id, branches, pinned_at, archived_at, agent_mode, todos, plan_content, plan_status, agent_runs, project_path,
-          summary, summary_message_count, project_edit_mode, last_user_message_at, compaction_in_progress, mode, target_mode)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          summary, summary_message_count, project_edit_mode, last_user_message_at, compaction_in_progress, mode, target_mode,
+          worker_role, worker_slot, hidden)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         session.title,
@@ -661,7 +679,10 @@ export class SQLiteStore {
         (session as any).lastUserMessageAt || 0,
         (session as any).compactionInProgress ? 1 : 0,
         (session as any).mode === 'office' ? 'office' : 'main',
-        (session as any).targetMode ? 1 : 0
+        (session as any).targetMode ? 1 : 0,
+        (session as any).workerRole || '',
+        (session as any).workerSlot || 0,
+        (session as any).hidden ? 1 : 0
       )
     }
 

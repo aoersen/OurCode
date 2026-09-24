@@ -31,6 +31,19 @@ import { resolveThinkingLevel, DEFAULT_MODEL_PARAMS } from '@/types'
 
 const MAX_SUBAGENT_ITERATIONS = 10
 const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'create_directory', 'multi_edit_file'])
+/** 只读子智能体还要剥夺命令执行与 git 变更类工具（M4：只读 = 真只读）。 */
+const READONLY_DENIED_TOOLS = new Set([
+  ...WRITE_TOOLS,
+  'run_command',
+  'git_commit',
+  'git_add',
+  'git_reset',
+  'git_stash',
+  'git_checkout',
+  'git_push',
+  'create_file',
+  'create_directory',
+])
 
 /** Compact a tool call's arguments for the transient progress record — write
  *  payloads (file contents) can be huge, and the panel only needs the shape
@@ -71,6 +84,9 @@ export interface SubAgentOptions {
   writePaths?: string[]
   /** Prepend a machine-readable `状态: ...` first line to the returned report. */
   statusLine?: boolean
+  /** 只读子智能体（M4）：隐藏并拒绝一切写类工具——角色员工创建的调研/检索
+   *  助手只能读，写操作必须由角色本体执行。 */
+  readonly?: boolean
 }
 
 /** Build the subagent's system prompt: definition role + environment + current file + skills */
@@ -164,6 +180,19 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
    *  call settles at once with a synthetic stopped result (the in-flight tool
    *  may keep running in the background, but its result is discarded). */
   const executeToolWithAbort = (tc: ToolCall): Promise<{ result: ToolResult; aborted: boolean }> => {
+    // 只读子智能体的运行时兜底：工具列表已隐藏写类工具，这里再拦一道——
+    // 防止任何漏网路径（如手写 tool call 直发）让只读助手改了文件。
+    if (opts.readonly && READONLY_DENIED_TOOLS.has(tc.name)) {
+      return Promise.resolve({
+        result: {
+          toolCallId: tc.id,
+          name: tc.name,
+          result: '[只读子智能体] 已拒绝：子智能体只能读不能改，写操作请由角色本体执行。',
+          isError: true,
+        },
+        aborted: false,
+      })
+    }
     const ctx = {
       sessionId: opts.sessionId,
       projectPath: opts.projectPath,
@@ -280,7 +309,9 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
 
     // Only the subagent's allowlisted tools reach its LLM (monotonic decay);
     // the auto-memory tool additionally respects the user's settings toggle.
-    let toolDefinitions = executor.getToolDefinitions((name) => guard.toolAllowed(name))
+    let toolDefinitions = executor.getToolDefinitions((name) =>
+      guard.toolAllowed(name) && (!opts.readonly || !READONLY_DENIED_TOOLS.has(name)),
+    )
     if (!useEditorStore.getState().preferences.aiAutoMemory) {
       toolDefinitions = toolDefinitions.filter((d) => d.function.name !== 'remember')
     }

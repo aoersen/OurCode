@@ -58,6 +58,10 @@ const occupied = new Set<number>()
 const assignments = new Map<string, number>() // toolCallId → slot
 const progressSnapshot = new Map<string, SubAgentProgress>()
 let modeSnapshot = { targetIds: '' }
+// M4：角色员工会话的工位占用与状态快照（员工是主通道；run_subagent 降级
+// 通道不得与员工抢工位）。
+const workerSlots = new Set<number>()
+const workerSnapshot = new Map<string, { running: boolean; task: string }>()
 // 1 号总监（监管 Agent）状态：主循环运行相位映射 + 交接动画忙碌保护
 let supervisorBusy = false
 let supervisorTaskSet = false
@@ -148,7 +152,8 @@ function onSubagentStart(key: string, p: SubAgentProgress): void {
   // refuses to apply a working status onto a non-running entry).
   if (p.status !== 'running') return
   const role = envelopeRole(p.task) || p.name
-  const slot = assignSlot(role, occupied) ?? firstFreeSlot()
+  // 员工工位优先：降级通道（run_subagent）不得抢占员工会话的固定工位
+  const slot = assignSlot(role, new Set([...occupied, ...workerSlots])) ?? firstFreeSlot()
   if (slot == null) return // 8 个槽全忙：本次派发不进场景（走聊天进度即可）
   assignments.set(key, slot)
   occupied.add(slot)
@@ -215,7 +220,7 @@ function onSubagentUpdate(key: string, p: SubAgentProgress, prev: SubAgentProgre
 }
 
 function firstFreeSlot(): number | null {
-  for (let id = 4; id <= 8; id++) if (!occupied.has(id)) return id
+  for (let id = 4; id <= 8; id++) if (!occupied.has(id) && !workerSlots.has(id)) return id
   return null
 }
 
@@ -284,8 +289,34 @@ function handleStoreChange(): void {
     .find((x) => x.phase)
   syncSupervisor(running?.phase)
 
+  // ── M4：角色员工会话驱动固定工位（主通道）──────────────────────────
+  // 员工 = 独立会话：running → working + 当前任务；空闲 → idle + 最近任务。
+  // 员工与员工互不干扰（各自固定工位），研发1 干活时研发2 可并行/空闲。
+  const st = useChatStore.getState()
+  const workers = st.sessions.filter((s) => s.workerRole && s.workerSlot)
+  workerSlots.clear()
+  for (const w of workers) workerSlots.add(w.workerSlot!)
+  for (const w of workers) {
+    const slot = w.workerSlot!
+    const isRunning = st.runningSessionIds.includes(w.id)
+    const lastInbound = [...w.messages].reverse().find((m) => m.role === 'user')
+    const task = lastInbound
+      ? summarizeTask(lastInbound.content.replace(/^\[来自会话「.+?」的会话间消息\]\n\n?/, ''), 40)
+      : '待命中 · 等待总监派发'
+    const prev = workerSnapshot.get(w.id)
+    if (prev && prev.running === isRunning && prev.task === task) continue
+    workerSnapshot.set(w.id, { running: isRunning, task })
+    setSlotTask(slot, task, isRunning ? 30 : 0)
+    setSlotStatus(slot, isRunning ? 'working' : 'idle')
+  }
+  // 被解雇的员工（会话已删）清掉快照，避免快照表无限增长
+  for (const id of [...workerSnapshot.keys()]) {
+    if (!st.sessions.some((s) => s.id === id)) workerSnapshot.delete(id)
+  }
+
   // 子 Agent 进度 diff —— 只驱动目标模式会话的条目（公司整体运营），
-  // agent 模式运行的子任务不进场景。
+  // agent 模式运行的子任务不进场景。（员工工位已在上面被排除，降级通道
+  // 只在员工缺席时占用对应槽位。）
   const byId = new Map(useChatStore.getState().sessions.map((s) => [s.id, s]))
   const entries = useChatStore.getState().subagentProgress
   for (const [key, p] of Object.entries(entries)) {
@@ -317,6 +348,8 @@ function resetInternal(): void {
   assignments.clear()
   progressSnapshot.clear()
   occupied.clear()
+  workerSlots.clear()
+  workerSnapshot.clear()
   supervisorBusy = false
   supervisorTaskSet = false
   const fresh = buildInitialOfficeAgents()

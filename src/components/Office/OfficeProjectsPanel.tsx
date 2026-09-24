@@ -174,7 +174,8 @@ export default function OfficeProjectsPanel() {
     for (const arr of tasksByProject.values()) for (const { session } of arr) activeSessionIds.add(session.id)
     const map = new Map<string, ChatSession[]>()
     for (const s of sessions) {
-      if (isGhostSession(s) || !s.projectPath) continue
+      // 角色员工会话（M4）对用户隐藏：不进历史对话区（总监经 send_message 派发）
+      if (isGhostSession(s) || !s.projectPath || s.hidden) continue
       if (activeSessionIds.has(s.id)) continue
       const arr = map.get(s.projectPath)
       if (arr) arr.push(s)

@@ -7,16 +7,18 @@
  */
 import type { OfficeAgentState, OfficeStatus, SubAgentProgress } from '@shared/types'
 
-/** 8 个工位的静态基础信息（与 office-v3 src/data/agentsData.js 对齐）。 */
+/** 8 个工位的静态基础信息（与 office-v3 src/data/agentsData.js 对齐）。
+ *  编制（M4 定稿）：1 总监 + 2 需求分析师 + 3 UI 研发（固定）；
+ *  4~6 业务研发-N、7~8 测试-N（动态增减，各最少 1 名）。 */
 export const OFFICE_SLOTS: Array<{ id: number; role: string; codeName: string }> = [
   { id: 1, role: '总监', codeName: 'Director-01' },
   { id: 2, role: '需求分析师', codeName: 'PM-02' },
-  { id: 3, role: 'UI/UX 设计师', codeName: 'Design-03' },
-  { id: 4, role: '核心架构师', codeName: 'Dev-04' },
-  { id: 5, role: '业务研发-1', codeName: 'Dev-05' },
-  { id: 6, role: '业务研发-2', codeName: 'Dev-06' },
-  { id: 7, role: '自动化测试-1', codeName: 'QA-07' },
-  { id: 8, role: '性能测试-2', codeName: 'QA-08' },
+  { id: 3, role: 'UI 研发', codeName: 'Design-03' },
+  { id: 4, role: '业务研发-1', codeName: 'Dev-04' },
+  { id: 5, role: '业务研发-2', codeName: 'Dev-05' },
+  { id: 6, role: '业务研发-3', codeName: 'Dev-06' },
+  { id: 7, role: '测试-1', codeName: 'QA-07' },
+  { id: 8, role: '测试-2', codeName: 'QA-08' },
 ]
 
 /** 角色名 → 可用的工位槽位组（按优先级排序）。支持 tm- 前缀与内建名。 */

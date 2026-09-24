@@ -6,7 +6,7 @@ import ToolStepRow, { extractKey } from '../ChatPanel/ToolStepRow'
 import ErrorCard from '../ChatPanel/ErrorCard'
 import { MONO, GRADIENT, roleAvatar } from './officeTheme'
 import { roleLabel, summarizeTask } from '@/services/office/mapping'
-import type { ChatMessage } from '@/types'
+import type { ChatMessage, ChatSession } from '@/types'
 
 /**
  * 「一人公司」专用对话流（区别于 agent 模式的全量对话）：
@@ -31,6 +31,12 @@ function fmtTime(ts: number): string {
 type Turn =
   | { kind: 'user'; id: string; message: ChatMessage }
   | { kind: 'assistant'; id: string; messages: ChatMessage[] }
+  // 员工回报（M4）：总监收到的会话间消息——员工完成后主动 send_message 发回，
+  // 以独立条目呈现，不算用户指令。
+  | { kind: 'inbound'; id: string; sender: string; content: string }
+
+/** 会话间消息前缀（receiveInboundMessage 投递格式）。 */
+const INBOUND_RE = /^\[来自会话「(.+?)」的会话间消息\]\n\n?/
 
 /** 配对的工具结果条目（assistant 消息的 toolResults 元素）。 */
 type ToolResultEntry = NonNullable<ChatMessage['toolResults']>[number]
@@ -95,7 +101,8 @@ function extractStatusLine(report: string): string {
   return /^状态\s*:/.test(first) ? first : ''
 }
 
-/** 连续 assistant 消息合并为一个汇报轮（与 ChatMessages 的 turn 分组同规则）。 */
+/** 连续 assistant 消息合并为一个汇报轮（与 ChatMessages 的 turn 分组同规则）。
+ *  员工回报（会话间消息）单独成轮——它不是用户指令。 */
 function buildTurns(messages: ChatMessage[]): Turn[] {
   const turns: Turn[] = []
   for (const m of messages) {
@@ -104,11 +111,44 @@ function buildTurns(messages: ChatMessage[]): Turn[] {
       const last = turns[turns.length - 1]
       if (last && last.kind === 'assistant') last.messages.push(m)
       else turns.push({ kind: 'assistant', id: m.id, messages: [m] })
-    } else {
-      turns.push({ kind: 'user', id: m.id, message: m })
+    } else if (m.role === 'user') {
+      const inbound = INBOUND_RE.exec(m.content)
+      if (inbound) {
+        turns.push({ kind: 'inbound', id: m.id, sender: inbound[1], content: m.content.replace(INBOUND_RE, '') })
+      } else {
+        turns.push({ kind: 'user', id: m.id, message: m })
+      }
     }
   }
   return turns
+}
+
+/** 总监派发条目（M4）：send_message 工具调用 → 总监 → 员工。 */
+interface DispatchEntryData {
+  key: string
+  role: string
+  task: string
+}
+
+function collectDispatchEntries(messages: ChatMessage[], sessions: ChatSession[]): DispatchEntryData[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]))
+  const out: DispatchEntryData[] = []
+  for (const m of messages) {
+    for (const tc of m.toolCalls ?? []) {
+      if (tc.name !== 'send_message') continue
+      const args = (tc.arguments ?? {}) as { targetSessionId?: unknown; targetTitle?: unknown; message?: unknown }
+      const targetId = typeof args.targetSessionId === 'string' ? args.targetSessionId : ''
+      const target =
+        byId.get(targetId) ??
+        (typeof args.targetTitle === 'string' ? sessions.find((s) => s.title === args.targetTitle) : undefined)
+      out.push({
+        key: tc.id,
+        role: target?.title || '员工',
+        task: typeof args.message === 'string' ? args.message : '',
+      })
+    }
+  }
+  return out
 }
 
 // ── 指令行 ──────────────────────────────────────────────────────────────────
@@ -141,7 +181,7 @@ function OrderRow({ message }: { message: ChatMessage }) {
 
 // ── 派发条目（总监 → 角色，结果未回填前显示）────────────────────────────────
 
-function DispatchEntry({ role, task }: { role: string; task: string }) {
+function DispatchEntry({ role, task, completed = false }: { role: string; task: string; completed?: boolean }) {
   const t = useI18n()
   const avatar = roleAvatar(role)
   return (
@@ -178,10 +218,12 @@ function DispatchEntry({ role, task }: { role: string; task: string }) {
           style={{ background: MONO.hover, border: `1px solid ${MONO.hairline}` }}
         >
           <div className="truncate" style={{ fontSize: 12, color: MONO.t2 }}>{summarizeTask(task, 120)}</div>
-          <div className="flex items-center gap-1.5 mt-1">
-            <span className="inline-block rounded-full animate-spin" style={{ width: 10, height: 10, border: '2px solid #0058BC', borderTopColor: 'transparent' }} />
-            <span style={{ fontSize: 11, color: MONO.t3 }}>{t('office.dispatchPending')}</span>
-          </div>
+          {!completed && (
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className="inline-block rounded-full animate-spin" style={{ width: 10, height: 10, border: '2px solid #0058BC', borderTopColor: 'transparent' }} />
+              <span style={{ fontSize: 11, color: MONO.t3 }}>{t('office.dispatchPending')}</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -431,6 +473,11 @@ function AssistantTurn({
 }) {
   const t = useI18n()
   const reports = useMemo(() => collectSubagentReports(messages), [messages])
+  // M4：总监经 send_message 派发的条目（员工会话是主通道；run_subagent 是降级通道）
+  const dispatches = useMemo(
+    () => collectDispatchEntries(messages, useChatStore.getState().sessions),
+    [messages],
+  )
   return (
     <div className="flex flex-col gap-2.5">
       <span
@@ -441,6 +488,9 @@ function AssistantTurn({
       >
         {t('office.reportLabel')} · {fmtTime(messages[messages.length - 1]?.createdAt ?? Date.now())}
       </span>
+      {dispatches.map((d) => (
+        <DispatchEntry key={d.key} role={d.role} task={d.task} completed />
+      ))}
       {reports.map((r) =>
         r.hasResult ? (
           <RoleReportEntry key={r.toolCallId} role={r.role} report={r.report} isError={r.isError} />
@@ -681,17 +731,32 @@ export default function OfficeStream() {
         </div>
       )}
 
-      {turns.map((turn) =>
-        turn.kind === 'user' ? (
-          <OrderRow key={turn.id} message={turn.message} />
-        ) : (
+      {turns.map((turn) => {
+        if (turn.kind === 'user') return <OrderRow key={turn.id} message={turn.message} />
+        if (turn.kind === 'inbound') {
+          // 员工回报（M4）：角色完成后主动发回总监——以角色条目呈现，向用户报备
+          return (
+            <div key={`inbound-${turn.id}`} className="flex flex-col gap-2.5">
+              <span
+                style={{
+                  fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
+                  fontSize: 10, color: MONO.t3,
+                }}
+              >
+                {t('office.reportLabel')} · {fmtTime(messages.find((m) => m.id === turn.id)?.createdAt ?? Date.now())}
+              </span>
+              <RoleReportEntry role={turn.sender} report={turn.content} />
+            </div>
+          )
+        }
+        return (
           <AssistantTurn
             key={`turn-${turn.id}`}
             messages={turn.messages}
             sessionRunning={sessionRunning}
           />
-        ),
-      )}
+        )
+      })}
 
       {/* 实时监管状态行（本轮 LLM 流式输出期） */}
       {!isToolsExecuting && <LiveStatusLine sessionId={activeSession.id} />}

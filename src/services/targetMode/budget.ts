@@ -156,6 +156,27 @@ export function getBudgetUsage(sessionId: string): { used: number; limit: number
   return s ? { used: s.used, limit: s.limit } : { used: 0, limit: DEFAULT_LIMIT }
 }
 
+/** 项目（公司）预算合计：该项目所有会话（总监 + 角色员工）的消耗之和。
+ *  上限取各会话上限的最大值（同一项目的会话都读同一份 budget.md，一致）。 */
+export function getProjectBudgetUsage(projectPath: string): { used: number; limit: number } {
+  let used = 0
+  let limit = DEFAULT_LIMIT
+  let found = false
+  for (const s of budgets.values()) {
+    if (s.projectPath !== projectPath) continue
+    used += s.used
+    if (s.limit > limit) limit = s.limit
+    found = true
+  }
+  return found ? { used, limit } : { used: 0, limit: DEFAULT_LIMIT }
+}
+
+/** 项目（公司）预算是否触顶——总监续跑与员工回报触发的续跑都以此为准（M4）。 */
+export function projectBudgetExceeded(projectPath: string): boolean {
+  const { used, limit } = getProjectBudgetUsage(projectPath)
+  return limit > 0 && used >= limit
+}
+
 let installed = false
 
 /** Install the global listener once (called from the App bootstrap). */

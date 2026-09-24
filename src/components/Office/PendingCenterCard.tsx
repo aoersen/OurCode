@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
-import { budgetExceeded, getBudgetUsage, initBudgetTracking } from '@/services/targetMode/budget'
+import { getBudgetUsage, initBudgetTracking } from '@/services/targetMode/budget'
 
 interface PendingItem {
   key: string
@@ -47,43 +47,60 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
   const cardRef = useRef<HTMLDivElement>(null)
 
   // 预算触顶 / 目标修订检测（5s 轮询；approval/question 直接订阅 store）。
-  // 扫描本窗口**所有**目标模式会话（公司整体运营 = 可多项目并行）——此前只
+  // 扫描本窗口**所有**公司会话（总监 + 角色员工，可多项目并行）——此前只
   // 盯激活会话：后台项目的预算触顶/目标修订在切到该会话前完全不可见。
+  // 预算按项目聚合：公司预算 = 该项目的总监 + 全体员工的消耗之和。
   useEffect(() => {
     if (!active) return
     let alive = true
     const poll = () => {
       const cs = useChatStore.getState()
-      const tmSessions = cs.sessions.filter((s) => s.targetMode === true && s.projectPath)
+      const companySessions = cs.sessions.filter(
+        (s) => s.projectPath && (s.targetMode === true || !!s.workerRole),
+      )
+      const byProject = new Map<string, typeof companySessions>()
+      for (const s of companySessions) {
+        initBudgetTracking(s.id, s.projectPath!)
+        const list = byProject.get(s.projectPath!)
+        if (list) list.push(s)
+        else byProject.set(s.projectPath!, [s])
+      }
       const next: PendingItem[] = []
-      for (const session of tmSessions) {
-        initBudgetTracking(session.id, session.projectPath!)
-        if (budgetExceeded(session.id)) {
-          if (!budgetDismissed.current.has(session.id)) {
-            const u = getBudgetUsage(session.id)
+      for (const [projectPath, members] of byProject) {
+        const director = members.find((s) => s.targetMode === true && !s.workerRole) ?? members[0]
+        let used = 0
+        let limit = 0
+        for (const m of members) {
+          const u = getBudgetUsage(m.id)
+          used += u.used
+          limit = Math.max(limit, u.limit)
+        }
+        const exceeded = limit > 0 && used >= limit
+        if (exceeded) {
+          if (!budgetDismissed.current.has(projectPath)) {
             next.push({
-              key: `budget:${session.id}`,
+              key: `budget:${projectPath}`,
               kind: 'budget',
               type: 'amber',
-              title: `${t('office.pendBudgetTitle')} · ${session.title || t('chat.untitled')}`,
-              sub: `${t('office.pendBudgetSub')} ${(u.used / 1e6).toFixed(1)}M / ${(u.limit / 1e6).toFixed(0)}M`,
+              title: `${t('office.pendBudgetTitle')} · ${director.title || t('chat.untitled')}`,
+              sub: `${t('office.pendBudgetSub')} ${(used / 1e6).toFixed(1)}M / ${(limit / 1e6).toFixed(0)}M（总监+员工合计）`,
               actions: [
                 {
                   label: t('office.pendAck'),
                   primary: true,
                   run: () => {
-                    budgetDismissed.current.add(session.id)
+                    budgetDismissed.current.add(projectPath)
                     useUIStore
                       .getState()
                       .showNotification(t('office.pendBudgetAck'), 'warning')
-                    setExtras((cur) => cur.filter((x) => x.key !== `budget:${session.id}`))
+                    setExtras((cur) => cur.filter((x) => x.key !== `budget:${projectPath}`))
                   },
                 },
                 {
                   label: t('office.pendIgnore'),
                   run: () => {
-                    budgetDismissed.current.add(session.id)
-                    setExtras((cur) => cur.filter((x) => x.key !== `budget:${session.id}`))
+                    budgetDismissed.current.add(projectPath)
+                    setExtras((cur) => cur.filter((x) => x.key !== `budget:${projectPath}`))
                   },
                 },
               ],
@@ -91,12 +108,15 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
           }
         } else {
           // 退出触顶：清除忽略标记，下次触顶重新提醒（注释与行为一致）
-          budgetDismissed.current.delete(session.id)
+          budgetDismissed.current.delete(projectPath)
         }
       }
-      // finalGoal_v{N}.md 新增 → 目标修订待确认（按项目分键，两个项目同名文件不冲突）
+      // finalGoal_v{N}.md 新增 → 目标修订待确认（每项目只扫一次：取总监会话）。
+      const directors = [...byProject.values()]
+        .map((members) => members.find((s) => s.targetMode === true && !s.workerRole))
+        .filter((s): s is NonNullable<typeof s> => !!s && !!s.projectPath)
       void Promise.all(
-        tmSessions.map((session) => {
+        directors.map((session) => {
           const base = `${session.projectPath!.replace(/[\\/]+$/, '')}/.ourcode/targemode`
           return window.electronAPI
             .listDir(base)

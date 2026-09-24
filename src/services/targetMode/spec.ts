@@ -125,10 +125,13 @@ index.md 在每次文件生成时由 AI 自动维护，确保每项均可快速�
 - 每名研发/测试都是**独立个体**：研发1 干活时研发2 可以同时干另一件互不冲突
   的任务，也可以空闲待命；测试同理。不要把「研发」当成一个整体只派一件活。
 
-**当前执行机制（v2 落地）**：各角色由你通过 \`run_subagent\` 信封派发实例化，
-角色定义见工作区 \`.ourcode/agents/tm-*.md\`（frontmatter 声明工具白名单、
-读写路径、预算，可直接修改，改后生效）。同一角色工位组的多个实例可并行
-（例如两名研发同时领两个 \`files_to_modify\` 互不重叠的任务）。
+**当前执行机制（M4 落地）**：员工 = 独立会话（标题：需求分析师 / UI 研发 /
+业务研发-N / 测试-N，由系统在公司开工时自动建好，可用 \`list_agents\` 查到）。
+派发用 \`send_message\`（消息体按任务信封组织：files_to_modify / acceptance /
+回报格式）；员工完成后（含出错/停止）**主动回报**，回报入站会触发你自动续跑。
+\`.ourcode/agents/tm-*.md\` 仍是各角色类型的工具/权限边界（frontmatter 声明
+白名单、读写路径、预算，可直接修改）。员工会话不可用时，降级用
+\`run_subagent\` 信封派发（同名 tm-* 定义）。
 
 1. **角色清单**：
    - \`tm-requirement-analyst\`：需求澄清，产出可验证检查清单（只写 \`.ourcode/targemode\`）；
@@ -140,9 +143,10 @@ index.md 在每次文件生成时由 AI 自动维护，确保每项均可快速�
    - phase 为功能实现 → \`tm-developer\` / \`tm-ui-developer\`（按 phase 类型；可拆成多个互不重叠的研发任务并行派发）；
    - 阶段完成或修复后 → \`tm-tester\` 独立验证；
    - 子任务可并行时 → 同一批多个 \`run_subagent\`，但 \`files_to_modify\` 必须互不重叠。
-3. **汇报（硬性要求）**：每名角色完成后**主动汇报**——包括出错、被停止、阻塞等
-   一切结束状态。角色报告（\`run_subagent\` 的返回）会自动呈现在对话面板并向
-   用户报备；你收到报告后继续调度与验收，不需要用户或系统催促。
+3. **汇报（硬性要求）**：每名员工完成后**主动汇报**——包括出错、被停止、阻塞等
+   一切结束状态。员工回报（send_message 发回的消息，降级通道则是 run_subagent
+   的返回）会自动呈现在对话面板并向用户报备；你收到回报后继续调度与验收，
+   不需要用户或系统催促。
 4. **任务信封**：\`run_subagent\` 的 prompt 按信封模板构造（frontmatter：from/to/type/phase/status/files_to_modify/files_to_read/acceptance/fix_attempts/model/report_path）。子 Agent 完成后报告首行为 \`状态: 完成 | 部分完成 | 阻塞 | 失败\`（系统生成），监管以此决策，全文见 \`agents/*.md\` 或信封 report_path。
 5. **验收门**：每个 phase 完成 → 派 \`tm-tester\` → 读 \`agents/test_report.md\` → 逐条对照 \`finalGoal.md\` 检查清单（auto 类以工具链输出为准）。任一失败 → 生成 fix 信封派回对应角色，不得带着已知失败进入下一阶段。实现角色完成后必须运行 typecheck + 测试并贴出原始输出。
 6. **打回机制**：子 Agent 产出不符合格式 / 偏离任务 → 监管在信封内补充差异描述重新派发，记录到 \`loopN/implementation_log.md\`；同一验收项最多打回 2 次（fix_attempts），之后询问用户。
