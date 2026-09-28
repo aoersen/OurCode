@@ -400,10 +400,20 @@ export class SubagentGuard {
   constructor(
     private def: SubAgentDefinition,
     private projectPath: string,
+    private opts: { workerMode?: boolean } = {},
   ) {}
 
+  // 员工模式（M4）：员工是一等会话、不是子智能体——员工规则要求他们用
+  // send_message 向总监回报、用 run_subagent 派只读调研助手，而这两项在
+  // 纯子智能体模式下被 CONTROL_TOOLS 封禁（防嵌套派发/防跨会话乒乓）。
+  // 对员工放行这两项；其余控制类工具（submit_plan / ask_user_question /
+  // manage_todo）对员工仍然封禁——隐藏会话不能向用户提问或提交计划。
+  private controlAllowed(name: string): boolean {
+    return this.opts.workerMode === true && (name === 'send_message' || name === 'run_subagent')
+  }
+
   toolAllowed(name: string): boolean {
-    if (CONTROL_TOOLS.has(name)) return false
+    if (CONTROL_TOOLS.has(name) && !this.controlAllowed(name)) return false
     if (this.def.tools == null) return true
     // skill__ tools only load instructions — harmless for any subagent
     if (name.startsWith('skill__')) return true
@@ -412,7 +422,7 @@ export class SubagentGuard {
 
   /** Returns an error message when the call is blocked, else null. */
   checkCall(name: string, args: Record<string, any>): string | null {
-    if (CONTROL_TOOLS.has(name)) {
+    if (CONTROL_TOOLS.has(name) && !this.controlAllowed(name)) {
       return `工具 "${name}" 是控制类工具，子智能体不允许调用。`
     }
     if (this.def.tools != null && !this.def.tools.includes(name) && !name.startsWith('skill__')) {

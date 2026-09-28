@@ -315,3 +315,35 @@ describe('path helpers', () => {
     expect(resolveAllowedRoot('C:/workspace', 'D:/abs/path')).toBe('D:/abs/path')
   })
 })
+
+describe('SubagentGuard — worker mode (M4 员工会话)', () => {
+  const workerDef = {
+    name: 'tm-developer',
+    description: '',
+    systemPrompt: 'x',
+    tools: undefined,
+    source: 'builtin' as const,
+  }
+
+  it('lets workers use send_message / run_subagent（回报总监 / 派只读调研助手）', () => {
+    const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true })
+    expect(g.toolAllowed('send_message')).toBe(true)
+    expect(g.checkCall('send_message', { targetSessionId: 'd1', message: 'hi' })).toBeNull()
+    expect(g.toolAllowed('run_subagent')).toBe(true)
+    expect(g.checkCall('run_subagent', { name: 'researcher', prompt: '调研' })).toBeNull()
+  })
+
+  it('still blocks the other control tools for workers（隐藏会话不能向用户提问）', () => {
+    const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true })
+    for (const t of ['submit_plan', 'ask_user_question', 'manage_todo']) {
+      expect(g.toolAllowed(t)).toBe(false)
+      expect(g.checkCall(t, {})).toBeTruthy()
+    }
+  })
+
+  it('worker mode does not leak into plain subagents（同一角色定义，子智能体照旧封禁）', () => {
+    const sub = new SubagentGuard(workerDef, 'C:/workspace')
+    expect(sub.toolAllowed('send_message')).toBe(false)
+    expect(sub.toolAllowed('run_subagent')).toBe(false)
+  })
+})

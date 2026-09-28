@@ -585,15 +585,20 @@ export function createToolRegistry(): Tool[] {
       },
       execute: async (args, context) => {
         const { runSubAgent } = await import('@/services/subagents/subagentRunner')
+        const { useChatStore } = await import('@/stores/chatStore')
         const sessionId = context?.sessionId || ''
+        const session = sessionId
+          ? useChatStore.getState().sessions.find((s) => s.id === sessionId)
+          : undefined
         const opts: SubAgentOptions = {
           sessionId,
           projectPath: context?.projectPath || '',
           name: String(args.name || 'subagent'),
           task: String(args.prompt || ''),
           description: args.description ? String(args.description) : undefined,
-          // 只读子智能体（M4）：角色员工创建的调研助手只能读不能改。
-          readonly: args.readonly === true,
+          // 只读子智能体（M4）：角色员工创建的调研助手只能读不能改——
+          // readonly 由员工身份强制，员工漏写 readonly 也会被剥夺写权限。
+          readonly: args.readonly === true || !!session?.workerRole,
           // Route the sub-agent's live progress to the UI (SubAgentProgressBlock)
           // and let the user's Stop button cancel the run.
           toolCallId: context?.toolCallId,
@@ -603,14 +608,10 @@ export function createToolRegistry(): Tool[] {
         // as a task envelope. Plain run_subagent tasks are never parsed — the
         // shared runner stays a dumb pipe, so normal agent mode is unaffected
         // even when a task happens to start with `---`.
-        if (sessionId) {
-          const { useChatStore } = await import('@/stores/chatStore')
-          const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
-          if (session?.targetMode) {
-            const { parseEnvelope, envelopeToOverrides } = await import('@/services/targetMode/envelope')
-            const envelope = parseEnvelope(opts.task)
-            if (envelope) Object.assign(opts, envelopeToOverrides(envelope))
-          }
+        if (session?.targetMode) {
+          const { parseEnvelope, envelopeToOverrides } = await import('@/services/targetMode/envelope')
+          const envelope = parseEnvelope(opts.task)
+          if (envelope) Object.assign(opts, envelopeToOverrides(envelope))
         }
         return runSubAgent(opts)
       },

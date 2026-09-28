@@ -3447,6 +3447,10 @@ async function runAgentLoop(
   // 用户停止标记是否已由 catch 分支写入（AbortError 路径追加 [生成已停止]）——
   // 循环体在轮次边界干净退出时不会抛错，需要循环后补一条停止标记，但不能重复。
   let stopMarked = false
+  // 员工终态分类信号（声明在 try 外：finally 的自动回报需要读取）——
+  // 打转守卫停 / 轮数用尽都不是「完成」，回报总监时不能误报为完成。
+  let haltedByLoopGuard = false
+  let exhaustedIterations = false
 
   // 目标模式监管 guard（见 TARGET_MODE_SUPERVISOR_DENIED 注释）：工具清单里
   // 已隐藏禁用工具，这里兜底拦截幻觉调用，并给 write/create/delete 加
@@ -3502,7 +3506,9 @@ async function runAgentLoop(
       session.workerRole,
       workerDef?.systemPrompt ?? '',
     )
-    workerGuard = new SubagentGuard(workerDef, session.projectPath || '')
+    // 员工模式：send_message（回报总监）与 run_subagent（派只读调研助手）
+    // 对员工放行，其余控制类工具照旧封禁。
+    workerGuard = new SubagentGuard(workerDef, session.projectPath || '', { workerMode: true })
   }
   // Split the prompt into a byte-stable prefix + per-turn dynamic context so
   // provider prefix caches (OpenAI / DeepSeek / Anthropic) keep hitting across
@@ -4534,6 +4540,22 @@ async function runAgentLoop(
           continue
         }
 
+        // ── M4：员工角色边界运行时兜底 ──
+        // 工具清单已按角色过滤（workerGuard.toolAllowed），这里再拦一道
+        // 幻觉调用（模型偶尔会叫出清单外的工具名/越界路径），与子智能体
+        // 的 guard.checkCall 同机制。拒绝文案带可用工具清单，教员工回到
+        // 角色边界内，而不是默默执行越权操作。
+        if (workerGuard) {
+          const blockedReason = workerGuard.checkCall(tc.name, tc.arguments)
+          if (blockedReason) {
+            const result = `角色边界（系统拦截）：${blockedReason}`
+            chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result, isError: true }))
+            recordToolMessage(tc.id, result)
+            useChatStore.getState().setTraceStatus(sessionId, tc.id, 'error')
+            continue
+          }
+        }
+
         // ── manage_todo: update the visible todo list ──
         if (tc.name === 'manage_todo') {
           const todos = normalizeTodos(tc.arguments.todos)
@@ -4696,6 +4718,31 @@ async function runAgentLoop(
                   isError: true,
                 },
           )
+          // ── M4：员工派生的子智能体终态失败/未完成 → 立即上报总监 ──
+          // 不依赖员工模型自觉 send_message 回报——模型可能无视失败继续跑，
+          // 总监会永远蒙在鼓里（真实事故：研发子任务执行异常，总监仍称
+          // 「没有失败、等回报即可」）。总监收到后由入站消息触发自动续跑，
+          // 自主决定打回/追问；员工本身的运行不受影响。
+          if (session.workerRole && session.projectPath) {
+            const p = useChatStore.getState().subagentProgress[tc.id]
+            const hardFailed = p?.status === 'error'
+            if (hardFailed || !s.ok) {
+              const director = useChatStore.getState().sessions.find(
+                (x) => x.targetMode === true && !x.workerRole && x.projectPath === session.projectPath,
+              )
+              if (director) {
+                const detail = hardFailed
+                  ? p?.error || '（无错误详情）'
+                  : String(s.reason ?? '子智能体执行失败')
+                const name = p?.name || String(tc.arguments?.name || '子智能体')
+                void useChatStore.getState().receiveInboundMessage(
+                  session.title,
+                  director.id,
+                  `状态: 失败\n子任务「${name}」终态失败：${detail}\n（员工仍在运行，此为其中一条子任务的失败通知，等待其整轮回报）`,
+                )
+              }
+            }
+          }
         }
       }
 
@@ -4728,6 +4775,7 @@ async function runAgentLoop(
       // REPEAT_CALL_HALT 次已经没有任何信息量，继续跑只会把预算烧光。
       if (roundRepeatsHalt) {
         loopGuardStopped = true
+        haltedByLoopGuard = true
         chatStore.addMessage(sessionId, {
           role: 'assistant',
           content: `[已停止：同一个工具调用以完全相同的参数重复了 ${REPEAT_CALL_HALT} 次，结果不会改变。请补充缺失的信息或调整任务描述后重试。]`,
@@ -4744,6 +4792,20 @@ async function runAgentLoop(
       if (consecutiveCommandFailures >= COMMAND_FAIL_BREAK_ROUNDS && !commandFailBreakAsked && !targetMode) {
         consecutiveCommandFailures = 0
         commandFailBreakAsked = true
+        // M4 员工：隐藏会话没有用户可问——连续失败说明任务卡死，落一条终态
+        // 消息停跑，由 finally 自动回报总监「失败」，让总监重新派发/换人，
+        // 而不是静默烧预算（员工无 targetMode 标记，不能沿用用户提问分支）。
+        if (session.workerRole) {
+          loopGuardStopped = true
+          haltedByLoopGuard = true
+          chatStore.addMessage(sessionId, {
+            role: 'assistant',
+            content: `[已停止：run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次执行失败或超时${lastFailedCommand ? `（最近一次：${lastFailedCommand.slice(0, 80)}）` : ''}，任务卡死。已回报总监，等待重新派发。]`,
+            runId,
+          })
+          clearStream()
+          break
+        }
         const question =
           `run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次执行失败或超时` +
           (lastFailedCommand ? `（最近一次：${lastFailedCommand.slice(0, 80)}）` : '') +
@@ -4804,6 +4866,7 @@ async function runAgentLoop(
     // message would be misleading. 无限（默认）时 iterationsLeft 恒为 Infinity，
     // 此分支不会触发。
     if (iterationsLeft <= 0 && maxIterations > 0 && !finishedNaturally && !loopGuardStopped && !abortController.signal.aborted && !planWasSubmitted(sessionId)) {
+      exhaustedIterations = true
       chatStore.addMessage(sessionId, {
         role: 'assistant',
         content: `[已达到最大工具调用轮数 (${maxIterations})。点击下方"继续"按钮可继续执行。]`,
@@ -4925,12 +4988,27 @@ async function runAgentLoop(
       const wasDispatched = !!lastUser?.content?.includes('会话间消息')
       if (director && liveSession && wasDispatched) {
         const aborted = abortController.signal.aborted
-        const failed = !!lastAssistant?.error || (liveSession.agentRuns?.find((r) => r.id === runId)?.status === 'error')
-        const status = aborted ? '已停止' : failed ? '失败' : '完成'
-        const body =
-          (lastAssistant?.error ? `错误：${lastAssistant.error}\n` : '') +
-          (lastAssistant?.content?.trim() || '（无文字汇报）')
-        void st.receiveInboundMessage(session.title, director.id, `状态: ${status}\n${body}`)
+        // 员工模型已自觉 send_message 回报过总监（最后一条 assistant 消息
+        // 就是回报）→ 不再自动补一条，避免总监收到两条「状态: 完成」重复
+        // 派发验收。运行在回报之后才出错时 lastAssistant 是出错消息而非
+        // 回报，这里不会误判，自动回报照常发出。
+        const alreadyReported = (lastAssistant?.toolCalls ?? []).some(
+          (c) =>
+            c.name === 'send_message' &&
+            (c.arguments?.targetSessionId === director.id ||
+              c.arguments?.targetTitle === director.title),
+        )
+        if (!alreadyReported) {
+          const failed =
+            !!lastAssistant?.error ||
+            (liveSession.agentRuns?.find((r) => r.id === runId)?.status === 'error') ||
+            haltedByLoopGuard
+          const status = aborted ? '已停止' : failed ? '失败' : exhaustedIterations ? '部分完成' : '完成'
+          const body =
+            (lastAssistant?.error ? `错误：${lastAssistant.error}\n` : '') +
+            (lastAssistant?.content?.trim() || '（无文字汇报）')
+          void st.receiveInboundMessage(session.title, director.id, `状态: ${status}\n${body}`)
+        }
       }
     }
     // Clear ONLY this session's run state — parallel conversations keep their
