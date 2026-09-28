@@ -4,6 +4,7 @@ import {
   isUserRequestMessage,
   requestTitle,
   buildTaskRequests,
+  buildDirectorActivities,
 } from '@/services/office/taskRequests'
 import type { ChatMessage, ChatSession, SubAgentProgress } from '@shared/types'
 
@@ -315,5 +316,193 @@ describe('office/taskRequests: 一个会话 = 一个任务', () => {
     })
     const map = buildTaskRequests({ sessions: [onlyInbound, plain, worker], progress: {}, runningSessionIds: [] })
     expect(map.size).toBe(0)
+  })
+})
+
+describe('office/taskRequests: buildDirectorActivities（看板工作记录 / 任务流）', () => {
+  it('只返回指定总监的活动；员工派发按标题归属并带角色分组', () => {
+    const taskA = session({
+      id: 's1',
+      targetMode: true,
+      projectPath: '/p',
+      title: '任务A标题',
+      messages: [msg({ id: 'u1', role: 'user', content: '任务A', createdAt: 100 })],
+    })
+    const taskB = session({
+      id: 's2',
+      targetMode: true,
+      projectPath: '/p',
+      title: '任务B标题',
+      messages: [msg({ id: 'u1', role: 'user', content: '任务B', createdAt: 1000 })],
+    })
+    const dev = session({
+      id: 'w4',
+      workerRole: 'tm-developer',
+      workerSlot: 4,
+      title: '业务研发-1',
+      hidden: true,
+      projectPath: '/p',
+      messages: [
+        msg({ id: 'd1', role: 'user', content: inbound('任务A标题', 'A 的活'), createdAt: 200 }),
+        msg({ id: 'd2', role: 'user', content: inbound('任务B标题', 'B 的活'), createdAt: 1200 }),
+      ],
+    })
+    const input = { sessions: [taskA, taskB, dev], progress: {}, runningSessionIds: [] }
+    const actsA = buildDirectorActivities(input, 's1')
+    expect(actsA.map((a) => a.task)).toEqual(['A 的活'])
+    expect(actsA[0].label).toBe('业务研发-1')
+    expect(actsA[0].group).toBe('研发')
+
+    const actsB = buildDirectorActivities(input, 's2')
+    expect(actsB.map((a) => a.task)).toEqual(['B 的活'])
+  })
+
+  it('各角色工位映射到 产品/设计/研发/测试 分组', () => {
+    const director = session({
+      id: 's1',
+      targetMode: true,
+      projectPath: '/p',
+      title: '任务',
+      messages: [msg({ id: 'u1', role: 'user', content: 'x', createdAt: 100 })],
+    })
+    const mkWorker = (id: string, role: string, slot: number, title: string, at: number) =>
+      session({
+        id,
+        workerRole: role,
+        workerSlot: slot,
+        title,
+        hidden: true,
+        projectPath: '/p',
+        messages: [msg({ id: `d-${id}`, role: 'user', content: inbound('任务', `${title}的活`), createdAt: at })],
+      })
+    const acts = buildDirectorActivities(
+      {
+        sessions: [
+          director,
+          mkWorker('w2', 'tm-requirement-analyst', 2, '需求分析师', 200),
+          mkWorker('w3', 'tm-ui-developer', 3, 'UI 研发', 300),
+          mkWorker('w4', 'tm-developer', 4, '业务研发-1', 400),
+          mkWorker('w7', 'tm-tester', 7, '测试-1', 500),
+        ],
+        progress: {},
+        runningSessionIds: [],
+      },
+      's1',
+    )
+    expect(acts.map((a) => [a.label, a.group])).toEqual([
+      ['需求分析师', '产品'],
+      ['UI 研发', '设计'],
+      ['业务研发-1', '研发'],
+      ['测试-1', '测试'],
+    ])
+  })
+
+  it('派发状态推导：running（员工在跑）/ done（回报完成）/ failed（回报失败）/ pending（未回报）', () => {
+    const director = session({
+      id: 's1',
+      targetMode: true,
+      projectPath: '/p',
+      title: '加搜索功能',
+      messages: [msg({ id: 'u1', role: 'user', content: '加搜索功能', createdAt: 100 })],
+    })
+    const dev = session({
+      id: 'w4',
+      workerRole: 'tm-developer',
+      workerSlot: 4,
+      title: '业务研发-1',
+      hidden: true,
+      projectPath: '/p',
+      messages: [
+        msg({ id: 'd1', role: 'user', content: inbound('加搜索功能', '实现搜索接口'), createdAt: 200 }),
+        msg({ id: 'rep1', role: 'assistant', content: '结论：完成\n已上线', createdAt: 300 }),
+      ],
+    })
+    const qa = session({
+      id: 'w7',
+      workerRole: 'tm-tester',
+      workerSlot: 7,
+      title: '测试-1',
+      hidden: true,
+      projectPath: '/p',
+      messages: [msg({ id: 'd2', role: 'user', content: inbound('加搜索功能', '验证搜索'), createdAt: 500 })],
+    })
+
+    // 研发已回报完成；测试在跑（runningSessionIds）→ 最新一次派发 running
+    const running = buildDirectorActivities({ sessions: [director, dev, qa], progress: {}, runningSessionIds: ['w7'] }, 's1')
+    expect(running.map((a) => [a.label, a.status])).toEqual([
+      ['业务研发-1', 'done'],
+      ['测试-1', 'running'],
+    ])
+    expect(running[0].reportFirstLine).toBe('结论：完成')
+
+    // 测试回报失败 → failed，回报首行保留
+    qa.messages.push(msg({ id: 'rep2', role: 'assistant', content: '结论：失败\n环境缺失', createdAt: 600 }))
+    const reported = buildDirectorActivities({ sessions: [director, dev, qa], progress: {}, runningSessionIds: [] }, 's1')
+    expect(reported[1].status).toBe('failed')
+    expect(reported[1].reportFirstLine).toBe('结论：失败')
+
+    // 无回报且未在跑 → pending
+    const idle = session({
+      id: 'w8',
+      workerRole: 'tm-tester',
+      workerSlot: 8,
+      title: '测试-2',
+      hidden: true,
+      projectPath: '/p',
+      messages: [msg({ id: 'd3', role: 'user', content: inbound('加搜索功能', '回归验证'), createdAt: 700 })],
+    })
+    const pendingActs = buildDirectorActivities({ sessions: [director, idle], progress: {}, runningSessionIds: [] }, 's1')
+    expect(pendingActs[0].status).toBe('pending')
+  })
+
+  it('员工只读调研子代理归属派发方总监；总监本会话子代理也纳入', () => {
+    const director = session({
+      id: 's1',
+      targetMode: true,
+      projectPath: '/p',
+      title: '任务',
+      messages: [msg({ id: 'u1', role: 'user', content: 'x', createdAt: 100 })],
+    })
+    const dev = session({
+      id: 'w4',
+      workerRole: 'tm-developer',
+      workerSlot: 4,
+      title: '业务研发-1',
+      hidden: true,
+      projectPath: '/p',
+      messages: [msg({ id: 'd1', role: 'user', content: inbound('任务', '实现功能'), createdAt: 200 })],
+    })
+    const research = progress({ sessionId: 'w4', name: 'researcher', task: '调研方案', startedAt: 300 })
+    const ownTest = progress({ sessionId: 's1', name: 'tm-tester', task: '跑测试', startedAt: 400 })
+
+    const acts = buildDirectorActivities(
+      { sessions: [director, dev], progress: { r1: research, t1: ownTest }, runningSessionIds: [] },
+      's1',
+    )
+    expect(acts.map((a) => a.label)).toEqual(['业务研发-1', '业务研发-1', '测试'])
+    // 员工调研子代理：归到派发方总监、展示员工工位名、分组按子代理角色推导
+    expect(acts[1].progress).toBe(research)
+    expect(acts[1].status).toBe('running')
+    expect(acts[1].group).toBe('研发')
+    // 总监本会话子代理：分组按信封角色（tm-tester → 测试）
+    expect(acts[2].progress).toBe(ownTest)
+    expect(acts[2].group).toBe('测试')
+  })
+
+  it('非总监会话 id → 空数组', () => {
+    const director = session({
+      id: 's1',
+      targetMode: true,
+      projectPath: '/p',
+      title: '任务',
+      messages: [msg({ id: 'u1', role: 'user', content: 'x', createdAt: 100 })],
+    })
+    expect(buildDirectorActivities({ sessions: [director], progress: {}, runningSessionIds: [] }, 'ghost')).toEqual([])
+    expect(
+      buildDirectorActivities(
+        { sessions: [session({ id: 'w4', workerRole: 'tm-developer', hidden: true, projectPath: '/p', messages: [] })], progress: {}, runningSessionIds: [] },
+        'w4',
+      ),
+    ).toEqual([])
   })
 })

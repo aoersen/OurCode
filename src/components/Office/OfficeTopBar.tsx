@@ -31,7 +31,6 @@ export default function OfficeTopBar() {
   // 会话：左侧任务行展示的运行中任务可能属于另一个会话，按钮必须可用且能止住它。
   const runningSessionIds = useChatStore((s) => s.runningSessionIds)
   const running = runningSessionIds.length > 0
-  const targetModeStatus = useChatStore((s) => s.targetModeStatus)
   // 进度表逐次推送换引用（思考节流/工具步骤），800ms 节流避免顶栏随每次推送
   // 整块重渲染——与看板/项目栏同一节流粒度（角色分布只是「约」统计）。
   const subagentProgress = useThrottledValue(useChatStore((s) => s.subagentProgress), 800)
@@ -43,8 +42,8 @@ export default function OfficeTopBar() {
   const pendingCount = useUIStore((s) => s.officePendingCount)
   const pulsePending = useUIStore((s) => s.pulseOfficePending)
 
-  const summary = useGoalChecklist(rootPath, !!activeSessionId)
-  const badge = humanBadge(targetModeStatus, summary?.coverage ?? null)
+  const { summary, status: liveStatus } = useGoalChecklist(rootPath, !!activeSessionId, activeSessionId)
+  const badge = humanBadge(liveStatus, summary?.coverage ?? null)
   // 预算（5s 轮询刷新上限/消耗；页面首次挂载即初始化追踪）
   const [usage, setUsage] = useState(() => ({ used: 0, limit: 2_000_000 }))
   useEffect(() => {
@@ -93,12 +92,12 @@ export default function OfficeTopBar() {
   }, [popOpen])
 
   const badgeTip = [
-    targetModeStatus?.round != null ? `${t('office.round')} ${targetModeStatus.round}` : null,
-    targetModeStatus?.stageCurrent != null && targetModeStatus.stageTotal != null
-      ? `${t('office.wbStage')} ${targetModeStatus.stageCurrent}/${targetModeStatus.stageTotal}`
+    liveStatus?.round != null ? `${t('office.round')} ${liveStatus.round}` : null,
+    liveStatus?.stageCurrent != null && liveStatus.stageTotal != null
+      ? `${t('office.wbStage')} ${liveStatus.stageCurrent}/${liveStatus.stageTotal}`
       : null,
     summary ? `${t('office.checklistCount', { n: summary.items.length })} · ${t('office.achievedLabel')} ${summary.coverage}%` : null,
-    targetModeStatus?.progressText || null,
+    liveStatus?.progressText || null,
   ]
     .filter(Boolean)
     .join(' · ')

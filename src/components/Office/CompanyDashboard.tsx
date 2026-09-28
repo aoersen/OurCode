@@ -17,6 +17,7 @@ import {
   type RoleGroup,
   type SlotStatus,
 } from '@/services/office/mapping'
+import { buildDirectorActivities, type DirectorActivity } from '@/services/office/taskRequests'
 import { MONO, CANVAS, GRADIENT, roleAvatar } from './officeTheme'
 import { useThrottledValue } from '@/utils/useThrottledValue'
 import type { SubAgentProgress } from '@shared/types'
@@ -256,19 +257,32 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
     return cards.sort((x, y) => rank[x.st] - rank[y.st] || x.slot.id - y.slot.id)
   }, [sessionTasks, phaseEntry, workerStates])
 
-  // 默认选中:优先第一个有运行中任务的组;选中的组没有任务时回落到第一个活跃组
+  // ── M4 员工活动聚合:总监派发 + 员工只读子智能体 + 总监本会话子代理 ────────
+  // 工作记录时间线 / NOW 行 / 悬浮窗共用。此前只读总监会话自己的
+  // subagentProgress——M4 下真正的活儿在员工会话里跑,工作记录常年空白。
+  const directorActivities = useMemo(() => {
+    if (!sessionId) return [] as DirectorActivity[]
+    return buildDirectorActivities(
+      { sessions: sessionsThrottled, progress: subagentProgress, runningSessionIds },
+      sessionId,
+    )
+  }, [sessionsThrottled, subagentProgress, runningSessionIds, sessionId])
+
+  // 默认选中:进入会话时优先第一个有运行中任务的组,其次第一个有任务的组。
+  // 点击角色卡即钉住,会话内不再自动抢回——此前的 effect 在任务运行期间每次
+  // 数据刷新(约 800ms 换引用)都重选一次,用户点击立刻被覆盖,工作记录被钉死
+  // 在「研发」,角色选择形同虚设。
   const [selectedGroup, setSelectedGroup] = useState<BoardSelection>('研发')
+  const prevSessionIdRef = useRef(sessionId)
   useEffect(() => {
-    const running = ROLE_GROUPS.find((g) => tasksByGroup.get(g)?.some((x) => x.p.status === 'running'))
-    if (running) {
-      setSelectedGroup(running)
-      return
-    }
-    if (selectedGroup !== '监管' && (tasksByGroup.get(selectedGroup)?.length ?? 0) === 0) {
-      const firstActive = ROLE_GROUPS.find((g) => (tasksByGroup.get(g)?.length ?? 0) > 0)
-      if (firstActive) setSelectedGroup(firstActive)
-    }
-  }, [tasksByGroup, selectedGroup])
+    if (prevSessionIdRef.current === sessionId) return
+    prevSessionIdRef.current = sessionId
+    const first =
+      ROLE_GROUPS.find((g) => tasksByGroup.get(g)?.some((x) => x.p.status === 'running')) ??
+      ROLE_GROUPS.find((g) => (tasksByGroup.get(g)?.length ?? 0) > 0) ??
+      '研发'
+    setSelectedGroup(first)
+  }, [sessionId, tasksByGroup])
 
   // ── 团队状态角色卡悬浮窗 ─────────────────────────────────────────────────
   // 对话里的角色汇报只有一句结论；完整工作内容（任务全文、每一步工具调用与
@@ -292,6 +306,10 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
     }, 120)
   }
   const hoveredTasks = hoveredGroup && hoveredGroup !== '监管' ? (tasksByGroup.get(hoveredGroup) ?? []) : []
+  const hoveredDispatches =
+    hoveredGroup && hoveredGroup !== '监管'
+      ? directorActivities.filter((a) => a.group === hoveredGroup && !a.progress)
+      : []
 
   // ── 角色组聚合状态:「在做什么」取运行中任务,无则按完成/失败/待命回落 ──
   function groupMeta(g: RoleGroup): { status: GroupStatus; doing: string } {
@@ -300,7 +318,13 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
     if (running) return { status: 'working', doing: summarizeTask(running.p.task, 30) }
     const failed = tasks.find((x) => x.p.status === 'error' || x.p.status === 'stopped')
     if (failed) return { status: 'error', doing: summarizeTask(failed.p.task, 30) }
-    if (tasks.length > 0) return { status: 'completed', doing: '任务已完成' }
+    // M4:员工派发同样参与「在做什么」——运行中的派发算工作中,失败回报算异常
+    const dispatches = directorActivities.filter((a) => a.group === g && !a.progress)
+    const runningDispatch = dispatches.find((a) => a.status === 'running')
+    if (runningDispatch) return { status: 'working', doing: summarizeTask(runningDispatch.task, 30) }
+    const failedDispatch = dispatches.find((a) => a.status === 'failed')
+    if (failedDispatch) return { status: 'error', doing: summarizeTask(failedDispatch.task, 30) }
+    if (tasks.length > 0 || dispatches.length > 0) return { status: 'completed', doing: '任务已完成' }
     return { status: 'idle', doing: '待命中 · 等待派发任务' }
   }
 
@@ -311,44 +335,68 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
       const supervisorLog: WorkEntry[] = log.map((e) => ({ t: e.time, kind: 'start', title: e.text }))
       return supervisorLog
     }
-    const tasks = tasksByGroup.get(selectedGroup) ?? []
+    const acts = directorActivities.filter((a) => a.group === selectedGroup)
     const out: WorkEntry[] = []
-    for (const { p } of [...tasks].sort((a, b) => a.p.startedAt - b.p.startedAt)) {
-      out.push({
-        t: fmtTime(p.startedAt),
-        kind: 'start',
-        title: '开始任务',
-        desc: summarizeTask(p.task, 42),
-        meta: roleLabel(p.task, p.name),
-      })
-      for (const step of p.steps) {
+    for (const a of acts) {
+      if (a.progress) {
+        const p = a.progress
         out.push({
-          t: null,
-          kind: step.status === 'error' ? 'error' : step.status === 'success' ? 'done' : 'step',
-          title: step.name,
-          desc: summarizeArgs(step.arguments),
-          meta: step.status.toUpperCase(),
+          t: fmtTime(p.startedAt),
+          kind: 'start',
+          title: '开始任务',
+          desc: summarizeTask(p.task, 42),
+          meta: roleLabel(p.task, p.name),
         })
-      }
-      if (p.status === 'done') {
-        out.push({ t: null, kind: 'done', title: '任务完成', desc: '产出已交回监管 Agent 验收', meta: 'DONE' })
-      } else if (p.status === 'error' || p.status === 'stopped') {
+        for (const step of p.steps) {
+          out.push({
+            t: null,
+            kind: step.status === 'error' ? 'error' : step.status === 'success' ? 'done' : 'step',
+            title: step.name,
+            desc: summarizeArgs(step.arguments),
+            meta: step.status.toUpperCase(),
+          })
+        }
+        if (p.status === 'done') {
+          out.push({ t: null, kind: 'done', title: '任务完成', desc: '产出已交回监管 Agent 验收', meta: 'DONE' })
+        } else if (p.status === 'error' || p.status === 'stopped') {
+          out.push({
+            t: null,
+            kind: 'error',
+            title: p.status === 'stopped' ? '已停止' : '执行异常',
+            desc: p.error || '',
+            meta: p.status.toUpperCase(),
+          })
+        }
+      } else {
+        // 员工派发:员工本体的工具步骤不进时间线(粒度与左栏任务区一致),
+        // 回报首行作为结果展示。
         out.push({
-          t: null,
-          kind: 'error',
-          title: p.status === 'stopped' ? '已停止' : '执行异常',
-          desc: p.error || '',
-          meta: p.status.toUpperCase(),
+          t: fmtTime(a.startedAt),
+          kind: 'start',
+          title: '开始任务',
+          desc: summarizeTask(a.task, 42),
+          meta: a.label,
         })
+        if (a.status === 'done') {
+          out.push({ t: null, kind: 'done', title: '任务完成', desc: a.reportFirstLine || '回报已送达总监', meta: 'DONE' })
+        } else if (a.status === 'failed') {
+          out.push({ t: null, kind: 'error', title: '执行异常', desc: a.reportFirstLine || '', meta: 'FAILED' })
+        } else if (a.status === 'pending') {
+          out.push({ t: null, kind: 'step', title: '等待回报', meta: 'PENDING' })
+        }
       }
     }
     // 时间线只保留最近 60 条:子任务步骤全量铺开可达上千行 DOM,看板 ~1Hz
     // 刷新时反复重建(卡顿主因之一);截断只牺牲「更早的过程」,最新进展完整。
     return out.slice(-60)
-  }, [tasksByGroup, selectedGroup, log])
+  }, [directorActivities, selectedGroup, log])
 
-  const runningInGroup =
-    selectedGroup !== '监管' ? (tasksByGroup.get(selectedGroup) ?? []).find((x) => x.p.status === 'running') : undefined
+  // 选中组内正在运行的活动:驱动 NOW 实时行(子代理有真实步数进度条,
+  // 纯派发只显示运行时长)。
+  const runningActivity =
+    selectedGroup !== '监管'
+      ? directorActivities.find((a) => a.group === selectedGroup && a.status === 'running') ?? null
+      : null
 
   // ── 汇总指标 ───────────────────────────────────────────────────────────────
   const percent = status?.percent ?? null
@@ -659,7 +707,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
               style={{ left: 31, top: 16, bottom: 16, width: 1, background: 'rgba(15,23,42,0.08)' }}
             />
             <div className="flex flex-col gap-4 relative">
-              {workLog.length === 0 && !runningInGroup && (
+              {workLog.length === 0 && !runningActivity && (
                 <div className="text-center py-8" style={{ fontSize: 12, color: MONO.t3 }}>
                   {t('office.noWorkLog')}
                 </div>
@@ -704,8 +752,8 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                   </div>
                 )
               })}
-              {/* NOW 实时行:选中组有运行中任务时 */}
-              {runningInGroup && (
+              {/* NOW 实时行:选中组有运行中活动时 */}
+              {runningActivity && (
                 <div className="flex gap-3">
                   <div className="w-7 text-right shrink-0 pt-0.5">
                     <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, color: '#0058bc' }}>
@@ -733,19 +781,22 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                           background: '#e8f0ff', borderRadius: 4, padding: '1px 7px',
                         }}
                       >
-                        RUNNING {formatDuration(now - runningInGroup.p.startedAt)}
+                        RUNNING {formatDuration(now - runningActivity.startedAt)}
                       </span>
                     </div>
-                    <div className="w-full h-1 rounded-full mt-2 overflow-hidden" style={{ background: '#e5efff' }}>
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${Math.min(100, Math.max(8, Math.round((runningInGroup.p.toolCallCount / 8) * 60 + 20)))}%`,
-                          background: '#0058bc',
-                          animation: 'pulseSoft 1.6s ease-in-out infinite',
-                        }}
-                      />
-                    </div>
+                    {/* 子代理才有真实步数进度;纯员工派发不画假进度条 */}
+                    {runningActivity.progress && (
+                      <div className="w-full h-1 rounded-full mt-2 overflow-hidden" style={{ background: '#e5efff' }}>
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            width: `${Math.min(100, Math.max(8, Math.round((runningActivity.progress.toolCallCount / 8) * 60 + 20)))}%`,
+                            background: '#0058bc',
+                            animation: 'pulseSoft 1.6s ease-in-out infinite',
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -838,7 +889,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
             )
           ) : (
             <>
-              {hoveredTasks.length === 0 && (
+              {hoveredTasks.length === 0 && hoveredDispatches.length === 0 && (
                 <div className="px-3.5 py-6 text-center" style={{ fontSize: 11.5, color: MONO.t3 }}>
                   {t('office.noWorkLog')}
                 </div>
@@ -889,6 +940,38 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                       )}
                       {p.error && (
                         <div className="mt-1 text-[11px] leading-relaxed break-words" style={{ color: '#dc2626' }}>{p.error}</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {hoveredDispatches.map((a) => (
+                <div key={a.key} className="px-3.5 py-3 border-b last:border-b-0" style={{ borderColor: HAIRLINE }}>
+                  <div className="flex items-start gap-2">
+                    <span
+                      className="shrink-0 rounded-full flex items-center justify-center mt-0.5"
+                      style={{ width: 16, height: 16, background: roleAvatar(a.label).bg, color: '#fff', fontSize: 8.5, fontWeight: 700 }}
+                    >
+                      {roleAvatar(a.label).char}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-[12px] font-semibold" style={{ color: '#0d1c2d' }}>{a.label}</span>
+                        <span
+                          className="shrink-0"
+                          style={{
+                            fontFamily: MONO_FONT, fontSize: 9, fontWeight: 600,
+                            color: a.status === 'running' ? '#0058bc' : a.status === 'done' ? '#16a34a' : a.status === 'failed' ? '#dc2626' : '#94a3b8',
+                          }}
+                        >
+                          {a.status === 'running' ? 'RUNNING' : a.status === 'done' ? 'DONE' : a.status === 'failed' ? 'FAILED' : 'PENDING'}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[12px] leading-relaxed break-words" style={{ color: '#424753' }}>
+                        {summarizeTask(a.task, 240)}
+                      </div>
+                      {a.reportFirstLine && (
+                        <div className="mt-1 text-[11px] leading-relaxed break-words" style={{ color: '#64748b' }}>{a.reportFirstLine}</div>
                       )}
                     </div>
                   </div>

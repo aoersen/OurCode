@@ -240,6 +240,7 @@ export const zhCN = {
   'office.coverFirst': '首轮达成 {pct}%',
   'office.checklistCount': '检查清单 {n} 项',
   'office.achievedLabel': '清单通过率',
+  'office.goalLiveProgress': '执行进度',
   'office.wbStage': '阶段',
   'office.artifacts': '产出物',
   'office.open': '打开',

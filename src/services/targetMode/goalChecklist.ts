@@ -146,8 +146,13 @@ async function readComparison(root: string, round: string): Promise<{ states: Ar
 }
 
 /**
- * 读取当前目标达成摘要：finalGoal 清单 + 最近一轮 comparison 覆盖 + 上一轮
- * 覆盖率（delta 基数）。finalGoal.md 缺失/不可读返回 null（UI 显示空态引导）。
+ * 读取当前目标达成摘要：finalGoal 清单 + 最近一份可解析的 comparison 覆盖 +
+ * 再上一份的覆盖率（delta 基数）。finalGoal.md 缺失/不可读返回 null（UI 显示
+ * 空态引导）。
+ *
+ * 条目状态来源从最新轮往回找「第一份有 comparison.md 的轮」：最新轮目录已建
+ * 但比对尚未写完（一轮进行中）时沿用上一轮已验证状态，而不是回退到 finalGoal
+ * 勾选态——此前回退会让覆盖率在轮中闪回 0%（甚至整卡倒退），看起来像坏了。
  */
 export async function readGoalChecklist(root: string): Promise<GoalChecklistSummary | null> {
   if (!root) return null
@@ -158,17 +163,21 @@ export async function readGoalChecklist(root: string): Promise<GoalChecklistSumm
     if (parsed.length === 0) return { items: [], coverage: 0, previousCoverage: null }
 
     const rounds = await listRounds(root)
+    let statesSource: Array<{ text: string; state: GoalItemState }> | null = null
     let previousCoverage: number | null = null
-    if (rounds.length > 1) {
-      const prev = await readComparison(root, rounds[1])
-      if (prev) previousCoverage = computeCoverage(prev.states)
-    }
-    if (rounds.length > 0) {
-      const latest = await readComparison(root, rounds[0])
-      if (latest) {
-        const items = mergeChecklist(parsed, latest.states)
-        return { items, coverage: computeCoverage(items), previousCoverage }
+    for (const round of rounds) {
+      const comp = await readComparison(root, round)
+      if (!comp) continue
+      if (!statesSource) {
+        statesSource = comp.states
+      } else {
+        previousCoverage = computeCoverage(comp.states)
+        break
       }
+    }
+    if (statesSource) {
+      const items = mergeChecklist(parsed, statesSource)
+      return { items, coverage: computeCoverage(items), previousCoverage }
     }
     const items = parsed.map((i) => ({ text: i.text, state: i.checked ? 'done' : 'todo' as GoalItemState }))
     return { items, coverage: computeCoverage(items), previousCoverage }

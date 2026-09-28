@@ -198,4 +198,63 @@ describe('goalChecklist.readGoalChecklist (fs layer)', () => {
     // 上一轮：1 + 0 + 0 = 33
     expect(s!.previousCoverage).toBe(33)
   })
+
+  it('最新轮尚无 comparison.md → 沿用上一轮比对结果（轮中不回退 finalGoal 勾选态）', async () => {
+    fs['C:/workspace/.ourcode/targemode/finalGoal.md'] = {
+      content: '- [x] 需求文档已确认\n- [ ] 登录接口联调\n- [ ] 验收测试通过\n',
+    }
+    fs['C:/workspace/.ourcode/targemode/loop1'] = { isDirectory: true, name: 'loop1' }
+    // loop2 目录已建（新一轮进行中）但比对还没写
+    fs['C:/workspace/.ourcode/targemode/loop2'] = { isDirectory: true, name: 'loop2' }
+    fs['C:/workspace/.ourcode/targemode/loop1/comparison.md'] = {
+      content: '| 检查项 | 状态 |\n|---|---|\n| 需求文档已确认 | ✅ 已实现 |\n| 登录接口联调 | ✅ 已实现 |\n| 验收测试通过 | ⚠️ 部分 |\n',
+    }
+
+    const s = await readGoalChecklist(root)
+    expect(s).not.toBeNull()
+    expect(s!.items).toEqual([
+      { text: '需求文档已确认', state: 'done' },
+      { text: '登录接口联调', state: 'done' },
+      { text: '验收测试通过', state: 'waiting' },
+    ])
+    // done(1) + done(1) + waiting(0.5) = 2.5/3 = 83
+    expect(s!.coverage).toBe(83)
+    // 再上一份 comparison 不存在 → 无 delta 基数
+    expect(s!.previousCoverage).toBeNull()
+  })
+
+  it('没有任何 comparison.md → finalGoal 勾选态兜底', async () => {
+    fs['C:/workspace/.ourcode/targemode/finalGoal.md'] = {
+      content: '- [x] 需求文档已确认\n- [ ] 登录接口联调\n',
+    }
+    fs['C:/workspace/.ourcode/targemode/loop1'] = { isDirectory: true, name: 'loop1' }
+
+    const s = await readGoalChecklist(root)
+    expect(s).not.toBeNull()
+    expect(s!.items).toEqual([
+      { text: '需求文档已确认', state: 'done' },
+      { text: '登录接口联调', state: 'todo' },
+    ])
+    expect(s!.coverage).toBe(50)
+    expect(s!.previousCoverage).toBeNull()
+  })
+
+  it('多轮均有 comparison 时，previousCoverage 取最新一份的再上一份', async () => {
+    fs['C:/workspace/.ourcode/targemode/finalGoal.md'] = {
+      content: '- [x] 需求文档已确认\n- [ ] 登录接口联调\n- [ ] 验收测试通过\n',
+    }
+    fs['C:/workspace/.ourcode/targemode/loop2'] = { isDirectory: true, name: 'loop2' }
+    fs['C:/workspace/.ourcode/targemode/loop3'] = { isDirectory: true, name: 'loop3' }
+    fs['C:/workspace/.ourcode/targemode/loop3/comparison.md'] = {
+      content: '| 检查项 | 状态 |\n|---|---|\n| 需求文档已确认 | ✅ 已实现 |\n| 登录接口联调 | ✅ 已实现 |\n| 验收测试通过 | ❌ 未实现 |\n',
+    }
+    fs['C:/workspace/.ourcode/targemode/loop2/comparison.md'] = {
+      content: '| 检查项 | 状态 |\n|---|---|\n| 需求文档已确认 | ✅ 已实现 |\n| 登录接口联调 | ❌ 未实现 |\n| 验收测试通过 | ❌ 未实现 |\n',
+    }
+
+    const s = await readGoalChecklist(root)
+    expect(s).not.toBeNull()
+    expect(s!.coverage).toBe(66)
+    expect(s!.previousCoverage).toBe(33)
+  })
 })

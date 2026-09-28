@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n/useI18n'
 import { useThrottledValue } from '@/utils/useThrottledValue'
 import { MONO, TASK_5STATE, GRADIENT, roleAvatar } from './officeTheme'
 import { roleLabel, summarizeTask } from '@/services/office/mapping'
+import { buildDirectorActivities, type DirectorActivity } from '@/services/office/taskRequests'
 import OfficeStream from './OfficeStream'
 import InlineDecisionArea from '../ChatPanel/InlineDecisionArea'
 import type { SubAgentProgress, SubAgentProgressStep } from '@shared/types'
@@ -84,6 +85,9 @@ export default function OfficeWorkbench() {
   const activeSessionId = useChatStore((s) => s.activeSessionId)
   // 进度表逐次推送高频换引用，500ms 节流避免整块工作台每秒重渲多次
   const subagentProgress = useThrottledValue(useChatStore((s) => s.subagentProgress), 500)
+  // M4 员工活动聚合需要全会话表与运行态（与看板同节流粒度）
+  const sessionsThrottled = useThrottledValue(useChatStore((s) => s.sessions), 800)
+  const runningSessionIds = useChatStore((s) => s.runningSessionIds)
 
   // 本会话的全部子任务（所有角色）——三个数据页签共用，不再受角色选择门控。
   // 保留父 run_subagent 的 toolCallId 作为稳定 key（时间线节点/列表行复用）。
@@ -94,6 +98,17 @@ export default function OfficeWorkbench() {
       .map(([key, p]) => ({ key, ...p }))
       .sort((a, b) => b.startedAt - a.startedAt)
   }, [subagentProgress, activeSessionId])
+
+  // 「任务流」页签的活动时间线：总监本会话子代理 + 员工派发 + 员工只读子智能体。
+  // M4 下真正的活儿在员工会话里跑，此前只取总监会话自己的 subagentProgress，
+  // 时间线跟不上任务进度（常年空白）。口径与左栏任务区一致。
+  const activities = useMemo(() => {
+    if (!activeSessionId) return [] as DirectorActivity[]
+    return buildDirectorActivities(
+      { sessions: sessionsThrottled, progress: subagentProgress, runningSessionIds },
+      activeSessionId,
+    )
+  }, [sessionsThrottled, subagentProgress, runningSessionIds, activeSessionId])
 
   /** 时间线顺序：按启动时间正序。 */
   const chronological = useMemo(() => [...runs].sort((a, b) => a.startedAt - b.startedAt), [runs])
@@ -164,9 +179,10 @@ export default function OfficeWorkbench() {
     )
   }
 
-  /** 任务流节点：一个角色的一次派发（含内部工具步骤）。 */
-  const renderTimelineNode = (p: SubAgentProgress & { key: string }) => {
-    const label = roleLabel(p.task, p.name)
+  /** 任务流节点：一个子代理的一次运行（含内部工具步骤）。labelOverride 用于
+   *  员工调研子代理——头部展示员工工位名而非子代理自身角色名。 */
+  const renderTimelineNode = (p: SubAgentProgress & { key: string }, labelOverride?: string) => {
+    const label = labelOverride ?? roleLabel(p.task, p.name)
     const avatar = roleAvatar(label)
     const live = p.status === 'running'
     const statusColor = live ? '#0058BC' : p.status === 'done' ? '#16A34A' : p.status === 'stopped' ? '#D97706' : '#DC2626'
@@ -255,6 +271,68 @@ export default function OfficeWorkbench() {
     )
   }
 
+  /** 任务流派发节点：总监 → 员工的一次 send_message 派发。员工本体的工具
+   *  步骤不进时间线（粒度与左栏任务区一致），回报首行作为结果展示。 */
+  const renderDispatchNode = (a: DirectorActivity) => {
+    const avatar = roleAvatar(a.label)
+    const live = a.status === 'running'
+    const statusColor = live ? '#0058BC' : a.status === 'done' ? '#16A34A' : a.status === 'failed' ? '#DC2626' : '#94A3B8'
+    const statusText = live ? 'RUNNING' : a.status === 'done' ? 'DONE' : a.status === 'failed' ? 'FAILED' : 'PENDING'
+    return (
+      <div className="flex gap-2.5" key={a.key}>
+        <div className="w-12 text-right shrink-0 pt-0.5">
+          <span style={{ fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace", fontSize: 10, color: MONO.t3 }}>
+            {fmtTime(a.startedAt)}
+          </span>
+        </div>
+        <div className="flex flex-col items-center shrink-0">
+          <span
+            className="rounded-full flex items-center justify-center"
+            style={{ width: 22, height: 22, background: avatar.bg, color: '#fff', fontSize: 10, fontWeight: 700, zIndex: 1 }}
+          >
+            {avatar.char}
+          </span>
+          <span className="flex-1" style={{ width: 1, background: 'rgba(15,23,42,0.08)', marginTop: 3 }} />
+        </div>
+        <div className="flex-1 min-w-0 pb-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs font-semibold shrink-0" style={{ color: MONO.t1 }}>{a.label}</span>
+            <span
+              className="shrink-0 rounded-full"
+              style={{
+                fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
+                fontSize: 8.5, fontWeight: 700, letterSpacing: '0.04em',
+                color: statusColor, background: `${statusColor}14`, padding: '1px 7px',
+              }}
+            >
+              {statusText}{live && ` ${formatDuration(Date.now() - a.startedAt)}`}
+            </span>
+            {live && (
+              <span
+                className="shrink-0 rounded-full animate-spin"
+                style={{ width: 12, height: 12, padding: 1.5, background: GRADIENT.rainbow, animationDuration: '2s' }}
+              >
+                <span className="block w-full h-full rounded-full" style={{ background: '#fff' }} />
+              </span>
+            )}
+          </div>
+          <div className="text-xs mt-0.5 truncate" style={{ color: MONO.t2 }} title={a.task}>
+            {summarizeTask(a.task, 80)}
+          </div>
+          {a.reportFirstLine && (
+            <div
+              className="text-xs mt-0.5 truncate"
+              style={{ color: a.status === 'failed' ? '#DC2626' : MONO.t3 }}
+              title={a.reportFirstLine}
+            >
+              {a.reportFirstLine}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       data-testid="office-workbench"
@@ -315,7 +393,7 @@ export default function OfficeWorkbench() {
             </div>
             <InlineDecisionArea />
           </div>
-        ) : runs.length === 0 ? (
+        ) : activities.length === 0 ? (
           empty
         ) : tab === 'tools' ? (
           <div className="p-3">
@@ -323,7 +401,11 @@ export default function OfficeWorkbench() {
               {t('office.wbTimelineHint')}
             </div>
             <div className="relative">
-              {chronological.map(renderTimelineNode)}
+              {activities.map((a) =>
+                a.progress
+                  ? renderTimelineNode({ ...a.progress, key: a.key }, a.label)
+                  : renderDispatchNode(a),
+              )}
             </div>
           </div>
         ) : tab === 'changes' ? (

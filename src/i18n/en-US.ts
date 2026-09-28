@@ -243,6 +243,7 @@ export const enUS: Record<TranslationKey, string> = {
   'office.coverFirst': 'First-round coverage {pct}%',
   'office.checklistCount': '{n} checklist items',
   'office.achievedLabel': 'checklist pass',
+  'office.goalLiveProgress': 'Execution progress',
   'office.wbStage': 'stage',
   'office.artifacts': 'Artifacts',
   'office.open': 'Open',

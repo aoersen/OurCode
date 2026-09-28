@@ -12,7 +12,8 @@
  */
 import type { ChatMessage, ChatSession, SubAgentProgress } from '@shared/types'
 import { DEFAULT_SESSION_TITLE } from '@shared/constants'
-import { roleLabel } from './mapping'
+import { roleLabel, roleGroup } from './mapping'
+import type { RoleGroup } from './mapping'
 
 /** 会话间消息前缀（与 chatStore.receiveInboundMessage / OfficeStream 同源）。 */
 export const INBOUND_RE = /^\[来自会话「(.+?)」的会话间消息\]\n\n?/
@@ -107,6 +108,44 @@ function reportFailed(line: string | null): boolean {
   return !!line && /失败|阻塞/.test(line)
 }
 
+/**
+ * 员工派发归属解析器：先按发送方标题精确匹配总监会话，匹配不上（总监后来
+ * 改了标题）按派发时间兜底到当时「最近开工」的总监。buildTaskRequests 与
+ * buildDirectorActivities 共用，保证左栏任务区 / 看板工作记录 / 任务流三处
+ * 的派发归属口径一致。
+ */
+function dispatchOwnerResolver(sessionList: ChatSession[]): {
+  ownerOfDispatch: (d: WorkerDispatch) => ChatSession | null
+  directorAt: (at: number) => ChatSession | null
+} {
+  const firstUserAt = new Map(
+    sessionList.map((s) => {
+      const sorted = [...s.messages].sort((a, b) => a.createdAt - b.createdAt)
+      const first = sorted.find(isUserRequestMessage)
+      return [s.id, first?.createdAt ?? Number.POSITIVE_INFINITY]
+    }),
+  )
+  const byTitle = new Map<string, ChatSession>()
+  for (const s of sessionList) if (!byTitle.has(s.title)) byTitle.set(s.title, s)
+  /** 按时间兜底：派发发生时「最近开工」的总监会话。 */
+  const directorAt = (at: number): ChatSession | null => {
+    let best: ChatSession | null = null
+    let bestAt = Number.NEGATIVE_INFINITY
+    for (const s of sessionList) {
+      const t = firstUserAt.get(s.id) ?? Number.POSITIVE_INFINITY
+      if (t <= at && t > bestAt) {
+        best = s
+        bestAt = t
+      }
+    }
+    return best ?? sessionList[0] ?? null
+  }
+  /** 一次派发归属的总监会话：先按发送方标题，再按时间兜底。 */
+  const ownerOfDispatch = (d: WorkerDispatch): ChatSession | null =>
+    byTitle.get(d.senderTitle) ?? directorAt(d.at)
+  return { ownerOfDispatch, directorAt }
+}
+
 function progressStatus(p: SubAgentProgress): RoleActivityStatus {
   if (p.status === 'running') return 'running'
   if (p.status === 'done') return 'done'
@@ -156,31 +195,7 @@ export function buildTaskRequests(input: TaskRequestsInput): Map<string, TaskReq
     // 员工派发状态只与员工会话自身消息有关，先算一次再归属到各任务。
     const workerDispatches = new Map(workers.map((w) => [w.id, workerDispatchStates(w)]))
     // 每个总监会话首个真实用户消息时间（多任务并存时按时间兜底归属）。
-    const firstUserAt = new Map(
-      sessionList.map((s) => {
-        const sorted = [...s.messages].sort((a, b) => a.createdAt - b.createdAt)
-        const first = sorted.find(isUserRequestMessage)
-        return [s.id, first?.createdAt ?? Number.POSITIVE_INFINITY]
-      }),
-    )
-    const byTitle = new Map<string, ChatSession>()
-    for (const s of sessionList) if (!byTitle.has(s.title)) byTitle.set(s.title, s)
-    /** 按时间兜底：派发发生时「最近开工」的总监会话。 */
-    const directorAt = (at: number): ChatSession | null => {
-      let best: ChatSession | null = null
-      let bestAt = Number.NEGATIVE_INFINITY
-      for (const s of sessionList) {
-        const t = firstUserAt.get(s.id) ?? Number.POSITIVE_INFINITY
-        if (t <= at && t > bestAt) {
-          best = s
-          bestAt = t
-        }
-      }
-      return best ?? sessionList[0] ?? null
-    }
-    /** 一次派发归属的总监会话：先按发送方标题，再按时间兜底。 */
-    const ownerOfDispatch = (d: WorkerDispatch): ChatSession | null =>
-      byTitle.get(d.senderTitle) ?? directorAt(d.at)
+    const { ownerOfDispatch, directorAt } = dispatchOwnerResolver(sessionList)
 
     const tasks: TaskRequest[] = []
     for (const session of sessionList) {
@@ -278,6 +293,107 @@ export function buildTaskRequests(input: TaskRequestsInput): Map<string, TaskReq
   }
 
   return byProject
+}
+
+/** 看板工作记录 / 任务流用的「单个总监会话」角色活动：在 TaskRequestActivity
+ *  之上补充角色分组（产品/设计/研发/测试）与员工回报首行。 */
+export interface DirectorActivity extends TaskRequestActivity {
+  group: RoleGroup
+  /** 员工回报首行（员工协议：回报首行给结论），仅派发类活动有值。 */
+  reportFirstLine?: string | null
+}
+
+/**
+ * 派生单个总监会话的全部角色活动，与 buildTaskRequests 的 activity 口径完全
+ * 一致（同一套派发归属 / 状态推导），供看板「工作记录」与工作台「任务流」
+ * 消费——M4 下真正的活儿在员工会话里跑，只看总监会话自己的 subagentProgress
+ * 会让这两个视图永远空转。
+ *
+ * 活动三种来源（按 startedAt 正序）：
+ * - 总监本会话的子智能体（降级通道 run_subagent / 调研助手）；
+ * - 员工派发（总监经 send_message 派的每一次活，状态 running/done/failed/pending）；
+ * - 员工只读调研子智能体（归属到启动前最近一次派发所属的总监）。
+ */
+export function buildDirectorActivities(
+  input: TaskRequestsInput,
+  directorSessionId: string,
+): DirectorActivity[] {
+  const { progress, runningSessionIds } = input
+  const director = input.sessions.find((s) => s.id === directorSessionId)
+  if (!director || director.targetMode !== true || director.workerRole || !director.projectPath) return []
+
+  const projectPath = director.projectPath
+  const running = new Set(runningSessionIds)
+  const progressBySession = new Map<string, Array<{ key: string; p: SubAgentProgress }>>()
+  for (const [key, p] of Object.entries(progress)) {
+    const list = progressBySession.get(p.sessionId)
+    if (list) list.push({ key, p })
+    else progressBySession.set(p.sessionId, [{ key, p }])
+  }
+  const workers = input.sessions.filter((w) => w.workerRole && w.projectPath === projectPath)
+  const sessionList = input.sessions.filter(
+    (s) => s.targetMode === true && !s.workerRole && s.projectPath === projectPath,
+  )
+  const { ownerOfDispatch, directorAt } = dispatchOwnerResolver(sessionList)
+  const workerDispatches = new Map(workers.map((w) => [w.id, workerDispatchStates(w)]))
+
+  const activities: DirectorActivity[] = []
+
+  // 总监本会话的子智能体运行（降级通道 run_subagent / 调研助手）。
+  for (const { key, p } of progressBySession.get(director.id) ?? []) {
+    activities.push({
+      key,
+      label: roleLabel(p.task, p.name),
+      task: p.task,
+      status: progressStatus(p),
+      startedAt: p.startedAt,
+      progress: p,
+      group: roleGroup(p.task, p.name),
+    })
+  }
+
+  // 员工派发 + 员工只读子智能体（调研助手），仅归属本会话的纳入。
+  for (const w of workers) {
+    const workerRunning = running.has(w.id)
+    const states = workerDispatches.get(w.id) ?? []
+    for (const d of states) {
+      if (ownerOfDispatch(d)?.id !== director.id) continue
+      const status: RoleActivityStatus = workerRunning && d.latest
+        ? 'running'
+        : d.reported
+          ? reportFailed(d.reportFirstLine)
+            ? 'failed'
+            : 'done'
+          : 'pending'
+      activities.push({
+        key: `disp:${w.id}:${d.at}`,
+        label: w.title || '员工',
+        task: d.task,
+        status,
+        startedAt: d.at,
+        group: roleGroup('', w.workerRole ?? ''),
+        reportFirstLine: d.reportFirstLine,
+      })
+    }
+    for (const { key, p } of progressBySession.get(w.id) ?? []) {
+      // 调研助手归到启动前最近一次派发所属的总监会话。
+      let owner: ChatSession | null = null
+      for (const d of states) if (d.at <= p.startedAt) owner = ownerOfDispatch(d)
+      if (!owner) owner = directorAt(p.startedAt)
+      if (owner?.id !== director.id) continue
+      activities.push({
+        key,
+        label: w.title || roleLabel(p.task, p.name),
+        task: p.task,
+        status: progressStatus(p),
+        startedAt: p.startedAt,
+        progress: p,
+        group: roleGroup(p.task, p.name),
+      })
+    }
+  }
+  activities.sort((a, b) => a.startedAt - b.startedAt)
+  return activities
 }
 
 /** 总监会话按项目分组（保持 store 原有顺序）。 */
