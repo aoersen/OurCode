@@ -1,6 +1,6 @@
 {
   "name": "ourcode-ide",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AI-powered code editor with multi-provider support and editable chat history",
   "author": {
     "name": "OurCode",
