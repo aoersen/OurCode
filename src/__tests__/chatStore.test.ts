@@ -28,7 +28,7 @@ const mockApi = {
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
+import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, normalizeAskQuestionArgs, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
 import type { MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -1446,6 +1446,34 @@ describe('loop guard: truncated tool-call arguments', () => {
   it('does not execute non-object payloads as arguments', () => {
     expect(parseToolArguments('"just a string"')).toEqual({ args: {}, ok: true })
     expect(parseToolArguments('null')).toEqual({ args: {}, ok: true })
+  })
+})
+
+describe('ask_user_question argument normalization', () => {
+  it('drops multiSelect when the model omits options (dead-lock guard)', () => {
+    // 真实事故：模型只发 { multiSelect: true, question } 不带 options ——
+    // 选项区空白 + 「提交选择」永久禁用，用户只能跳过。必须降级为单选。
+    expect(normalizeAskQuestionArgs({ question: '选什么？', multiSelect: true })).toEqual({
+      question: '选什么？',
+      options: undefined,
+      multiSelect: false,
+      preview: undefined,
+    })
+  })
+
+  it('keeps multiSelect only when a non-empty options array is present', () => {
+    expect(
+      normalizeAskQuestionArgs({ question: '选什么？', multiSelect: true, options: ['A', 'B'] }),
+    ).toEqual({ question: '选什么？', options: ['A', 'B'], multiSelect: true, preview: undefined })
+    expect(
+      normalizeAskQuestionArgs({ question: '选什么？', multiSelect: true, options: [] }),
+    ).toEqual({ question: '选什么？', options: [], multiSelect: false, preview: undefined })
+  })
+
+  it('coerces options/preview items to strings and defaults the question', () => {
+    expect(
+      normalizeAskQuestionArgs({ options: [1, 'B'], preview: [3] }),
+    ).toEqual({ question: '请确认', options: ['1', 'B'], multiSelect: false, preview: ['3'] })
   })
 })
 

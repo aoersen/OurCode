@@ -516,7 +516,8 @@ export function createToolRegistry(): Tool[] {
       description:
         'Ask the user a clarifying question with optional predefined choices. ' +
         'Use this when the task is ambiguous and you need user input to proceed. The user\'s answer is returned. ' +
-        'Set multiSelect=true to let the user pick several options (the answer joins them with "；"). ' +
+        'When the question is a choice between known alternatives, pass 2-4 concise strings as options. ' +
+        'Set multiSelect=true (only together with a non-empty options array) to let the user pick several options (the answer joins them with "；"). ' +
         'Optionally pass preview, an array aligned with options, holding per-choice text ' +
         '(e.g. ASCII mockups) to show under each choice.',
       parameters: {
@@ -524,7 +525,7 @@ export function createToolRegistry(): Tool[] {
         properties: {
           question: { type: 'string', description: 'The question to ask' },
           options: { type: 'array', items: { type: 'string' }, description: 'Optional predefined answer choices' },
-          multiSelect: { type: 'boolean', description: 'Allow selecting several options at once (default false)' },
+          multiSelect: { type: 'boolean', description: 'Allow selecting several options at once (default false; requires options to be provided)' },
           preview: {
             type: 'array',
             items: { type: 'string' },

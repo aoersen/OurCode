@@ -578,6 +578,19 @@ export function parseToolArguments(raw: string | undefined): { args: Record<stri
   }
 }
 
+/** ask_user_question 入参规范化：模型偶尔只发 multiSelect=true 却不带
+ *  options（选项区不渲染、提交按钮永久禁用的死局）。没有选项就不算多选——
+ * 降级为单选路径（自定义回答输入框），用户始终可以作答。 */
+export function normalizeAskQuestionArgs(args: Record<string, any>): Pick<UserQuestion, 'question' | 'options' | 'multiSelect' | 'preview'> {
+  const options = Array.isArray(args.options) ? args.options.map(String) : undefined
+  return {
+    question: String(args.question || '请确认'),
+    options,
+    multiSelect: args.multiSelect === true && !!options && options.length > 0,
+    preview: Array.isArray(args.preview) ? args.preview.map(String) : undefined,
+  }
+}
+
 /** Object keys are sorted so two calls that differ only in key order — which
  *  streamed providers do freely — compare equal. */
 function stableStringify(value: unknown): string {
@@ -4586,10 +4599,10 @@ async function runAgentLoop(
               value: {
                 sessionId,
                 id: tc.id,
-                question: String(tc.arguments.question || '请确认'),
-                options: Array.isArray(tc.arguments.options) ? tc.arguments.options.map(String) : undefined,
-                multiSelect: tc.arguments.multiSelect === true,
-                preview: Array.isArray(tc.arguments.preview) ? tc.arguments.preview.map(String) : undefined,
+                // 源头规范化：multiSelect 但无 options 时降级为单选（见
+                // normalizeAskQuestionArgs），避免选项区空白 + 提交按钮
+                // 永久禁用的死局。
+                ...normalizeAskQuestionArgs(tc.arguments),
                 askedAt: Date.now(),
               },
             })

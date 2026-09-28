@@ -81,7 +81,10 @@ export default function QuestionDialog() {
 
   const options = pendingQuestion.options || []
   const previews = pendingQuestion.preview || []
-  const multiSelect = pendingQuestion.multiSelect === true
+  // 模型可能只发 multiSelect=true 却漏了 options（真实发生：卡出永久禁用的
+  // 「提交选择」、无选项可勾的死局）。没有选项就按单选渲染——底部出现自定义
+  // 回答输入框，用户至少可以打字回答，不会卡死。
+  const multiSelect = pendingQuestion.multiSelect === true && options.length > 0
   const countdownLabel = formatCountdown(remainingMs)
 
   const submit = (answer: string) => {
