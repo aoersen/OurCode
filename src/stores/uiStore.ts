@@ -129,6 +129,10 @@ interface UIState {
   /** 待决中心聚焦脉冲（TopBar 铃铛点击 +1；PendingCenterCard 侦听后滚动闪烁）。 */
   officePendingPulse: number
   pulseOfficePending: () => void
+  /** 用户从左侧任务区移除的已完成任务（用户消息 id）。只隐藏列表行，不动
+   *  会话与消息；重启后仍隐藏（localStorage 持久化，按窗口模式隔离）。 */
+  removedOfficeTasks: string[]
+  removeOfficeTask: (taskId: string) => void
 
   // Actions
   toggleSidebar: () => void
@@ -289,6 +293,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   officeSelectedRole: null,
   officePendingCount: 0,
   officePendingPulse: 0,
+  removedOfficeTasks: (() => { try { return JSON.parse(localStorage.getItem(modeKey('removedOfficeTasks')) || '[]') } catch { return [] } })(),
 
   // Actions
   toggleSidebar: () => set((s) => ({ isSidebarVisible: !s.isSidebarVisible })),
@@ -561,4 +566,12 @@ export const useUIStore = create<UIState>((set, get) => ({
   setOfficeSelectedRole: (role) => set({ officeSelectedRole: role }),
   setOfficePendingCount: (count) => set({ officePendingCount: count }),
   pulseOfficePending: () => set((s) => ({ officePendingPulse: s.officePendingPulse + 1 })),
+  removeOfficeTask: (taskId) => {
+    set((s) => {
+      if (s.removedOfficeTasks.includes(taskId)) return {}
+      const removedOfficeTasks = [...s.removedOfficeTasks, taskId].slice(-200)
+      localStorage.setItem(modeKey('removedOfficeTasks'), JSON.stringify(removedOfficeTasks))
+      return { removedOfficeTasks }
+    })
+  },
 }))

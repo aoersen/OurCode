@@ -20,6 +20,7 @@
     "lint": "eslint src electron --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "node node_modules/@playwright/test/cli.js test"
   },
   "overrides": {
@@ -56,6 +57,8 @@
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/coverage-v8": "^2.1.9",
+    "aioli-design": "^0.7.0",
     "autoprefixer": "^10.4.19",
     "electron": "^30.5.1",
     "electron-builder": "^24.13.3",

@@ -219,6 +219,35 @@ export async function readStatusText(root: string): Promise<string> {
   return safeRead(join(root, 'implementationStatus.md'))
 }
 
+/** 新任务重置：把上一个任务留在 .ourcode/targemode/ 的运行态文档清掉——
+ *  目标清单（finalGoal(_vN)?.md）、轮次目录（loopN/，含 comparison）、实施
+ *  状态、监管决策日志、信封收件箱——让新任务「目标达成」卡与顶部状态条回到
+ *  空态，新总监也不会读到旧目标。保留 SPEC/index/budget（公司级配置）与
+ *  角色定义。尽力而为：失败静默，模板文件由 ensureInitialized 兜底重建。 */
+export async function resetTargetModeState(root: string): Promise<void> {
+  if (!root) return
+  const base = join(root)
+  try {
+    await window.electronAPI.writeFile(base + '/implementationStatus.md', TARGET_MODE_STATUS_INIT, 'utf-8')
+    const entries = await window.electronAPI.listDir(base)
+    for (const e of entries) {
+      if (e.isDirectory && /^loop\d+$/.test(e.name)) {
+        await window.electronAPI.delete(base + '/' + e.name)
+      } else if (!e.isDirectory && /^finalGoal(_v\d+)?\.md$/.test(e.name)) {
+        await window.electronAPI.delete(base + '/' + e.name)
+      }
+    }
+    await window.electronAPI.writeFile(base + '/agents/supervisor.md', SUPERVISOR_LOG_INIT, 'utf-8')
+    const inbox = await window.electronAPI.listDir(base + '/inbox')
+    for (const e of inbox) {
+      if (e.name === 'README.md') continue
+      await window.electronAPI.delete(base + '/inbox/' + e.name)
+    }
+  } catch (e) {
+    console.error('目标模式新任务重置失败:', e)
+  }
+}
+
 /** Read + parse the current target-mode status, or null when unavailable. */
 export async function readStatus(root: string): Promise<TargetModeStatus | null> {
   const md = await readStatusText(root)

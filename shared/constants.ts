@@ -367,3 +367,8 @@ export const LANGUAGE_MAP: Record<string, string> = {
   gitignore: 'plaintext',
   gitattributes: 'plaintext',
 }
+
+/** Default title of a brand-new session — replaced by an auto-generated title
+ *  after the first message, and never overwritten once the user renames.
+ *  （原定义于 chatStore，为让纯派生模块免于依赖大 store 而移至共享常量。） */
+export const DEFAULT_SESSION_TITLE = '新对话'

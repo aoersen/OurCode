@@ -165,6 +165,7 @@ export const zhCN = {
   'office.newTaskChat': '新建任务对话',
   'office.collapseProject': '收起任务',
   'office.expandProject': '展开任务',
+  'office.removeTask': '从列表移除已结束任务',
 
   // ── 公司看板 ──────────────────────────────────────────────────────────────
   'office.dashboard': '看板',
@@ -228,6 +229,7 @@ export const zhCN = {
   'office.statusError': '失败',
   'office.statusIdle': '空闲中',
   'office.companyAlreadyRunning': '该项目有任务正在运行，已为你切换',
+  'office.taskStillWorking': '该项目还有任务在执行（员工收尾中），暂不能新建任务',
 
   // ── 一人公司 V12 信任闭环（状态条/工作台/右栏三卡/对话条） ──────────────
   'office.company': '一人公司',

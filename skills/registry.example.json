@@ -27,6 +27,13 @@
       "version": "1.0.0",
       "author": "OurCode 社区",
       "contentUrl": "https://example.com/ourcode-registry/ui-self-test/SKILL.md"
+    },
+    {
+      "name": "app-gui-test",
+      "description": "对桌面应用做自动化 GUI 自测：用 computer-use MCP 打开真实应用、点按/输入/读取无障碍树逐项验证，输出通过/失败报告",
+      "version": "1.0.0",
+      "author": "OurCode 社区",
+      "contentUrl": "https://example.com/ourcode-registry/app-gui-test/SKILL.md"
     }
   ]
 }

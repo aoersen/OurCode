@@ -38,7 +38,9 @@
 - 内置浏览器会话：仅限 http(s)，提供 `browser_navigate`、`browser_read_console`、`browser_screenshot`、`browser_act`（需审批），与「浏览器」面板镜像同一会话。
 - PR 走本机已登录的 `gh` CLI：`read_pull_request`、`create_pull_request`，应用不存储账号或令牌。
 - 内置 git MCP 使用 IDE 自带 Node 运行时启动，无 Node 环境的机器也能用。
+- 内置 [aioli](https://github.com/jaredhd/aioli) 设计系统 MCP（16 个工具：`generate_component`、`get_tokens`、`check_contrast` 等），离线生成 UI——未指定设计时的默认设计语言，见 [docs/aioli-design-system.md](docs/aioli-design-system.md)。
 - 配合 Playwright MCP 可对 Web 项目做浏览器 UI 自测（`ui-self-test` 技能），见 [docs/BROWSER_SELF_TEST.md](docs/BROWSER_SELF_TEST.md)。
+- 配合 computer-use MCP 可对桌面应用做 GUI 自测（`app-gui-test` 技能）——打开真实应用、通过无障碍树点按/输入/断言、逐项出结论，见 [docs/APP_GUI_SELF_TEST.md](docs/APP_GUI_SELF_TEST.md)。
 
 ### 编辑器与工作区
 
@@ -109,6 +111,7 @@ Windows 下也可直接用 `dev.bat` / `run.bat` 代替上面的手动步骤。
 npm run typecheck   # TypeScript 类型检查
 npm run lint        # ESLint
 npm test            # Vitest 单元测试
+npm run test:coverage  # Vitest 单元测试 + v8 覆盖率报告
 npm run test:e2e    # Playwright 端到端测试（需先 npx playwright install）
 ```
 
@@ -120,6 +123,11 @@ npm run dist:win         # Windows（nsis + portable）
 npm run dist:mac         # macOS（dmg + zip）
 npm run dist:linux       # Linux（AppImage + deb）
 ```
+
+## 设计与测试默认规范
+
+- **默认设计系统：[aioli](https://github.com/jaredhd/aioli)（MIT 协议）。** 用户未明确指定设计时，UI 一律按 aioli 设计语言实现。aioli 已作为开发依赖安装并内置为 MCP 服务器，**设计过程完全离线（不需要网络与 API key）**，内网 / 隔离网环境可用。色彩、组件、用法与验收清单见 [docs/aioli-design-system.md](docs/aioli-design-system.md)。用户指定了其他设计时，以用户指定的为准。
+- 测试打法——单元测试与覆盖率、Playwright E2E、浏览器 UI 自测、测试智能体工作流——见 [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md)。
 
 ## 插件开发
 
@@ -170,6 +178,9 @@ OurCode-ide/
 
 - [docs/EXTENSIONS_ARCHITECTURE.md](docs/EXTENSIONS_ARCHITECTURE.md) — 插件与扩展架构
 - [docs/BROWSER_SELF_TEST.md](docs/BROWSER_SELF_TEST.md) — 配合 Playwright MCP 的浏览器 UI 自测
+- [docs/APP_GUI_SELF_TEST.md](docs/APP_GUI_SELF_TEST.md) — 配合 computer-use MCP 的桌面应用 GUI 自测
+- [docs/aioli-design-system.md](docs/aioli-design-system.md) — aioli 设计系统参考（默认 UI 设计规范）
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) — 测试分层、覆盖率、CI 与 AI 测试工作流
 - [examples/ui-self-test-demo](examples/ui-self-test-demo) — 可运行示例
 
 ## 许可证

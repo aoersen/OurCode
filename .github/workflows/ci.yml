@@ -28,8 +28,11 @@ jobs:
         run: npm run typecheck
       - name: Lint
         run: npm run lint
-      - name: Unit tests
-        run: npm test
+      - name: Unit tests with coverage
+        # Coverage covers src/stores, src/services, electron/services (v8).
+        # The report is printed to the CI log; the policy is "coverage only
+        # goes up" — see docs/TESTING_STRATEGY.md.
+        run: npm run test:coverage
 
   e2e:
     name: Build · E2E (Electron)

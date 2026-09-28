@@ -168,6 +168,7 @@ export const enUS: Record<TranslationKey, string> = {
   'office.newTaskChat': 'New Task Chat',
   'office.collapseProject': 'Collapse tasks',
   'office.expandProject': 'Expand tasks',
+  'office.removeTask': 'Remove finished task from list',
 
   // ── Company Dashboard ─────────────────────────────────────────────────────
   'office.dashboard': 'Dashboard',
@@ -231,6 +232,7 @@ export const enUS: Record<TranslationKey, string> = {
   'office.statusError': 'Failed',
   'office.statusIdle': 'Idle',
   'office.companyAlreadyRunning': 'A task is already running for this project — switched to it',
+  'office.taskStillWorking': 'A task is still executing in this project — cannot start a new one yet',
 
   // ── One-person company V12 trust loop (top bar / workbench / right cards / chat bar) ──
   'office.company': 'One-Person Company',

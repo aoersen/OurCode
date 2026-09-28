@@ -38,7 +38,9 @@ A desktop AI code editor built with Electron: multiple LLM providers, agentic to
 - Built-in browser session for the assistant, restricted to http(s): `browser_navigate`, `browser_read_console`, `browser_screenshot`, `browser_act` (approval-gated), mirrored in the Browser panel.
 - Pull requests through your locally authenticated `gh` CLI: `read_pull_request`, `create_pull_request`. The app stores no account or token.
 - Bundled git MCP server runs on the IDE's own Node runtime, for machines without Node installed.
+- Bundled [aioli](https://github.com/jaredhd/aioli) design-system MCP (16 tools: `generate_component`, `get_tokens`, `check_contrast`, …) for offline UI design — the default design language when none is specified; see [docs/aioli-design-system.md](docs/aioli-design-system.md).
 - Browser UI self-testing with Playwright MCP (`ui-self-test` skill); see [docs/BROWSER_SELF_TEST.md](docs/BROWSER_SELF_TEST.md).
+- Desktop GUI self-testing with a computer-use MCP (`app-gui-test` skill) — opens the real app, drives it through the accessibility tree, and reports per-check verdicts; see [docs/APP_GUI_SELF_TEST.md](docs/APP_GUI_SELF_TEST.md).
 
 ### Editor & workspace
 
@@ -109,6 +111,7 @@ On Windows you can also use `dev.bat` / `run.bat` instead of the manual steps.
 npm run typecheck   # TypeScript type check
 npm run lint        # ESLint
 npm test            # Vitest unit tests
+npm run test:coverage  # Vitest unit tests with v8 coverage report
 npm run test:e2e    # Playwright e2e tests (npx playwright install first)
 ```
 
@@ -120,6 +123,11 @@ npm run dist:win         # Windows (nsis + portable)
 npm run dist:mac         # macOS (dmg + zip)
 npm run dist:linux       # Linux (AppImage + deb)
 ```
+
+## Design & testing defaults
+
+- **Default design system: [aioli](https://github.com/jaredhd/aioli) (MIT).** When no specific design is requested, UI work follows the aioli design language. Aioli ships as a dev dependency plus a bundled MCP server, so design work is fully offline (no network, no API key) — including intranet/air-gapped setups. Tokens, components, usage, and the acceptance checklist are documented in [docs/aioli-design-system.md](docs/aioli-design-system.md). User-specified designs always take precedence.
+- The testing playbook — unit tests with coverage, Playwright E2E, browser UI self-testing, and the tester agent workflow — is documented in [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 
 ## Plugins
 
@@ -170,6 +178,9 @@ OurCode-ide/
 
 - [docs/EXTENSIONS_ARCHITECTURE.md](docs/EXTENSIONS_ARCHITECTURE.md) — plugin and extension architecture
 - [docs/BROWSER_SELF_TEST.md](docs/BROWSER_SELF_TEST.md) — browser UI self-testing with Playwright MCP
+- [docs/APP_GUI_SELF_TEST.md](docs/APP_GUI_SELF_TEST.md) — desktop GUI self-testing with a computer-use MCP
+- [docs/aioli-design-system.md](docs/aioli-design-system.md) — the aioli design system reference (default UI design)
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) — testing layers, coverage, CI, and the AI testing workflow
 - [examples/ui-self-test-demo](examples/ui-self-test-demo) — runnable example
 
 ## License

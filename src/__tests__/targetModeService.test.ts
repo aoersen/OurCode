@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { parseStatus, ensureInitialized } from '@/services/targetMode/targetModeService'
+import { parseStatus, ensureInitialized, resetTargetModeState } from '@/services/targetMode/targetModeService'
 import { TARGET_MODE_STATUS_INIT } from '@/services/targetMode/spec'
 
 describe('targetModeService.parseStatus', () => {
@@ -111,5 +111,64 @@ describe('targetModeService.ensureInitialized (v2 multi-agent skeleton)', () => 
   it('is a no-op for an empty root', async () => {
     await ensureInitialized('')
     expect(mockApi.createDir).not.toHaveBeenCalled()
+  })
+})
+
+describe('targetModeService.resetTargetModeState（新任务清零）', () => {
+  const root = 'C:/workspace'
+  const base = `${root}/.ourcode/targemode`
+  const written: Array<[string, string]> = []
+  const deleted: string[] = []
+  let entries: Array<{ name: string; isDirectory: boolean }>
+  let inboxEntries: Array<{ name: string; isDirectory: boolean }>
+
+  const mockApi = {
+    writeFile: vi.fn(async (path: string, content: string) => { written.push([path, content]) }),
+    listDir: vi.fn(async (path: string) => (path === `${base}/inbox` ? inboxEntries : entries)),
+    delete: vi.fn(async (path: string) => { deleted.push(path) }),
+  }
+
+  beforeEach(() => {
+    written.length = 0
+    deleted.length = 0
+    vi.clearAllMocks()
+    entries = [
+      { name: 'loop1', isDirectory: true },
+      { name: 'loop2', isDirectory: true },
+      { name: 'finalGoal.md', isDirectory: false },
+      { name: 'finalGoal_v2.md', isDirectory: false },
+      { name: 'budget.md', isDirectory: false },
+      { name: 'SPEC.md', isDirectory: false },
+    ]
+    inboxEntries = [
+      { name: 'README.md', isDirectory: false },
+      { name: 'envelope-1.md', isDirectory: false },
+    ]
+    vi.stubGlobal('window', { electronAPI: mockApi })
+  })
+
+  it('清掉旧任务的运行态文档，保留公司级配置', async () => {
+    await resetTargetModeState(root)
+    // 实施状态复位为初始模板；监管决策日志重新初始化
+    expect(written).toContainEqual([`${base}/implementationStatus.md`, TARGET_MODE_STATUS_INIT])
+    expect(written.some(([p]) => p === `${base}/agents/supervisor.md`)).toBe(true)
+    // 轮次目录、目标清单（含修订版）、信封删除；budget/SPEC/README 保留
+    expect(deleted).toEqual([
+      `${base}/loop1`,
+      `${base}/loop2`,
+      `${base}/finalGoal.md`,
+      `${base}/finalGoal_v2.md`,
+      `${base}/inbox/envelope-1.md`,
+    ])
+  })
+
+  it('失败静默：读目录抛错时不向上抛', async () => {
+    mockApi.listDir.mockRejectedValueOnce(new Error('boom'))
+    await expect(resetTargetModeState(root)).resolves.toBeUndefined()
+  })
+
+  it('空根路径直接返回', async () => {
+    await resetTargetModeState('')
+    expect(mockApi.writeFile).not.toHaveBeenCalled()
   })
 })

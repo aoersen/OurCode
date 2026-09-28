@@ -14,10 +14,16 @@
       "command": "node",
       "args": ["node_modules/@playwright/mcp/cli.js"],
       "env": {}
+    },
+    "aioli": {
+      "command": "node",
+      "args": ["mcp-servers/aioli-mcp/index.js"],
+      "env": {}
     }
   },
   "_comments": {
     "git": "内置 Git MCP（无需安装 Node）：command 填 bundled-node 用 IDE 自带的 Node 运行时启动，args 里 bundled: 前缀指向安装包内置的 mcp-servers 目录。仍要求系统装有 git 命令行。若你本机已装 Node，也可改回 {\"command\": \"node\", \"args\": [\"mcp-servers/git-server/server.js\"]}（此时需把 mcp-servers 放在工作区根目录）。",
-    "playwright": "浏览器操作 MCP（AI 可对 Web 项目自动点击/输入/验证）。stdio 传输不走 shell，Windows 上不能用 npx，需先在工作区安装：npm i -D @playwright/mcp，再执行 node node_modules/@playwright/mcp/node_modules/playwright/cli.js install chromium。注意：此功能依赖本机 Node 环境。详细用法见 docs/BROWSER_SELF_TEST.md 和 examples/ui-self-test-demo。"
+    "playwright": "浏览器操作 MCP（AI 可对 Web 项目自动点击/输入/验证）。stdio 传输不走 shell，Windows 上不能用 npx，需先在工作区安装：npm i -D @playwright/mcp，再执行 node node_modules/@playwright/mcp/node_modules/playwright/cli.js install chromium。注意：此功能依赖本机 Node 环境。详细用法见 docs/BROWSER_SELF_TEST.md 和 examples/ui-self-test-demo。",
+    "aioli": "Aioli 设计系统 MCP（默认 UI 设计引擎，16 个工具）。完全离线运行，无需 API key 与网络；依赖 npm install 后本地 node_modules/aioli-design。vendored 适配说明见 mcp-servers/aioli-mcp/README.md，用法见 docs/aioli-design-system.md。"
   }
 }

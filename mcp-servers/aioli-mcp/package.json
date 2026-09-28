@@ -1,0 +1,7 @@
+{
+  "name": "aioli-mcp-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vendored aioli-design MCP server (aioli-design 0.7.0). See README.md."
+}

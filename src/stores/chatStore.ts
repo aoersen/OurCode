@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
-import { TOOL_ALLOWLIST_PREFIX, TOOL_DENYLIST_PREFIX, QUESTION_AUTO_CONTINUE_MS, lookupModelMetadata } from '@shared/constants'
+import { TOOL_ALLOWLIST_PREFIX, TOOL_DENYLIST_PREFIX, QUESTION_AUTO_CONTINUE_MS, DEFAULT_SESSION_TITLE, lookupModelMetadata } from '@shared/constants'
 import { kindOf, resolveApproval, targetPathsOf, isPathInScope, MODE_CYCLE, type EditMode } from '@/services/permissions/modePolicy'
 import { IS_OFFICE, WINDOW_MODE, modeKey } from '@/utils/windowMode'
 import { shellEnvironmentNote } from '@/utils/platform'
@@ -11,7 +11,7 @@ import { useUIStore } from './uiStore'
 import { getLastModelForGroup } from './configStore'
 import { TARGET_MODE_INSTRUCTION } from './targetModeInstruction'
 import { refreshBudgetLimit, projectBudgetExceeded, getProjectBudgetUsage } from '@/services/targetMode/budget'
-import { ensureInitialized, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
+import { ensureInitialized, resetTargetModeState, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
 import {
   WORKER_ROSTER,
   DEV_SLOTS,
@@ -139,8 +139,9 @@ function getLastProjectEditMode(): 'confirm_before_change' | 'auto_edit' | 'plan
 }
 
 /** Default title of a brand-new session — replaced by an auto-generated title
- *  after the first message, and never overwritten once the user renames. */
-export const DEFAULT_SESSION_TITLE = '新对话'
+ *  after the first message, and never overwritten once the user renames.
+ *  （定义在 @shared/constants，这里重导出保持既有引用兼容。） */
+export { DEFAULT_SESSION_TITLE }
 
 /** 从未使用的"幽灵会话"：没有消息、标题仍是默认的"新对话"、且未置顶/归档。
  *  新建后啥也不干的空对话不应出现在任何会话列表里（首条消息发出后才算真正的
@@ -865,6 +866,10 @@ interface ChatState {
   ensureWorkers: (projectPath: string) => void
   addWorker: (projectPath: string, role: 'dev' | 'test') => string | null
   removeWorker: (sessionId: string) => void
+  /** 新建一人公司任务（项目 + 号入口）：该项目有总监任务在跑 → 不新建，切到
+   *  在跑会话；没有 → 重置目标模式运行态（旧任务目标/清单/状态清零）并新建
+   *  全新总监会话。返回新会话 id；被拦截时返回在跑会话 id；无配置返回 null。 */
+  createOfficeTask: (projectPath?: string) => string | null
   deleteSession: (sessionId: string) => void
   renameSession: (sessionId: string, title: string) => void
   setActiveSession: (sessionId: string) => void
@@ -2289,6 +2294,53 @@ export const useChatStore = create<ChatState>((set, get) => ({
       slot,
       titleForSlot(slot),
     )
+  },
+
+  /** 新建一人公司任务：项目里有任务在执行（总监或任何员工会话在跑）→ 不
+   *  新建——总监在跑就切到它，员工还在收尾就只提示；没有 → 重置该项目的
+   *  目标模式运行态（旧任务的目标清单/轮次/状态/日志/信封清零，「目标达成」
+   *  卡与新总监都从零开始）并新建全新总监会话。 */
+  createOfficeTask: (projectPath) => {
+    const root =
+      projectPath ||
+      getCurrentProjectPath() ||
+      document.getElementById('file-tree-root')?.getAttribute('data-root-path') ||
+      useUIStore.getState().rootPath ||
+      ''
+    const busy = root && get().sessions.some(
+      (s) =>
+        s.projectPath === root &&
+        (s.targetMode === true || !!s.workerRole) &&
+        get().runningSessionIds.includes(s.id),
+    )
+    if (busy) {
+      const running = get().sessions.find(
+        (s) =>
+          s.targetMode === true &&
+          !s.workerRole &&
+          s.projectPath === root &&
+          get().runningSessionIds.includes(s.id),
+      )
+      if (running) {
+        set({ activeSessionId: running.id })
+        get().loadCheckpoints(running.id)
+        useUIStore.getState().showNotification(t('office.companyAlreadyRunning'), 'info')
+        return running.id
+      }
+      // 总监本轮已结束、员工仍在收尾：任务还在执行，同样不让新建。
+      useUIStore.getState().showNotification(t('office.taskStillWorking'), 'info')
+      return null
+    }
+    const configId = useConfigStore.getState().activeConfigGroupId
+    if (!configId) {
+      useUIStore.getState().openSettings()
+      return null
+    }
+    // 存在旧总监会话 = 项目里做过任务 → 新任务全新开张，先清掉旧运行态。
+    const hasPreviousTask =
+      root && get().sessions.some((s) => s.targetMode === true && !s.workerRole && s.projectPath === root)
+    if (hasPreviousTask) void resetTargetModeState(root)
+    return get().createSession(configId, root)
   },
 
   /** 解雇员工：先停跑再删除会话（最少保留 1 名的约束由调用方保证）。 */

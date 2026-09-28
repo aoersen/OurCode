@@ -4,12 +4,13 @@ import { useConfigStore } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { summarizeTask, roleLabel } from '@/services/office/mapping'
+import { buildTaskRequests } from '@/services/office/taskRequests'
 import { listPhaseCheckpoints, rollbackToPhase, sanitizeLabel, isGitRepo } from '@/services/targetMode/phaseCheckpoint'
 import { MONO, GRADIENT, roleAvatar } from './officeTheme'
 import FileTree from '../Sidebar/FileTree'
 import { useThrottledValue } from '@/utils/useThrottledValue'
 import { IS_OFFICE } from '@/utils/windowMode'
-import type { ChatSession, SubAgentProgress } from '@shared/types'
+import type { ChatSession } from '@shared/types'
 
 /** 项目行前导图标：发丝线描边文件夹（Monolith 极简，替代原渐变瓷砖）。 */
 function FolderIcon({ color = MONO.t3 }: { color?: string }) {
@@ -33,19 +34,15 @@ function fmtRelative(ts: number): string {
   return `${d.getMonth() + 1}月${d.getDate()}日`
 }
 
-interface TaskItem {
-  id: string // 父 run_subagent 的 toolCallId（subagentProgress 的键）
-  p: SubAgentProgress
-  session: ChatSession
-}
-
 /**
  * 「一人公司」左侧「项目/任务」栏（版本 K 落地）：
  * - 项目列表复用 agent 侧项目列表的归组逻辑（recentProjects + 会话 projectPath）。
- * - 每个项目下只列出该项目下**目标模式子任务**（subagentProgress，会话 targetMode 为真），
- *   不含 agent 侧任务（agentRuns），也不含历史会话分区——项目下的子项都是任务。
+ * - 每个项目下列出该项目下的**任务**——一个总监会话 = 一个任务：首条要求发出时
+ *   与普通对话一样自动生成摘要标题（会话标题），此后在该对话里说的一切都属于
+ *   同一个任务；任务触发的角色活动（员工派发 / 子智能体运行）收在任务行内
+ *   缩进展示。
  * - 任务行带 K 版状态指示：运行中 = conic 彩虹环旋转；完成 = 绿勾；失败 = 红叉，
- *   行尾角色小头像 + 等宽状态词（RUNNING / DONE / FAILED）。
+ *   行尾等宽状态词（RUNNING / WAITING / DONE / FAILED）；已结束任务可移除。
  * - **双击项目卡片 → 就在本栏内就地打开该项目的文件树**（不退出办公室、不跳工作区）；
  *   单击任务 → 切到对应对话。文件树里双击文件 → 进工作区编辑器编辑。
  */
@@ -58,7 +55,10 @@ export default function OfficeProjectsPanel() {
   const sessions = useChatStore((s) => s.sessions)
   // 任务行只需 ~1Hz 的进展刷新；进度表逐次推送换引用会让整棵项目树每秒重渲多次
   const subagentProgress = useThrottledValue(useChatStore((s) => s.subagentProgress), 800)
+  const runningSessionIds = useChatStore((s) => s.runningSessionIds)
   const pendingQuestion = useChatStore((s) => s.pendingQuestion)
+  const removedOfficeTasks = useUIStore((s) => s.removedOfficeTasks)
+  const removeOfficeTask = useUIStore((s) => s.removeOfficeTask)
   const rollActiveSessionAwayFrom = useChatStore((s) => s.rollActiveSessionAwayFrom)
   const removeProject = useUIStore((s) => s.removeProject)
   const showContextMenu = useUIStore((s) => s.showContextMenu)
@@ -149,29 +149,31 @@ export default function OfficeProjectsPanel() {
     }
   }, [displayedProjects])
 
-  // 一人公司任务：目标模式会话的子 Agent 进度，按项目归组（运行中在前，按启动时间倒序）
+  // 一人公司任务：一个总监会话 = 一个任务（标题 = 首条要求自动生成的会话
+  // 摘要，与普通对话同机制）；任务触发的角色活动收在任务内部；用户手动移除
+  // 的已结束任务不再出现（localStorage 持久化）。
   const tasksByProject = useMemo(() => {
-    const map = new Map<string, TaskItem[]>()
-    for (const [toolCallId, p] of Object.entries(subagentProgress)) {
-      const session = sessions.find((s) => s.id === p.sessionId)
-      if (!session?.targetMode) continue
-      const key = session.projectPath || ''
-      if (!map.has(key)) map.set(key, [])
-      map.get(key)!.push({ id: toolCallId, p, session })
-    }
-    const rank = (s: SubAgentProgress['status']) => (s === 'running' ? 0 : s === 'done' ? 1 : 2)
-    for (const arr of map.values()) {
-      arr.sort((a, b) => (rank(a.p.status) - rank(b.p.status)) || (b.p.startedAt - a.p.startedAt))
+    const map = buildTaskRequests({
+      sessions,
+      progress: subagentProgress,
+      runningSessionIds,
+      pendingQuestionSessionId: pendingQuestion?.sessionId ?? null,
+    })
+    const removed = new Set(removedOfficeTasks)
+    for (const [path, list] of Array.from(map.entries())) {
+      const kept = list.filter((r) => !removed.has(r.id))
+      if (kept.length > 0) map.set(path, kept)
+      else map.delete(path)
     }
     return map
-  }, [subagentProgress, sessions])
+  }, [sessions, subagentProgress, runningSessionIds, pendingQuestion, removedOfficeTasks])
 
-  // 历史对话：该项目下非 ghost 的 office 会话（按最近用户活跃降序）。任务区的
-  // 条目是运行时子 Agent 进度（瞬态，重启即清空）；历史区是会话本体（SQLite 持久
-  // 化），发布过的任务/对话在这里回看。正在任务区展示的会话不重复出现。
+  // 历史对话：该项目下非 ghost 的 office 会话（按最近用户活跃降序）。任务区
+  // 的条目就是总监会话（一个会话 = 一个任务，SQLite 持久化、重启仍在）；历史
+  // 区是任务全部移除后的会话回看入口——任务区还在展示的会话不重复出现。
   const historyByProject = useMemo(() => {
     const activeSessionIds = new Set<string>()
-    for (const arr of tasksByProject.values()) for (const { session } of arr) activeSessionIds.add(session.id)
+    for (const arr of tasksByProject.values()) for (const r of arr) activeSessionIds.add(r.sessionId)
     const map = new Map<string, ChatSession[]>()
     for (const s of sessions) {
       // 角色员工会话（M4）对用户隐藏：不进历史对话区（总监经 send_message 派发）
@@ -262,18 +264,16 @@ export default function OfficeProjectsPanel() {
     useUIStore.getState().setActiveSidebarTab('files')
   }
 
-  // 文件树头部「新建对话」：为当前项目建一个 office 会话，输入框立即可用。
+  // 文件树头部「新建对话」：走一人公司新建任务流程（项目有任务在跑 → 拦截
+  // 并切到在跑会话；没有 → 重置旧任务运行态并新建全新会话）。
   const handleNewSessionForTree = () => {
     if (!treePath) return
-    const configId = useConfigStore.getState().activeConfigGroupId
-    if (configId) useChatStore.getState().createSession(configId, treePath)
+    useChatStore.getState().createOfficeTask(treePath)
   }
 
-  /** 「新建任务对话」：为项目创建一个 office 会话并立即激活（输入框可直接派活）。 */
+  /** 「新建任务对话」：新建一人公司任务（有任务在跑时切换而非新建）。 */
   const handleNewSessionForProject = (projectPath: string) => {
-    const configId = useConfigStore.getState().activeConfigGroupId
-    if (configId) useChatStore.getState().createSession(configId, projectPath)
-    else useUIStore.getState().openSettings()
+    useChatStore.getState().createOfficeTask(projectPath)
   }
 
   /** 移除项目：只从办公室项目列表隐藏（会话仍绑定、重开项目即回来）；
@@ -431,8 +431,8 @@ export default function OfficeProjectsPanel() {
           // 项目有子内容（运行时任务或历史对话）才显示展开箭头
           const hasChildren = tasks.length > 0 || history.length > 0
           const collapsed = collapsedPaths.has(project.path)
-          const runningCount = tasks.filter(({ p }) => p.status === 'running').length
-          const doneCount = tasks.filter(({ p }) => p.status === 'done').length
+          const runningCount = tasks.filter((r) => r.status === 'running' || r.status === 'waiting').length
+          const doneCount = tasks.filter((r) => r.status === 'done').length
           const countColor = runningCount > 0 ? '#0058BC' : doneCount === tasks.length ? '#16A34A' : MONO.t3
           return (
             <div
@@ -522,10 +522,10 @@ export default function OfficeProjectsPanel() {
                 </button>
               </div>
 
-              {/* 项目子内容：活动任务（运行时子 Agent 进度） + 历史对话（持久化会话） */}
+              {/* 项目子内容：活动任务（用户工作要求 + 其角色活动） + 历史对话（持久化会话） */}
               {hasChildren && !collapsed && (
                 <div className="ml-5 pl-2 flex flex-col pb-1" style={{ borderLeft: `1px solid ${MONO.hairline}` }}>
-                  {/* ── 活动任务 ── */}
+                  {/* ── 活动任务：一个总监会话 = 一行；角色活动缩进在任务行内 ── */}
                   {tasks.length > 0 && (
                     <>
                       <div className="flex items-center gap-1.5 pt-1.5 pb-0.5 px-1">
@@ -541,136 +541,175 @@ export default function OfficeProjectsPanel() {
                           {tasks.length}
                         </span>
                       </div>
-                      {tasks.map(({ id, p, session }) => {
-                    const label = roleLabel(p.task, p.name)
-                    const avatar = roleAvatar(label)
-                    const running = p.status === 'running'
-                    const done = p.status === 'done'
-                    // V12 5 态收敛：等待输入（该会话有挂起的询问）琥珀 ⏸
-                    const waiting = running && pendingQuestion?.sessionId === session.id
-                    const statusText = waiting ? 'WAITING' : running ? 'RUNNING' : done ? 'DONE' : 'FAILED'
-                    const statusColor = waiting ? '#D97706' : running ? '#0058BC' : done ? '#16A34A' : '#DC2626'
-                    return (
-                      <button
-                        key={id}
-                        onClick={() => {
-                          // V12：点任务行 → 工作台切到该角色（立即生效，不等会话切换）
-                          useUIStore.getState().setOfficeSelectedRole(label)
-                          // 单击 = 切到该任务会话（延时 250ms 区分双击）；
-                          // 双击由卡片 onDoubleClick 取消本次切换并打开项目。
-                          if (taskClickTimer.current != null) window.clearTimeout(taskClickTimer.current)
-                          taskClickTimer.current = window.setTimeout(() => {
-                            taskClickTimer.current = null
-                            handleSelectTask(session.id)
-                          }, 250)
-                        }}
-                        title={`${session.title || t('chat.untitled')} · ${summarizeTask(p.task, 120)}`}
-                        className="w-full flex items-start gap-2 py-1.5 px-1 text-left transition-colors hover:bg-[#F4F4F5]"
-                      >
-                        {/* K 版状态指示：运行中 = conic 彩虹环旋转 / 等待输入 = 琥珀半环 / 完成 = 绿勾 / 失败 = 红叉 */}
-                        {waiting ? (
-                          <span
-                            className="shrink-0 rounded-full flex items-center justify-center"
-                            style={{
-                              width: 15, height: 15, marginTop: 4,
-                              border: '1.5px solid #D97706', color: '#D97706', fontSize: 9, fontWeight: 700,
-                              background: 'rgba(217,119,6,0.1)',
+                      {tasks.map((r) => {
+                        const running = r.status === 'running'
+                        const waiting = r.status === 'waiting'
+                        const done = r.status === 'done'
+                        const failed = r.status === 'failed'
+                        const removable = done || failed
+                        const statusText = waiting ? 'WAITING' : running ? 'RUNNING' : done ? 'DONE' : 'FAILED'
+                        const statusColor = waiting ? '#D97706' : running ? '#0058BC' : done ? '#16A34A' : '#DC2626'
+                        const reqSession = sessions.find((s) => s.id === r.sessionId)
+                        return (
+                          <button
+                            key={r.id}
+                            onClick={() => {
+                              // 单击 = 切到该任务会话（延时 250ms 区分双击）；
+                              // 双击由卡片 onDoubleClick 取消本次切换并打开项目。
+                              if (taskClickTimer.current != null) window.clearTimeout(taskClickTimer.current)
+                              taskClickTimer.current = window.setTimeout(() => {
+                                taskClickTimer.current = null
+                                handleSelectTask(r.sessionId)
+                              }, 250)
                             }}
+                            title={`${r.title} · ${t('office.selectTaskHint')}`}
+                            className="w-full flex items-start gap-2 py-1.5 px-1 text-left transition-colors hover:bg-[#F4F4F5]"
                           >
-                            ⏸
-                          </span>
-                        ) : running ? (
-                          <span
-                            className="shrink-0 rounded-full animate-spin"
-                            style={{ width: 15, height: 15, padding: 2, marginTop: 4, background: GRADIENT.rainbow, animationDuration: '2s' }}
-                          >
-                            <span className="block w-full h-full rounded-full" style={{ background: '#fff' }} />
-                          </span>
-                        ) : done ? (
-                          <span
-                            className="shrink-0 rounded-full flex items-center justify-center"
-                            style={{
-                              width: 15, height: 15, marginTop: 4,
-                              border: '1.5px solid #16A34A', color: '#16A34A', fontSize: 9, fontWeight: 700,
-                              background: 'rgba(22,163,74,0.08)',
-                            }}
-                          >
-                            ✓
-                          </span>
-                        ) : (
-                          <span
-                            className="shrink-0 rounded-full flex items-center justify-center"
-                            style={{
-                              width: 15, height: 15, marginTop: 4,
-                              border: '1.5px solid #DC2626', color: '#DC2626', fontSize: 9, fontWeight: 700,
-                              background: 'rgba(220,38,38,0.06)',
-                            }}
-                          >
-                            ✕
-                          </span>
-                        )}
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center justify-between gap-2">
-                            <span
-                              className="truncate font-medium"
-                              style={{
-                                fontSize: 11.5,
-                                color: running ? '#0058BC' : MONO.t1,
-                                textDecoration: done ? 'line-through' : undefined,
-                                opacity: done ? 0.55 : 1,
-                              }}
-                            >
-                              {label}
-                            </span>
-                            <span
-                              className="shrink-0 uppercase"
-                              style={{
-                                fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
-                                fontSize: 9, letterSpacing: '0.05em', color: statusColor,
-                              }}
-                            >
-                              {statusText}
-                            </span>
-                            {/* V12 审查 #5：已完成任务行 → 回滚到此 checkpoint；
-                                非 git 仓库没有 checkpoint，入口隐藏 */}
-                            {done && gitReposRef.current.get(project.path) === true && (
+                            {/* K 版状态指示：运行中 = conic 彩虹环旋转 / 等待输入 = 琥珀半环 / 完成 = 绿勾 / 失败 = 红叉 */}
+                            {waiting ? (
                               <span
-                                role="button"
-                                title={t('office.rbTitle')}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  doRollback(label, session)
+                                className="shrink-0 rounded-full flex items-center justify-center"
+                                style={{
+                                  width: 15, height: 15, marginTop: 4,
+                                  border: '1.5px solid #D97706', color: '#D97706', fontSize: 9, fontWeight: 700,
+                                  background: 'rgba(217,119,6,0.1)',
                                 }}
-                                className="shrink-0 transition-colors rounded"
-                                style={{ fontSize: 12, color: MONO.t3, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
                               >
-                                ↺
+                                ⏸
+                              </span>
+                            ) : running ? (
+                              <span
+                                className="shrink-0 rounded-full animate-spin"
+                                style={{ width: 15, height: 15, padding: 2, marginTop: 4, background: GRADIENT.rainbow, animationDuration: '2s' }}
+                              >
+                                <span className="block w-full h-full rounded-full" style={{ background: '#fff' }} />
+                              </span>
+                            ) : done ? (
+                              <span
+                                className="shrink-0 rounded-full flex items-center justify-center"
+                                style={{
+                                  width: 15, height: 15, marginTop: 4,
+                                  border: '1.5px solid #16A34A', color: '#16A34A', fontSize: 9, fontWeight: 700,
+                                  background: 'rgba(22,163,74,0.08)',
+                                }}
+                              >
+                                ✓
+                              </span>
+                            ) : (
+                              <span
+                                className="shrink-0 rounded-full flex items-center justify-center"
+                                style={{
+                                  width: 15, height: 15, marginTop: 4,
+                                  border: '1.5px solid #DC2626', color: '#DC2626', fontSize: 9, fontWeight: 700,
+                                  background: 'rgba(220,38,38,0.06)',
+                                }}
+                              >
+                                ✕
                               </span>
                             )}
-                          </span>
-                          <span className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                            {/* 角色小头像（渐变底 + 首字） */}
-                            <span
-                              className="shrink-0 rounded-full flex items-center justify-center"
-                              style={{
-                                width: 13, height: 13,
-                                background: avatar.bg, color: '#fff', fontSize: 8, fontWeight: 700,
-                              }}
-                            >
-                              {avatar.char}
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center justify-between gap-1.5">
+                                <span
+                                  className="truncate flex-1 min-w-0 font-medium"
+                                  style={{
+                                    fontSize: 11.5,
+                                    color: running || waiting ? '#0058BC' : MONO.t1,
+                                    textDecoration: done ? 'line-through' : undefined,
+                                    opacity: done ? 0.55 : 1,
+                                  }}
+                                >
+                                  {r.title}
+                                </span>
+                                {removable && (
+                                  <span
+                                    role="button"
+                                    title={t('office.removeTask')}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      removeOfficeTask(r.id)
+                                    }}
+                                    className="shrink-0 flex items-center justify-center rounded transition-colors hover:bg-[#E4E4E7]"
+                                    style={{ width: 14, height: 14, color: MONO.t3, cursor: 'pointer' }}
+                                  >
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M3 6h18" />
+                                      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                      <line x1="10" y1="11" x2="10" y2="17" />
+                                      <line x1="14" y1="11" x2="14" y2="17" />
+                                    </svg>
+                                  </span>
+                                )}
+                                <span
+                                  className="shrink-0 uppercase"
+                                  style={{
+                                    fontFamily: "'JetBrains Mono', ui-monospace, Consolas, monospace",
+                                    fontSize: 9, letterSpacing: '0.05em', color: statusColor,
+                                  }}
+                                >
+                                  {statusText}
+                                </span>
+                              </span>
+                              {/* 要求触发的角色活动：员工派发 / 子智能体运行，缩进在任务行内 */}
+                              {r.activities.length > 0 && (
+                                <span className="flex flex-col gap-0.5 mt-1">
+                                  {r.activities.map((act) => {
+                                    const avatar = roleAvatar(act.label)
+                                    const actRunning = act.status === 'running'
+                                    const actDone = act.status === 'done'
+                                    const actFailed = act.status === 'failed'
+                                    const actColor = actRunning ? '#0058BC' : actDone ? '#16A34A' : actFailed ? '#DC2626' : MONO.t3
+                                    return (
+                                      <span key={act.key} className="flex items-center gap-1.5 min-w-0">
+                                        {/* 角色小头像（渐变底 + 首字） */}
+                                        <span
+                                          className="shrink-0 rounded-full flex items-center justify-center"
+                                          style={{
+                                            width: 13, height: 13,
+                                            background: avatar.bg, color: '#fff', fontSize: 8, fontWeight: 700,
+                                          }}
+                                        >
+                                          {avatar.char}
+                                        </span>
+                                        <span className="block truncate flex-1 min-w-0" style={{ fontSize: 10, color: MONO.t3 }} title={act.task}>
+                                          {summarizeTask(act.task, 34)}
+                                        </span>
+                                        <span
+                                          className="shrink-0 rounded-full"
+                                          style={{
+                                            width: 5, height: 5, background: actColor,
+                                            opacity: act.status === 'pending' ? 0.45 : 1,
+                                          }}
+                                        />
+                                        {/* V12 审查 #5：完成的子智能体运行 → 回滚到此 checkpoint；
+                                            非 git 仓库没有 checkpoint，入口隐藏 */}
+                                        {actDone && act.progress && gitReposRef.current.get(project.path) === true && reqSession && (
+                                          <span
+                                            role="button"
+                                            title={t('office.rbTitle')}
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              doRollback(roleLabel(act.progress!.task, act.progress!.name), reqSession)
+                                            }}
+                                            className="shrink-0 transition-colors rounded"
+                                            style={{ fontSize: 12, color: MONO.t3, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
+                                          >
+                                            ↺
+                                          </span>
+                                        )}
+                                      </span>
+                                    )
+                                  })}
+                                </span>
+                              )}
                             </span>
-                            <span className="block truncate" style={{ fontSize: 10, color: MONO.t3 }}>
-                              {summarizeTask(p.task, 34)}
-                            </span>
-                          </span>
-                        </span>
-                      </button>
-                    )
-                  })}
+                          </button>
+                        )
+                      })}
                     </>
                   )}
 
-                  {/* ── 历史对话（该项目的持久化会话；重启后任务区清空，这里回看） ── */}
+                  {/* ── 历史对话（该项目的持久化会话；任务全部移除后回到这里回看） ── */}
                   {history.length > 0 && (
                     <>
                       <div className="flex items-center gap-1.5 pt-1.5 pb-0.5 px-1">
