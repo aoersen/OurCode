@@ -726,7 +726,7 @@ function deriveLastUserMessageAt(s: ChatSession): number {
   return s.createdAt
 }
 
-interface ChatState {
+export interface ChatState {
   sessions: ChatSession[]
   activeSessionId: string | null
   /** Sessions currently generating (agent loop active) — one entry per running

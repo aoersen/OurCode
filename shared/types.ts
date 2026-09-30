@@ -486,6 +486,12 @@ export interface UserPreferences {
   /** 自定义更新源：generic provider 的 base URL（目录下需放 latest.yml 与安装包）。
    *  留空则使用打包内置的默认源（GitHub Releases）。 */
   updateFeedUrl?: string
+  /** 微信通道总开关（关闭时网关不启动、微信消息不处理）。 */
+  wechatEnabled?: boolean
+  /** 微信会话审批模式：'approve' 逐条审批（默认）| 'full_access' 免审批。 */
+  wechatApprovalMode?: 'approve' | 'full_access'
+  /** 微信工作区根目录：微信任务都在此目录下进行；留空 = 使用最近打开的项目。 */
+  wechatWorkspaceDir?: string
 }
 
 // Model Info
@@ -803,3 +809,53 @@ export interface BrowserActResult {
 export type BrowserEvent =
   | { type: 'state'; state: BrowserSessionState }
   | { type: 'console'; entry: BrowserConsoleEntry }
+
+// ── 微信通道 ──────────────────────────────────────────────────────────────
+// 网关事件协议，与 electron/wechat-gateway/gateway.mjs 的 stdout 事件对齐。
+// 主进程原样转发（IPC_CHANNELS.WECHAT_EVENT），渲染层按 event 字段分发。
+
+export type WechatChannelState = 'idle' | 'loggingIn' | 'connected' | 'disconnected' | 'stopped'
+
+export interface WechatStatusEvent {
+  event: 'status'
+  state: WechatChannelState
+  accountId?: string
+}
+
+export interface WechatQrEvent {
+  event: 'qr'
+  qrcodeUrl: string
+}
+
+export interface WechatInboundEvent {
+  event: 'inbound'
+  msgId?: string
+  from?: string
+  /** 回复目标：群消息为群 id，否则为发送者本人。 */
+  replyTo?: string
+  isGroup: boolean
+  text: string
+  ts?: number
+  contextToken?: string
+}
+
+export interface WechatSentEvent {
+  event: 'sent'
+  clientMsgId?: string
+  ok: boolean
+  messageId?: string
+  error?: string
+}
+
+export type WechatGatewayEvent =
+  | WechatStatusEvent
+  | WechatQrEvent
+  | { event: 'scanned' }
+  | { event: 'needVerifyCode' }
+  | { event: 'verifyBlocked' }
+  | { event: 'loginFailed'; message: string }
+  | { event: 'sessionExpired'; message: string }
+  | WechatInboundEvent
+  | WechatSentEvent
+  | { event: 'error'; message: string }
+

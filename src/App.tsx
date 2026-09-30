@@ -18,6 +18,7 @@ import { ensureProblemsSubscription, useProblemsStore } from './stores/problemsS
 import { ensureLspDiagnosticsSubscription } from './services/lsp/lspClient'
 import { ensureDebugEventSubscription } from './stores/debugStore'
 import { ensureBrowserSubscription } from './stores/browserStore'
+import { initWechatBridge } from './services/wechat/wechatBridge'
 import { registerCoreCommands } from './services/commands/coreCommands'
 import { setLocale, resolveLocale, getSystemLocale, type LanguagePreference } from './i18n'
 import { IS_OFFICE } from './utils/windowMode'
@@ -52,6 +53,9 @@ export default function App() {
     const hasCompleted = localStorage.getItem('hasCompletedOnboarding')
     // Register the shared command surface (shortcuts / palette / plugins)
     registerCoreCommands()
+    // 微信通道桥接：尽早订阅网关事件与聊天流（store 在事件到达时才惰性读取，
+    // 无需等待配置加载完成），微信消息驱动同一个 agent 管道。
+    initWechatBridge()
     loadConfigGroups().then(async () => {
       await loadSessions()
       await loadPreferences()

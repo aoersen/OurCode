@@ -241,6 +241,15 @@ export interface ElectronAPI {
   setUpdateFeedUrl: (url: string) => Promise<{ ok: boolean }>
   onUpdateStatus: (callback: (status: { state: string; source?: 'auto' | 'manual'; version?: string; releaseNotes?: string; releaseDate?: string; message?: string }) => void) => () => void
   onUpdateProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
+
+  // WeChat channel
+  getWechatStatus: () => Promise<{ state: import('@shared/types').WechatChannelState }>
+  wechatStartLogin: () => Promise<{ ok: boolean }>
+  wechatSubmitVerifyCode: (code: string) => Promise<{ ok: boolean }>
+  wechatSendText: (to: string, text: string, clientMsgId?: string) => Promise<import('@shared/types').WechatSentEvent>
+  wechatLogout: () => Promise<{ ok: boolean }>
+  wechatSetEnabled: (enabled: boolean) => Promise<{ ok: boolean }>
+  onWechatEvent: (callback: (event: import('@shared/types').WechatGatewayEvent) => void) => () => void
 }
 
 declare global {

@@ -1,0 +1,12 @@
+{
+  "name": "openclaw",
+  "version": "0.0.0-ourcode-stub",
+  "private": true,
+  "type": "module",
+  "description": "Local stub that satisfies the openclaw peer dependency of @tencent-weixin/openclaw-weixin. It provides only the plugin-sdk utilities the Weixin protocol layer imports; nothing else, and it is never published.",
+  "exports": {
+    "./plugin-sdk/account-id": "./plugin-sdk/account-id.mjs",
+    "./plugin-sdk/infra-runtime": "./plugin-sdk/infra-runtime.mjs",
+    "./plugin-sdk/core": "./plugin-sdk/core.mjs"
+  }
+}

@@ -11,6 +11,7 @@ import {
   EndpointFormat,
 } from '@/services/llm/endpoints'
 import McpConfigSection from './McpConfigSection'
+import WechatSettingsSection from './WechatSettingsSection'
 import Button from '@/components/Common/Button'
 import { askText } from '@/components/Common/PromptDialog'
 import PluginSection from '../Plugin/PluginSection'
@@ -1001,6 +1002,9 @@ export default function SettingsModal() {
                   </button>
                 } />
               </section>
+
+              {/* 微信通道（官方 ilink 协议，网关子进程 + 桥接层） */}
+              <WechatSettingsSection />
 
               {/* 功能入口 */}
               <section className="flex flex-col gap-2">

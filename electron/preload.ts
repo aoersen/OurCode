@@ -336,4 +336,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on(IPC_CHANNELS.UPDATE_PROGRESS, listener)
     return () => { ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_PROGRESS, listener) }
   },
+
+  // WeChat channel — 主进程只管进程与事件中继，微信协议在网关子进程内
+  getWechatStatus: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GET_STATUS),
+  wechatStartLogin: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_START_LOGIN),
+  wechatSubmitVerifyCode: (code: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SUBMIT_VERIFY_CODE, code),
+  wechatSendText: (to: string, text: string, clientMsgId?: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SEND_TEXT, to, text, clientMsgId),
+  wechatLogout: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_LOGOUT),
+  wechatSetEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SET_ENABLED, enabled),
+  onWechatEvent: (callback: (event: unknown) => void) => {
+    const listener = (_event: any, payload: any) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.WECHAT_EVENT, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.WECHAT_EVENT, listener) }
+  },
 })

@@ -8,6 +8,8 @@ import type { ExecFileOptions, ChildProcess } from 'child_process'
 import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { AppUpdater } from './services/app-updater'
+import { WechatChannel } from './services/wechat-channel'
+import type { WechatGatewayEvent } from '../shared/types'
 import { FileSystemService } from './services/file-system'
 import { FileIndexService } from './services/file-index'
 import { SQLiteStore } from './services/sqlite-store'
@@ -440,6 +442,7 @@ let store: SQLiteStore
 let backup: BackupService
 let mcp: MCPManager
 let appUpdater: AppUpdater | null = null
+let wechat: WechatChannel | null = null
 let spillStore: SpillStore
 let wireLog: WireLogService
 
@@ -2814,6 +2817,55 @@ function registerIpcHandlers(): void {
   ipcMain.handle('app:getVersion', () => {
     return app.getVersion()
   })
+
+  // ── 微信通道 ─────────────────────────────────────────────────────────────
+  // 网关进程（bundled wechat-gateway.mjs）在应用启动时拉起；其 stdio 事件经
+  // 'gatewayEvent' 原样广播给所有窗口（IPC_CHANNELS.WECHAT_EVENT）。微信协议、
+  // 凭据与同步缓冲都在网关内部，这里只做进程管理与事件中继。
+  wechat = new WechatChannel({
+    gatewayPath: app.isPackaged
+      ? join(process.resourcesPath, 'wechat-gateway', 'wechat-gateway.mjs')
+      : join(app.getAppPath(), 'out', 'wechat-gateway', 'wechat-gateway.mjs'),
+    stateDir: join(app.getPath('userData'), 'wechat-channel'),
+  })
+  wechat.on('gatewayEvent', (ev: WechatGatewayEvent) => {
+    broadcast(IPC_CHANNELS.WECHAT_EVENT, ev)
+  })
+  wechat.on('gatewayLog', (line: string) => {
+    if (is.dev) console.log(`[wechat-gw] ${line}`)
+  })
+  const wechatService = wechat
+  if (store.getPreferences().wechatEnabled !== false) {
+    wechatService.start()
+  }
+
+  ipcMain.handle(IPC_CHANNELS.WECHAT_GET_STATUS, () => {
+    return wechatService.getStatus()
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_START_LOGIN, () => {
+    wechatService.start()
+    return { ok: wechatService.startLogin() }
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_SUBMIT_VERIFY_CODE, (_event, code: string) => {
+    return { ok: wechatService.submitVerifyCode(code) }
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_SEND_TEXT, (_event, to: string, text: string, clientMsgId?: string) => {
+    if (typeof to !== 'string' || typeof text !== 'string' || !text) {
+      return { event: 'sent', clientMsgId, ok: false, error: '参数无效' }
+    }
+    return wechatService.sendText(to, text, clientMsgId)
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_LOGOUT, () => {
+    return { ok: wechatService.logout() }
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_SET_ENABLED, (_event, enabled: boolean) => {
+    if (enabled) {
+      wechatService.start()
+    } else {
+      void wechatService.stop()
+    }
+    return { ok: true }
+  })
 }
 
 // OURCODE_USER_DATA lets tests / multi-instance runs point the app at a
@@ -2961,5 +3013,6 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   browserClose()
+  wechat?.shutdownNow()
   store.close()
 })

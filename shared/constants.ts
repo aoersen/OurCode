@@ -140,6 +140,13 @@ export const IPC_CHANNELS = {
   UPDATE_STATUS: 'update:status',
   UPDATE_PROGRESS: 'update:progress',
   UPDATE_SET_FEED_URL: 'update:setFeedUrl',
+  WECHAT_GET_STATUS: 'wechat:getStatus',
+  WECHAT_START_LOGIN: 'wechat:startLogin',
+  WECHAT_SUBMIT_VERIFY_CODE: 'wechat:submitVerifyCode',
+  WECHAT_SEND_TEXT: 'wechat:sendText',
+  WECHAT_LOGOUT: 'wechat:logout',
+  WECHAT_SET_ENABLED: 'wechat:setEnabled',
+  WECHAT_EVENT: 'wechat:event',
 } as const
 
 // Default Model Parameters
@@ -185,6 +192,12 @@ export const DEFAULT_PREFERENCES = {
   autoUpdateDownload: false,
   /** 自定义更新源 base URL（留空 = 打包内置默认源 GitHub Releases）。 */
   updateFeedUrl: '',
+  /** 微信通道总开关（默认开：启动即拉起网关，已登录则自动恢复收发）。 */
+  wechatEnabled: true,
+  /** 微信会话审批模式（默认逐条审批，可切 full_access 免审批）。 */
+  wechatApprovalMode: 'approve' as const,
+  /** 微信工作区根目录（留空 = 使用最近打开的项目）。 */
+  wechatWorkspaceDir: '',
 }
 
 // Free model keywords

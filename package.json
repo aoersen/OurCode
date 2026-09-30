@@ -10,6 +10,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:wechat-gateway": "node electron/wechat-gateway/bundle.mjs",
+    "predev": "npm run build:wechat-gateway",
+    "prebuild": "npm run build:wechat-gateway",
     "preview": "electron-vite preview",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
@@ -48,6 +51,7 @@
   "devDependencies": {
     "@playwright/mcp": "^0.0.79",
     "@playwright/test": "^1.45.0",
+    "@tencent-weixin/openclaw-weixin": "2.4.9",
     "@types/better-sqlite3": "^7.6.11",
     "@types/marked": "^5.0.2",
     "@types/node": "^20.14.0",
@@ -63,6 +67,7 @@
     "electron": "^30.5.1",
     "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
+    "esbuild": "^0.21.5",
     "eslint": "^8.57.1",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^4.6.2",
@@ -70,6 +75,7 @@
     "marked": "^12.0.2",
     "marked-highlight": "^2.1.0",
     "monaco-editor": "^0.50.0",
+    "openclaw": "file:./electron/wechat-gateway/sdk-stubs/openclaw-stub",
     "postcss": "^8.4.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -92,6 +98,10 @@
       {
         "from": "mcp-servers",
         "to": "mcp-servers"
+      },
+      {
+        "from": "out/wechat-gateway",
+        "to": "wechat-gateway"
       },
       {
         "from": "tools/ripgrep/${os}/${arch}",
