@@ -235,10 +235,11 @@ export interface ElectronAPI {
   getLocale: () => Promise<string>
 
   // Auto Update
-  checkForUpdate: () => Promise<{ state: string; version?: string; message?: string }>
-  downloadUpdate: () => Promise<{ state: string }>
+  checkForUpdate: () => Promise<{ state: string; version?: string; releaseNotes?: string; releaseDate?: string; message?: string }>
+  downloadUpdate: () => Promise<{ state: string; message?: string }>
   installUpdate: () => void
-  onUpdateStatus: (callback: (status: { state: string; version?: string; message?: string }) => void) => () => void
+  setUpdateFeedUrl: (url: string) => Promise<{ ok: boolean }>
+  onUpdateStatus: (callback: (status: { state: string; source?: 'auto' | 'manual'; version?: string; releaseNotes?: string; releaseDate?: string; message?: string }) => void) => () => void
   onUpdateProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
 }
 

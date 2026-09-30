@@ -139,6 +139,7 @@ export const IPC_CHANNELS = {
   UPDATE_INSTALL: 'update:install',
   UPDATE_STATUS: 'update:status',
   UPDATE_PROGRESS: 'update:progress',
+  UPDATE_SET_FEED_URL: 'update:setFeedUrl',
 } as const
 
 // Default Model Parameters
@@ -178,6 +179,12 @@ export const DEFAULT_PREFERENCES = {
   /** 提问自动继续（ZCode 风格）：Agent 提问默认 5 分钟倒计时，超时未回答
    *  自动继续；悬停/交互永久暂停。权限审批与计划审批永远等待。 */
   questionAutoContinue: true,
+  /** 启动后延迟自动检查更新（默认开）。 */
+  autoUpdateCheck: true,
+  /** 发现新版本后自动静默下载（默认关）。 */
+  autoUpdateDownload: false,
+  /** 自定义更新源 base URL（留空 = 打包内置默认源 GitHub Releases）。 */
+  updateFeedUrl: '',
 }
 
 // Free model keywords

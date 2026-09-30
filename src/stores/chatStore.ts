@@ -664,6 +664,20 @@ const MAX_PARALLEL_TOOLS = 6
 // 构建环境坏了，反复加内存/重装依赖/换 shell 调试 6 分钟）。每个 run 只问一次。
 const COMMAND_FAIL_BREAK_ROUNDS = 2
 
+// run_command 结果里「命令没跑成」的失败标记（主进程 SHELL_EXEC 分类后拼在
+// Error: 后面）。只有这些才计入连续失败熔断——它们意味着重试大概率还是失败。
+// 「Error: [命令报错] …」是命令正常执行后如实报告的非零退出码（typecheck/测试
+// 报红、git 报错等）：并行 worker 的编辑-验证循环里这是正常迭代信号，之前把它
+// 计入熔断，导致 [系统诊断] 在正常工作中反复触发、任务被误杀成「任务卡死」。
+const RUN_COMMAND_INFRA_FAILURE_MARKERS = ['[超时]', '[已终止]', '[语法错误]', '[无法执行]', '后台命令启动失败']
+
+/** run_command 结果文本是否是「命令没跑成」的基础设施级失败（超时/终止/语法
+ *  错误/无法执行/后台启动失败）。导出供单测直接校验分类边界。 */
+export function isRunCommandInfraFailure(text: string): boolean {
+  if (!text.startsWith('Error:')) return false
+  return RUN_COMMAND_INFRA_FAILURE_MARKERS.some((marker) => text.startsWith(`Error: ${marker}`))
+}
+
 // 打转守卫 — 模型反复用完全相同的参数调用同一工具时，结果必然相同，继续跑只
 // 是烧轮次和 token（曾见反复重读同一文件而不动手）。达到 NUDGE 先在最后一次
 // 调用的工具结果尾部追加提醒，达到 HALT 直接停止本 run 并说明原因。
@@ -3971,10 +3985,18 @@ async function runAgentLoop(
   // COMMAND_FAIL_BREAK_ROUNDS 时停下提问（详见该常量注释）。每个 run 只问一次。
   let consecutiveCommandFailures = 0
   let lastFailedCommand = ''
+  let lastCommandFailureOutput = ''
   let commandFailBreakAsked = false
+  // 员工会话的熔断提醒：第一次连续失败先注入可读诊断给一次自纠正机会
+  // （此前直接「任务卡死」——命令常常只是 shell 方言/瞬态锁问题），
+  // 再次连续失败才终态停跑。
+  let workerCommandBreakReminded = false
   // 打转守卫状态：本 run 内每个 name+arguments 被调用的次数，以及是否已由
   // 守卫停止（停止时不能再报「已达最大轮数」，两者的原因不同）。
   const repeatCallCounts = new Map<string, number>()
+  // run_command 每次调用的结果变化记录（签名 → 首次结果 + 是否出现过变化），
+  // 见 finalizeToolResult：结果在变的重复是编辑-验证循环，不算打转。
+  const repeatResultsBySig = new Map<string, { first: string; varied: boolean }>()
   let loopGuardStopped = false
 
   while (iterationsLeft-- > 0) {
@@ -4293,7 +4315,9 @@ async function runAgentLoop(
         const n = (repeatCallCounts.get(sig) || 0) + 1
         repeatCallCounts.set(sig, n)
         if (n >= REPEAT_CALL_NUDGE) repeatCountByCallId.set(tc.id, n)
-        if (n >= REPEAT_CALL_HALT && !POLLING_TOOLS.has(tc.name)) roundRepeatsHalt = true
+        // run_command 的打转在结果落定时判定（见循环末尾 runCommandRepeatStuck）：
+        // 同样的 typecheck 命令穿插编辑、结果每次不同，是正常迭代不是打转。
+        if (n >= REPEAT_CALL_HALT && !POLLING_TOOLS.has(tc.name) && tc.name !== 'run_command') roundRepeatsHalt = true
       }
 
       // ── 计划模式防空转 ──────────────────────────────────────────────────
@@ -4471,9 +4495,24 @@ async function runAgentLoop(
       const roundImageNotes: string[] = []
 
       const finalizeToolResult = (tc: ToolCall, incoming: ToolResult): void => {
+        // run_command 的重复不一定是打转：同样的 typecheck 命令穿插在编辑之间，
+        // 结果每次都不同（报错行号/内容在变）。先记录结果是否较上次有变化，
+        // 有变化就清零该签名的重复计数——只有「连续多次结果完全相同」的原样
+        // 重试才算打转（循环末尾的 HALT 判定依据 repeatResultsBySig）。
+        let runCommandResultVaried = false
+        if (tc.name === 'run_command') {
+          const sig = toolCallSignature(tc)
+          const text = String(incoming.result ?? '')
+          const prev = repeatResultsBySig.get(sig)
+          const changed = prev ? prev.first !== text : false
+          if (changed) repeatCallCounts.set(sig, 0)
+          repeatResultsBySig.set(sig, { first: prev ? prev.first : text, varied: prev ? prev.varied || changed : false })
+          runCommandResultVaried = repeatResultsBySig.get(sig)!.varied
+        }
         // 打转提醒挂在被重复的那条结果尾部，而不是另插一条消息：provider 对
         // 角色交替和 tool_call_id 配对都有要求，只有 tool 结果是永远合法的。
-        const repeats = repeatCountByCallId.get(tc.id)
+        // 结果每次都在变的 run_command 重复不加「结果不会改变」提醒——那是误导。
+        const repeats = runCommandResultVaried ? undefined : repeatCountByCallId.get(tc.id)
         const result: ToolResult = repeats
           ? {
               ...incoming,
@@ -4484,12 +4523,20 @@ async function runAgentLoop(
         // the pipeline marks denials via result.rejected.
         useChatStore.getState().setTraceStatus(sessionId, tc.id, result.rejected ? 'rejected' : result.isError ? 'error' : 'success')
         touchActivity() // tool finished — the agent is working, not idle
-        // 命令连续失败计数：run_command 失败/超时以 "Error:" 开头的文本返回，
-        // ToolExecutor 未必置 isError —— 两种都算，供循环末尾的熔断使用。
+        // 命令连续失败计数：只计「命令没跑成」的基础设施级失败（超时/终止/
+        // 语法错误/无法执行，见 isRunCommandInfraFailure），以及工具层抛出的
+        // 异常（isError）。命令执行后如实报告的非零退出码（typecheck/测试报红）
+        // 不计数——那是验证信号，不是卡死信号，供循环末尾的熔断使用。
         if (tc.name === 'run_command') {
-          const failed = result.isError || String(result.result).startsWith('Error:')
+          const text = String(result.result || '')
+          const failed = result.isError || isRunCommandInfraFailure(text)
           consecutiveCommandFailures = failed ? consecutiveCommandFailures + 1 : 0
-          if (failed) lastFailedCommand = String(tc.arguments?.command || '')
+          if (failed) {
+            lastFailedCommand = String(tc.arguments?.command || '')
+            // 保留最近一次失败的输出开头，供熔断时的诊断注入使用——员工看不到
+            // 可读报错（乱码/截断）时只会原样重试，把报错原文递到它眼前才行。
+            lastCommandFailureOutput = text.slice(0, 1500)
+          }
         }
         // Persist/display the result WITHOUT its base64: toolResults are
         // JSON.stringify'd into SQLite and re-read on every session load, so a
@@ -4773,7 +4820,14 @@ async function runAgentLoop(
       // ── 打转守卫：提醒后仍原样重复，停下来 ──
       // 与「命令连续失败熔断」不同，这里不打断问用户：同样的调用重复到第
       // REPEAT_CALL_HALT 次已经没有任何信息量，继续跑只会把预算烧光。
-      if (roundRepeatsHalt) {
+      // run_command 单独判定：只有同一签名的重复**结果完全相同**（真·原样重试）
+      // 才算打转；结果每次在变（编辑-验证循环）不在这里停。
+      const runCommandRepeatStuck = [...repeatCallCounts.entries()].some(([sig, n]) => {
+        if (n < REPEAT_CALL_HALT || !sig.startsWith('run_command|')) return false
+        const rec = repeatResultsBySig.get(sig)
+        return !rec || !rec.varied
+      })
+      if (roundRepeatsHalt || runCommandRepeatStuck) {
         loopGuardStopped = true
         haltedByLoopGuard = true
         chatStore.addMessage(sessionId, {
@@ -4792,57 +4846,78 @@ async function runAgentLoop(
       if (consecutiveCommandFailures >= COMMAND_FAIL_BREAK_ROUNDS && !commandFailBreakAsked && !targetMode) {
         consecutiveCommandFailures = 0
         commandFailBreakAsked = true
-        // M4 员工：隐藏会话没有用户可问——连续失败说明任务卡死，落一条终态
-        // 消息停跑，由 finally 自动回报总监「失败」，让总监重新派发/换人，
-        // 而不是静默烧预算（员工无 targetMode 标记，不能沿用用户提问分支）。
+        // M4 员工：隐藏会话没有用户可问。此前连续失败直接落「任务卡死」终态停跑，
+        // 但线上故障显示这类失败常常可自愈——bash 语法被 PowerShell 拒绝、真实
+        // 类型错误、瞬态的 .git/index.lock——模型读不懂报错才原样重试。现在第一
+        // 次连续失败先注入可读诊断给一轮自纠正机会，再次连续失败才停跑，
+        // 由 finally 自动回报总监（员工无 targetMode 标记，不能沿用用户提问分支）。
         if (session.workerRole) {
-          loopGuardStopped = true
-          haltedByLoopGuard = true
-          chatStore.addMessage(sessionId, {
-            role: 'assistant',
-            content: `[已停止：run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次执行失败或超时${lastFailedCommand ? `（最近一次：${lastFailedCommand.slice(0, 80)}）` : ''}，任务卡死。已回报总监，等待重新派发。]`,
-            runId,
-          })
-          clearStream()
-          break
-        }
-        const question =
-          `run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次执行失败或超时` +
-          (lastFailedCommand ? `（最近一次：${lastFailedCommand.slice(0, 80)}）` : '') +
-          `。继续原样重试大概率再次失败，请选择如何继续：`
-        const options = ['跳过验证，直接完成剩余工作', '加大超时后重试一次', '停止']
-        touchActivity() // waiting on the user ≠ model silence
-        const answer = await new Promise<string>((resolve) => {
-          if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
-          _questionResolves.set(sessionId, resolve)
-          const onSession = useChatStore.getState().activeSessionId === sessionId
-          useChatStore.setState((s) => ({
-            questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
-          }))
-          useChatStore.getState().offerDecision({
-            kind: 'question',
-            sessionId,
-            value: { sessionId, id: `cmdbreak-${Date.now()}`, question, options },
-          })
-          setTimeout(() => {
-            if (_questionResolves.get(sessionId) === resolve) {
-              _questionResolves.delete(sessionId)
-              resolve('跳过验证，直接完成剩余工作')
-            }
-          }, 60000)
-        })
-        let note = ''
-        if (answer.includes('停止')) {
-          note = '\n（用户选择停止）'
-          abortController.abort()
-        } else if (answer.includes('加大超时')) {
-          note = '\n（用户选择加大超时后重试一次：请用 run_command 的 timeoutMs 参数重跑已失败的命令，如 timeoutMs=120000）'
+          if (!workerCommandBreakReminded) {
+            workerCommandBreakReminded = true
+            commandFailBreakAsked = false // 保留下一次触发时停跑的能力
+            const diagnosis = lastFailedCommand
+              ? `\n最近一次失败命令：${lastFailedCommand}\n其输出开头：\n${lastCommandFailureOutput || '（无输出）'}`
+              : ''
+            const guidance =
+              `[系统诊断] run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次失败或超时。` +
+              `请阅读上面的输出判断真实原因后换一种做法，不要原样重试同一命令：` +
+              `① 命令语法错误（如 && 被 PowerShell 拒绝）→ 改用分号 ; 串联或分多次调用；` +
+              `② 类型检查/测试报错 → 这是代码问题，先修复代码再验证，重跑命令不会变绿；` +
+              `③ 锁文件/环境问题 → 稍等重试或改用专用工具（git 操作用 git_add/git_commit，不要手动删 .git 文件）。${diagnosis}`
+            messages.push({ role: 'user', content: guidance })
+            chatStore.addMessage(sessionId, { role: 'user', content: guidance })
+            clearStream()
+            // 不 break：带着诊断继续下一轮，让模型自纠正一次。
+          } else {
+            loopGuardStopped = true
+            haltedByLoopGuard = true
+            chatStore.addMessage(sessionId, {
+              role: 'assistant',
+              content: `[已停止：run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次执行失败或超时${lastFailedCommand ? `（最近一次：${lastFailedCommand.slice(0, 80)}）` : ''}，任务卡死。已回报总监，等待重新派发。]`,
+              runId,
+            })
+            clearStream()
+            break
+          }
         } else {
-          note = '\n（用户选择跳过验证：请直接完成剩余工作，不要重复执行已失败的命令）'
+          const question =
+            `run_command 已连续 ${COMMAND_FAIL_BREAK_ROUNDS} 次执行失败或超时` +
+            (lastFailedCommand ? `（最近一次：${lastFailedCommand.slice(0, 80)}）` : '') +
+            `。继续原样重试大概率再次失败，请选择如何继续：`
+          const options = ['跳过验证，直接完成剩余工作', '加大超时后重试一次', '停止']
+          touchActivity() // waiting on the user ≠ model silence
+          const answer = await new Promise<string>((resolve) => {
+            if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
+            _questionResolves.set(sessionId, resolve)
+            const onSession = useChatStore.getState().activeSessionId === sessionId
+            useChatStore.setState((s) => ({
+              questionGate: { ...s.questionGate, [sessionId]: onSession ? 'auto' : 'confirm' },
+            }))
+            useChatStore.getState().offerDecision({
+              kind: 'question',
+              sessionId,
+              value: { sessionId, id: `cmdbreak-${Date.now()}`, question, options },
+            })
+            setTimeout(() => {
+              if (_questionResolves.get(sessionId) === resolve) {
+                _questionResolves.delete(sessionId)
+                resolve('跳过验证，直接完成剩余工作')
+              }
+            }, 60000)
+          })
+          let note = ''
+          if (answer.includes('停止')) {
+            note = '\n（用户选择停止）'
+            abortController.abort()
+          } else if (answer.includes('加大超时')) {
+            note = '\n（用户选择加大超时后重试一次：请用 run_command 的 timeoutMs 参数重跑已失败的命令，如 timeoutMs=120000）'
+          } else {
+            note = '\n（用户选择跳过验证：请直接完成剩余工作，不要重复执行已失败的命令）'
+          }
+          messages.push({ role: 'user', content: `用户回答: ${answer}${note}` })
+          chatStore.addMessage(sessionId, { role: 'user', content: `用户回答: ${answer}${note}` })
+          clearStream()
         }
-        messages.push({ role: 'user', content: `用户回答: ${answer}${note}` })
-        chatStore.addMessage(sessionId, { role: 'user', content: `用户回答: ${answer}${note}` })
-        clearStream()
       }
 
       // 目标模式：每轮增量上报 token 消耗 —— 此前 usage 只在循环结束时统一

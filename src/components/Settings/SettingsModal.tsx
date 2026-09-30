@@ -4,6 +4,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useShortcutStore, ShortcutPreset } from '@/stores/shortcutStore'
+import { useUpdateStore } from '@/stores/updateStore'
 import { ApiConfigGroup, ModelInfo } from '@/types'
 import {
   resolveFormat, FORMAT_META, PROVIDER_REGISTRY, getProviderMeta,
@@ -66,6 +67,12 @@ export default function SettingsModal() {
   )
   const dialogRef = useRef<HTMLDivElement>(null)
 
+  // 软件更新：检查按钮状态 + 自定义更新源草稿
+  const appVersion = useUpdateStore((s) => s.appVersion)
+  const updateUiState = useUpdateStore((s) => s.uiState)
+  const checkForUpdate = useUpdateStore((s) => s.check)
+  const [updateFeedUrl, setUpdateFeedUrl] = useState('')
+
   useEffect(() => {
     if (isSettingsOpen) {
       loadConfigGroups()
@@ -75,9 +82,16 @@ export default function SettingsModal() {
       setActiveTab('api')
       setShowEditKey(false)
       resetEditorState()
+      setUpdateFeedUrl(useEditorStore.getState().preferences.updateFeedUrl ?? '')
       dialogRef.current?.focus()
     }
   }, [isSettingsOpen, loadConfigGroups])
+
+  const handleSaveFeedUrl = async () => {
+    const url = updateFeedUrl.trim()
+    await savePreferences({ updateFeedUrl: url })
+    await window.electronAPI.setUpdateFeedUrl(url)
+  }
 
   if (!isSettingsOpen) return null
 
@@ -959,6 +973,35 @@ export default function SettingsModal() {
           {/* ═══════ 功能（所有可配置功能的统一入口） ═══════ */}
           {activeTab === 'features' && (
             <div className="flex flex-col gap-6">
+              {/* 软件更新 */}
+              <section className="flex flex-col gap-2">
+                <h3 className="flex items-center gap-2 text-[13px] font-semibold text-nova-text-primary uppercase tracking-wider">
+                  <span style={{ width: 3, height: 14, background: 'var(--accent)', borderRadius: 2 }} />
+                  软件更新
+                </h3>
+                <SettingRow label="自动检查更新" desc="启动后自动检查新版本（后台静默检查，发现新版本时提示）" right={
+                  <ToggleButton on={preferences.autoUpdateCheck !== false} onClick={() => savePreferences({ autoUpdateCheck: preferences.autoUpdateCheck === false })} />
+                } />
+                <SettingRow label="自动下载更新" desc="发现新版本后自动后台下载，重启应用时安装" right={
+                  <ToggleButton on={!!preferences.autoUpdateDownload} onClick={() => savePreferences({ autoUpdateDownload: !preferences.autoUpdateDownload })} />
+                } />
+                <SettingRow label="更新服务器" desc="留空使用默认源（GitHub Releases）；可填写自建服务器或镜像的 base URL，目录下需放 latest.yml 与安装包" right={
+                  <div className="flex items-center gap-1.5">
+                    <input type="text" value={updateFeedUrl} onChange={(e) => setUpdateFeedUrl(e.target.value)}
+                      placeholder="https://example.com/updates"
+                      className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-xs text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors font-mono w-[260px]" />
+                    <button onClick={() => void handleSaveFeedUrl()} disabled={updateFeedUrl.trim() === (preferences.updateFeedUrl ?? '')}
+                      className="px-2.5 py-1.5 text-xs bg-nova-hover text-nova-text-secondary rounded-md hover:text-nova-text-primary transition-colors disabled:opacity-50 shrink-0">保存</button>
+                  </div>
+                } />
+                <SettingRow label="检查更新" desc={appVersion ? `当前版本 ${appVersion}` : '点击立即检查新版本'} right={
+                  <button onClick={() => void checkForUpdate()} disabled={updateUiState === 'checking'}
+                    className="px-3 py-1.5 text-xs text-nova-accent bg-nova-accent/10 hover:bg-nova-accent/20 rounded-md transition-colors disabled:opacity-50">
+                    {updateUiState === 'checking' ? '检查中…' : '立即检查'}
+                  </button>
+                } />
+              </section>
+
               {/* 功能入口 */}
               <section className="flex flex-col gap-2">
                 <h3 className="flex items-center gap-2 text-[13px] font-semibold text-nova-text-primary uppercase tracking-wider">

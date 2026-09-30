@@ -479,6 +479,13 @@ export interface UserPreferences {
    *  倒计时，超时未回答时 Agent 按自己的判断继续并打标。关闭后提问一直
    *  等待。权限审批与计划审批不受此开关影响（永远等待）。 */
   questionAutoContinue?: boolean
+  /** 启动后延迟自动检查更新（默认开）。自动检查静默失败，只有发现新版本才提示。 */
+  autoUpdateCheck?: boolean
+  /** 发现新版本后自动静默下载（默认关；下载完成后仍需用户点击重启安装）。 */
+  autoUpdateDownload?: boolean
+  /** 自定义更新源：generic provider 的 base URL（目录下需放 latest.yml 与安装包）。
+   *  留空则使用打包内置的默认源（GitHub Releases）。 */
+  updateFeedUrl?: string
 }
 
 // Model Info

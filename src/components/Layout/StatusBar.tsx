@@ -4,8 +4,8 @@ import { useChatStore, estimateContextTokens } from '@/stores/chatStore'
 import { useConfigStore, setLastModelForGroup } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useProblemsStore } from '@/stores/problemsStore'
+import { useUpdateStore } from '@/stores/updateStore'
 import { useI18n } from '@/i18n/useI18n'
-import { t as moduleT } from '@/i18n'
 
 export default function StatusBar() {
   // Targeted selectors — the previous whole-store subscriptions re-rendered the
@@ -48,12 +48,17 @@ export default function StatusBar() {
   const configMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
 
-  // Update state
-  const [appVersion, setAppVersion] = useState('')
-  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error'>('idle')
-  const [newVersion, setNewVersion] = useState('')
-  const [downloadPercent, setDownloadPercent] = useState(0)
-  const [updateError, setUpdateError] = useState('')
+  // Update state — shared with UpdateDialog via updateStore; the one-time
+  // subscription wiring (version fetch + main-process pushes) lives in
+  // MainLayout, which always mounts.
+  const appVersion = useUpdateStore((s) => s.appVersion)
+  const updateState = useUpdateStore((s) => s.uiState)
+  const newVersion = useUpdateStore((s) => s.newVersion)
+  const downloadPercent = useUpdateStore((s) => s.downloadPercent)
+  const updateError = useUpdateStore((s) => s.errorMessage)
+  const checkForUpdate = useUpdateStore((s) => s.check)
+  const downloadUpdate = useUpdateStore((s) => s.download)
+  const installUpdate = useUpdateStore((s) => s.install)
 
   // Fetch git branch
   useEffect(() => {
@@ -70,65 +75,17 @@ export default function StatusBar() {
     return () => clearInterval(interval)
   }, [gitRoot])
 
-  // Get app version and listen for update status
-  useEffect(() => {
-    const getVersion = async () => {
-      try {
-        const version = await window.electronAPI.getVersion()
-        if (version) setAppVersion(version)
-      } catch { /* ignore */ }
-    }
-    getVersion()
-
-    // Listen for update status push events
-    const cleanupStatus = window.electronAPI.onUpdateStatus((status) => {
-      if (status.state === 'available') {
-        setUpdateState('available')
-        setNewVersion(status.version || '')
-      } else if (status.state === 'not-available') {
-        setUpdateState('idle')
-      } else if (status.state === 'downloaded') {
-        setUpdateState('downloaded')
-      } else if (status.state === 'error') {
-        setUpdateState('error')
-        setUpdateError(status.message || moduleT('statusBar.checkFailed'))
-      }
-    })
-
-    const cleanupProgress = window.electronAPI.onUpdateProgress((progress) => {
-      setUpdateState('downloading')
-      setDownloadPercent(progress.percent)
-    })
-
-    return () => {
-      cleanupStatus()
-      cleanupProgress()
-    }
-  }, [])
-
   const handleCheckUpdate = useCallback(async () => {
-    setUpdateState('checking')
-    setUpdateError('')
-    const result = await window.electronAPI.checkForUpdate()
-    if (result.state === 'available') {
-      setUpdateState('available')
-      setNewVersion(result.version || '')
-    } else if (result.state === 'error') {
-      setUpdateState('error')
-      setUpdateError(result.message || moduleT('statusBar.checkFailed'))
-    } else {
-      setUpdateState('idle')
-    }
-  }, [])
+    await checkForUpdate()
+  }, [checkForUpdate])
 
   const handleDownloadUpdate = useCallback(async () => {
-    setUpdateState('downloading')
-    await window.electronAPI.downloadUpdate()
-  }, [])
+    await downloadUpdate()
+  }, [downloadUpdate])
 
   const handleInstallUpdate = useCallback(() => {
-    window.electronAPI.installUpdate()
-  }, [])
+    installUpdate()
+  }, [installUpdate])
 
   // 打开模型弹窗时若列表为空则自动拉取 —— 启动流程只 loadConfigGroups 不拉模型，
   // 从未手动切换过提供商时 models 恒为空，弹窗此前只会一直显示「未配置」。

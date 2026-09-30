@@ -322,6 +322,19 @@ export const enUS: Record<TranslationKey, string> = {
   'statusBar.restartInstall': '↻ Restart to install update',
   'statusBar.updateFailed': '⚠ Update failed',
   'statusBar.checkFailed': 'Update check failed',
+
+  // ── Update dialog ─────────────────────────────────────────────────────────
+  'update.availableTitle': 'Update available',
+  'update.availableDesc': 'Version {version} is available. Download now?',
+  'update.releaseNotes': 'Release notes',
+  'update.noNotes': '(No release notes for this release)',
+  'update.downloadNow': 'Download',
+  'update.later': 'Later',
+  'update.readyTitle': 'Update ready',
+  'update.readyDesc': 'The update has been downloaded. Restart to apply it.',
+  'update.restartNow': 'Restart now',
+  'update.currentVersion': 'Current version {version}',
+
   'statusBar.lineCol': 'Ln {line}, Col {col}',
   'statusBar.spaces': '{count} spaces',
   'statusBar.notConfigured': 'Not configured',

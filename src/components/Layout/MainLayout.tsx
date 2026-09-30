@@ -14,6 +14,7 @@ import QuickOpen from '../Sidebar/QuickOpen'
 import ContextMenu from '../Common/ContextMenu'
 import NotificationToasts from '../Common/NotificationToasts'
 import UnsavedDialog from '../Common/UnsavedDialog'
+import UpdateDialog from '../Common/UpdateDialog'
 import SkillRegistryModal from '../Skills/SkillRegistryModal'
 import ProblemsPanel from '../Editor/ProblemsPanel'
 import RecentFilesModal from '../Editor/RecentFilesModal'
@@ -25,6 +26,7 @@ import { useDebugStore } from '@/stores/debugStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useChatStore } from '@/stores/chatStore'
+import { useUpdateStore } from '@/stores/updateStore'
 import { useShortcutStore, matchesShortcut } from '@/stores/shortcutStore'
 import { executeCommand } from '@/services/commands/commandRegistry'
 import { IS_OFFICE } from '@/utils/windowMode'
@@ -93,6 +95,13 @@ export default function MainLayout() {
     const handleResize = () => setWindowWidth(window.innerWidth)
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  // Auto-update wiring: fetch the app version once and subscribe to the
+  // main-process update pushes. Single subscriber for the whole layout — the
+  // status bar and the update dialog both read from the store.
+  useEffect(() => {
+    return useUpdateStore.getState().init()
   }, [])
 
   // While an HTML5 drag (file in the tree, message reorder, ...) is in flight,
@@ -345,6 +354,7 @@ export default function MainLayout() {
       {isMemoryManagerOpen && <MemoryModal onClose={closeMemoryManager} currentProjectPath={currentProjectPath} />}
       <NotificationToasts />
       <UnsavedDialog />
+      <UpdateDialog />
     </div>
   )
 }

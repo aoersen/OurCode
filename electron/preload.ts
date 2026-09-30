@@ -325,7 +325,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),
   downloadUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_DOWNLOAD),
   installUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_INSTALL),
-  onUpdateStatus: (callback: (status: { state: string; version?: string; releaseNotes?: string; releaseDate?: string; message?: string }) => void) => {
+  setUpdateFeedUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SET_FEED_URL, url),
+  onUpdateStatus: (callback: (status: { state: string; source?: 'auto' | 'manual'; version?: string; releaseNotes?: string; releaseDate?: string; message?: string }) => void) => {
     const listener = (_event: any, status: any) => callback(status)
     ipcRenderer.on(IPC_CHANNELS.UPDATE_STATUS, listener)
     return () => { ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_STATUS, listener) }

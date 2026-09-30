@@ -319,6 +319,19 @@ export const zhCN = {
   'statusBar.restartInstall': '↻ 重启安装更新',
   'statusBar.updateFailed': '⚠ 更新失败',
   'statusBar.checkFailed': '检查更新失败',
+
+  // ── 更新弹窗 ─────────────────────────────────────────────────────────────
+  'update.availableTitle': '发现新版本',
+  'update.availableDesc': '新版本 {version} 已发布，是否立即下载？',
+  'update.releaseNotes': '更新内容',
+  'update.noNotes': '（本次发布没有附带更新说明）',
+  'update.downloadNow': '立即下载',
+  'update.later': '稍后',
+  'update.readyTitle': '更新已就绪',
+  'update.readyDesc': '新版本已下载完成，重启应用后生效。',
+  'update.restartNow': '立即重启',
+  'update.currentVersion': '当前版本 {version}',
+
   'statusBar.lineCol': '行 {line}, 列 {col}',
   'statusBar.spaces': '{count} 空格',
   'statusBar.notConfigured': '未配置',

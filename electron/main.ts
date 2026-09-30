@@ -7,7 +7,7 @@ import { exec, execFile, spawn } from 'child_process'
 import type { ExecFileOptions, ChildProcess } from 'child_process'
 import * as pty from 'node-pty'
 import picomatch from 'picomatch'
-import { autoUpdater, UpdateInfo } from 'electron-updater'
+import { AppUpdater } from './services/app-updater'
 import { FileSystemService } from './services/file-system'
 import { FileIndexService } from './services/file-index'
 import { SQLiteStore } from './services/sqlite-store'
@@ -18,6 +18,7 @@ import { MCPManager, extractMcpText, toMcpToolDefinition } from './services/mcp-
 import { scrubbedSpawnEnv } from './services/env-scrub'
 import { decideNavigation, hasArbitraryNavigation, revokeArbitraryNavigation, type NavigationPolicy } from './services/navigation-guard'
 import { checkVcsArgs, parseGhAuthStatus } from './services/vcs-exec'
+import { decodeShellOutput, rewriteBashSeparators, classifyShellFailure } from './services/shell-compat'
 import { WireLogService } from './services/wire-log'
 import {
   browserAct,
@@ -315,6 +316,11 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set(['rev-parse', 'status', 'log'])
 const GIT_CACHE_TTL_MS = 5_000
 const GIT_CACHE_MAX_ENTRIES = 256
 
+// Transient `.git/index.lock` contention (parallel agent sessions sharing one
+// repo): retry a failed git call a few times before surfacing the error.
+const GIT_LOCK_RETRIES = 4
+const GIT_LOCK_RETRY_DELAY_MS = 700
+
 interface GitCacheEntry {
   at: number
   promise: Promise<string>
@@ -366,19 +372,31 @@ function gitExecRaw(cwd: string, args: string[], input?: string): Promise<string
 
 function runGit(cwd: string, args: string[], input: string | undefined, trim: boolean): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
-      'git',
-      args,
-      { cwd, timeout: 15000, maxBuffer: 5 * 1024 * 1024, input, env: scrubbedSpawnEnv() } as ExecFileOptions,
-      (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
-        if (error) {
-          reject(new Error(String(stderr || error.message)))
-        } else {
-          const text = String(stdout)
-          resolve(trim ? text.trim() : text)
-        }
-      },
-    )
+    // Parallel agent sessions share one repo; a brief index.lock hold by
+    // another git process made every concurrent mutation fail hard, which
+    // pushed agents into deleting `.git/index.lock` by hand (and that Remove-Item
+    // failed too once the lock was gone). A short retry absorbs the contention.
+    const attempt = (retriesLeft: number) => {
+      execFile(
+        'git',
+        args,
+        { cwd, timeout: 15000, maxBuffer: 5 * 1024 * 1024, input, env: scrubbedSpawnEnv() } as ExecFileOptions,
+        (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
+          const errText = String(stderr || '')
+          if (error && /index\.lock/.test(errText) && retriesLeft > 0) {
+            setTimeout(() => attempt(retriesLeft - 1), GIT_LOCK_RETRY_DELAY_MS + Math.floor(Math.random() * 300))
+            return
+          }
+          if (error) {
+            reject(new Error(errText || error.message))
+          } else {
+            const text = String(stdout)
+            resolve(trim ? text.trim() : text)
+          }
+        },
+      )
+    }
+    attempt(GIT_LOCK_RETRIES)
   })
 }
 
@@ -421,6 +439,7 @@ let fileIndex: FileIndexService
 let store: SQLiteStore
 let backup: BackupService
 let mcp: MCPManager
+let appUpdater: AppUpdater | null = null
 let spillStore: SpillStore
 let wireLog: WireLogService
 
@@ -2638,30 +2657,50 @@ function registerIpcHandlers(): void {
       // requestId lets the renderer cancel THIS run via shell:kill. Without it
       // a stop could only drop the result while the build kept burning CPU.
       const requestId = typeof options?.requestId === 'string' && options.requestId ? options.requestId : uuidv4()
-      const child = exec(command, {
+      // Windows PowerShell 5.1 不支持 && / ||（那是 PowerShell 7 的语法），而模型
+      // 习惯写 bash 链（cd x && npm run typecheck）——直接执行会 ParserError，且
+      // 报错是 GBK 乱码、模型读不懂，于是原样重试直到熔断。执行前把顶层 && / ||
+      // 重写为 ;（顺序执行），并在输出里注明，让模型一次就学会本机方言。
+      // macOS / Linux 的 bash 原生支持这些运算符，不做改写（会改变短路语义）。
+      const rewritten = process.platform === 'win32' ? rewriteBashSeparators(command) : { command }
+      const child = exec(rewritten.command, {
         cwd: cwd || undefined,
         timeout: timeoutMs,
         maxBuffer: 5 * 1024 * 1024,
+        // Buffer 模式：中文 Windows 下 powershell.exe 输出是 GBK（cp936），按
+        // UTF-8 解码会把中文报错变成 �——模型看不懂就只会原样重试。拿到原始
+        // 字节后按编码探测解码（见 decodeShellOutput）。
+        encoding: 'buffer',
         shell: process.platform === 'win32' ? 'powershell.exe' : 'bash',
         env: scrubbedSpawnEnv(),
-      }, (error: any, stdout: string, stderr: string) => {
+      }, (error: any, stdout: string | Buffer, stderr: string | Buffer) => {
         shellRuns.delete(requestId)
         const stoppedByUser = shellStopped.delete(requestId)
+        const outText = decodeShellOutput(stdout)
+        const errText = decodeShellOutput(stderr)
+        const note = rewritten.note ? `${rewritten.note}\n` : ''
         if (error) {
-          // exec 超时会把子进程杀掉并置 killed=true（signal='SIGTERM'）。超时
-          // 必须明确标注 [超时]——否则 agent 无法区分「命令超时」与「命令本身
-          // 失败」，会把超时误判成环境/参数问题，陷入反复换姿势重试（曾见
-          // build 超时被当成构建环境坏了，多烧 6 分钟调试）。用户终止同理要单独
-          // 标注：它既不是超时也不是失败，重试反而不是用户要的。
+          // 失败分类：渲染层的连续失败熔断只认「命令没跑成」的标记（超时/终止/
+          // 语法错误/无法执行），不把 [命令报错]——命令执行了、如实报告了非零
+          // 退出码（typecheck/测试报红、git 报错等）——当成卡死信号。worker 的
+          // 编辑-验证循环里这类红是正常迭代，之前被熔断误杀成「任务卡死」。
+          // 超时单独标注：否则 agent 无法区分「命令超时」与「命令本身失败」，
+          // 会把超时误判成环境/参数问题，陷入反复换姿势重试（曾见 build 超时被
+          // 当成构建环境坏了，多烧 6 分钟调试）。用户终止同理：它既不是超时也
+          // 不是失败，重试反而不是用户要的。
           const timedOut = !stoppedByUser && (error.killed === true || error.signal === 'SIGTERM')
-          const msg = stoppedByUser
-            ? '[已终止] 用户停止了任务，这条命令及其子进程已被结束。不要重试它；如需要可先向用户确认。'
-            : timedOut
-              ? `[超时] 命令执行超过 ${Math.round(timeoutMs / 1000)} 秒被终止。若是构建/测试/安装等长命令，请在 run_command 的 timeoutMs 参数中加大超时（如 120000），或改用异步方式等待，不要重复执行同一命令。`
-              : (stderr || error.message)
-          resolve({ success: false, output: stdout || '', error: msg })
+          const spawnFailed = /ENOENT/.test(String(error.message || '')) || String(error.code || '').includes('ENOENT')
+          const msg = classifyShellFailure({
+            stoppedByUser,
+            timedOut,
+            spawnFailed,
+            errText,
+            errorMessage: String(error.message || ''),
+            timeoutMs,
+          })
+          resolve({ success: false, output: note + (outText || ''), error: msg })
         } else {
-          resolve({ success: true, output: stdout.trim() })
+          resolve({ success: true, output: note + outText.trim() })
         }
       })
       shellRuns.set(requestId, child)
@@ -2740,77 +2779,35 @@ function registerIpcHandlers(): void {
     return app.getLocale()
   })
 
-  // Auto Update handlers
-  autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = false
+  // Auto Update handlers — the updater logic lives in AppUpdater
+  // (services/app-updater.ts) so it stays unit-testable; here we only bridge
+  // IPC. Non-null within these closures: registerIpcHandlers runs once, after
+  // `store` exists, and `appUpdater` is assigned just above.
+  appUpdater = new AppUpdater({
+    isDev: is.dev,
+    getPreferences: () => store.getPreferences(),
+    broadcast,
+  })
+  appUpdater.init()
+  const updater = appUpdater
 
-  if (!is.dev) {
-    autoUpdater.on('update-available', (info: UpdateInfo) => {
-      broadcast('update:status', {
-        state: 'available',
-        version: info.version,
-        releaseNotes: info.releaseNotes,
-        releaseDate: info.releaseDate,
-      })
-    })
-
-    autoUpdater.on('update-not-available', () => {
-      broadcast('update:status', { state: 'not-available' })
-    })
-
-    autoUpdater.on('download-progress', (progress) => {
-      broadcast('update:progress', {
-        percent: progress.percent,
-        bytesPerSecond: progress.bytesPerSecond,
-        transferred: progress.transferred,
-        total: progress.total,
-      })
-    })
-
-    autoUpdater.on('update-downloaded', () => {
-      broadcast('update:status', { state: 'downloaded' })
-    })
-
-    autoUpdater.on('error', (error) => {
-      broadcast('update:status', {
-        state: 'error',
-        message: error.message,
-      })
-    })
-  }
-
-  ipcMain.handle('update:check', async () => {
-    if (is.dev) {
-      return { state: 'not-available' }
-    }
-    try {
-      const result = await autoUpdater.checkForUpdates()
-      if (result) {
-        return {
-          state: 'available',
-          version: result.updateInfo.version,
-          releaseNotes: result.updateInfo.releaseNotes,
-          releaseDate: result.updateInfo.releaseDate,
-        }
-      }
-      return { state: 'not-available' }
-    } catch (error: any) {
-      return { state: 'error', message: error.message }
-    }
+  ipcMain.handle(IPC_CHANNELS.UPDATE_CHECK, async () => {
+    return updater.check('manual')
   })
 
-  ipcMain.handle('update:download', async () => {
-    if (is.dev) return { state: 'not-available' }
-    try {
-      await autoUpdater.downloadUpdate()
-      return { state: 'downloading' }
-    } catch (error: any) {
-      return { state: 'error', message: error.message }
-    }
+  ipcMain.handle(IPC_CHANNELS.UPDATE_DOWNLOAD, async () => {
+    return updater.download()
   })
 
-  ipcMain.handle('update:install', () => {
-    autoUpdater.quitAndInstall()
+  ipcMain.handle(IPC_CHANNELS.UPDATE_INSTALL, () => {
+    updater.install()
+  })
+
+  // Custom feed URL from Settings; empty restores the packaged default.
+  ipcMain.handle(IPC_CHANNELS.UPDATE_SET_FEED_URL, async (_event, url: string) => {
+    if (typeof url !== 'string') return { ok: false }
+    updater.applyFeed(url)
+    return { ok: true }
   })
 
   // App version handler
@@ -2935,6 +2932,10 @@ app.whenReady().then(() => {
   registerIpcHandlers()
   installNavigationGuards()
   createWindow()
+
+  // Startup auto-check (delayed ~10s): silent by design — an offline launch or
+  // an up-to-date build stays quiet, only a found update surfaces in the UI.
+  appUpdater?.scheduleStartupCheck()
 
   app.on('activate', () => {
     // allWindows, not BrowserWindow.getAllWindows(): the hidden browser session
