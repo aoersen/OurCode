@@ -1147,6 +1147,49 @@ export function createToolRegistry(): Tool[] {
         }
       },
     },
+    {
+      // 微信 Agent 观察一人公司：读公司列表/运行相位/员工工位/近期活动。
+      // 办公室窗口未打开时返回明确提示（快照为 null）。
+      name: 'office_status',
+      description:
+        'Observe the one-person company (一人公司) office: companies (director sessions), their running status, ' +
+        'workers and recent activities. Returns a text summary of the latest office snapshot. ' +
+        'Returns a clear message when the office window is not open.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async () => {
+        const snap = await window.electronAPI.getOfficeSnapshot()
+        const { formatOfficeSnapshotText } = await import('@/services/wechat/wechatBridge')
+        return formatOfficeSnapshotText(snap)
+      },
+    },
+    {
+      // 微信 Agent 干预一人公司：向总监下指令。指令先提交给微信用户确认，
+      // 用户批准后才真正注入总监会话——本工具返回后不立即生效。
+      name: 'office_instruct',
+      description:
+        'Give an instruction to the one-person company director (总监). The instruction is first shown to the ' +
+        'WeChat user for approval and only injected into the director session after they reply 批准 (approve). ' +
+        'Use this when the user asks you to make the office company do something (e.g. deploy, review, build).',
+      parameters: {
+        type: 'object',
+        properties: {
+          instruction: { type: 'string', description: 'The instruction text to send to the director, in Chinese' },
+          targetSessionId: {
+            type: 'string',
+            description: 'Optional company (director) session id from office_status; omit to let the office pick the running/latest company',
+          },
+        },
+        required: ['instruction'],
+      },
+      execute: async (args: Record<string, any>, context?: { sessionId?: string }) => {
+        const { proposeOfficeInstruction } = await import('@/services/wechat/wechatBridge')
+        return proposeOfficeInstruction(
+          context?.sessionId ?? '',
+          String(args.instruction ?? ''),
+          String(args.targetSessionId ?? ''),
+        )
+      },
+    },
   ]
 }
 

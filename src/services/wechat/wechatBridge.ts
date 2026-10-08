@@ -23,7 +23,7 @@ import type { ChatState } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useWechatStore } from '@/stores/wechatStore'
-import type { WechatAgentState, WechatGatewayEvent, WechatInboundEvent } from '@/types'
+import type { OfficeSnapshot, WechatAgentState, WechatGatewayEvent, WechatInboundEvent } from '@/types'
 import { IS_OFFICE } from '@/utils/windowMode'
 
 const SESSION_MAP_KEY = 'wechat_session_map'
@@ -44,6 +44,7 @@ const runGen = new Map<string, number>() // sessionId -> 轮次代数（beginRun
 const notifiedKinds = new Set<string>() // `${sessionId}:${kind}` 已通知的决策种类
 const agentQueue: Array<{ contactId: string; sessionId: string; text: string }> = [] // agent 级忙队列
 let pendingWorkspaceSwitch: { path: string; contactId: string } | null = null // 工作区切换信任门
+let pendingOfficeInstruction: { instructionId: string; text: string; sessionId: string; contactId: string } | null = null // 总监指令确认
 let pendingReset = false // /reset 二次确认
 let runningSnapshot = new Set<string>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -220,6 +221,7 @@ const HELP_TEXT = `可用命令：
 /model <模型名> 切换模型
 /group <组名或ID> 切换 API 配置组
 /memory add <内容> | list | clear 管理长期记忆
+/office 查看一人公司运行状态；/office instruct [--task <标题>] <指令> 给总监下指令（需批准）
 /reset 重置（回沙盒 + 清记忆，需 /reset confirm 确认）
 /help 显示本帮助`
 
@@ -235,6 +237,33 @@ async function statusText(): Promise<string> {
     `模型：${st?.modelId || group?.defaultModel || '跟随组默认'}（${group?.name ?? '未选组'}）`,
     `记忆：${st?.memory?.length ?? 0} 条`,
   ]
+  return lines.join('\n')
+}
+
+const OFFICE_PHASE_TEXT: Record<string, string> = {
+  preparing: '准备上下文',
+  compacting: '压缩历史',
+  waiting: '等待模型',
+  streaming: '执行中',
+}
+
+/** 一人公司运行状态 → 微信可读文本（导出供 office_status 工具复用）。 */
+export function formatOfficeSnapshotText(snap: OfficeSnapshot | null): string {
+  if (!snap) return '🏢 办公室未启动（请先在 IDE 打开一人公司窗口）'
+  const lines: string[] = ['🏢 一人公司运行状态']
+  if (snap.companies.length === 0) {
+    lines.push('公司：无（办公室还没有任务会话）')
+  }
+  for (const c of snap.companies) {
+    const phase = c.phase ? `（${OFFICE_PHASE_TEXT[c.phase] ?? c.phase}）` : ''
+    lines.push(`· ${c.title}${c.running ? ' 🔄运行中' : ' 空闲'}${phase}${c.projectPath ? ` — ${c.projectPath}` : ''}`)
+  }
+  if (snap.workers.length > 0) {
+    lines.push(`员工：${snap.workers.map((w) => `${w.role}${w.running ? '·工作中' : '·空闲'}`).join('　')}`)
+  }
+  if (snap.recentActivity.length > 0) {
+    lines.push(`近期活动：${snap.recentActivity.slice(0, 5).map((a) => `${a.label}:${previewText(a.task, 40)}`).join('；')}`)
+  }
   return lines.join('\n')
 }
 
@@ -349,6 +378,55 @@ async function runCommand(contactId: string, raw: string): Promise<boolean> {
       } else {
         ack(contactId, '用法：/memory add <内容> | list | clear')
       }
+      return true
+    }
+    case 'office': {
+      if (!rest || rest === 'status') {
+        const snap = await window.electronAPI.getOfficeSnapshot()
+        ack(contactId, formatOfficeSnapshotText(snap))
+        return true
+      }
+      const m = /^instruct(?:\s+--task\s+(.+?))?\s+(.+)$/s.exec(rest)
+      if (!m) {
+        ack(contactId, '用法：/office 查看状态；/office instruct [--task <公司标题或项目>] <指令>')
+        return true
+      }
+      const taskSel = m[1]?.trim()
+      const instructText = m[2].trim()
+      const snap = await window.electronAPI.getOfficeSnapshot()
+      if (!snap || snap.companies.length === 0) {
+        ack(contactId, '❌ 办公室未启动或没有公司会话（请先在 IDE 打开一人公司窗口）')
+        return true
+      }
+      let target: string | undefined
+      if (taskSel) {
+        const hit = snap.companies.find(
+          (c) => c.title.includes(taskSel) || c.projectPath.toLowerCase().includes(taskSel.toLowerCase()),
+        )
+        if (!hit) {
+          ack(contactId, `❌ 找不到匹配的公司（${taskSel}）`)
+          return true
+        }
+        target = hit.sessionId
+      } else if (snap.companies.length === 1) {
+        target = snap.companies[0].sessionId
+      } else {
+        const list = snap.companies.map((c) => `· ${c.title}`).join('\n')
+        ack(contactId, `有多个公司，请点名目标：
+${list}
+用法：/office instruct --task <标题> <指令>`)
+        return true
+      }
+      const name = snap.companies.find((c) => c.sessionId === target)?.title ?? ''
+      pendingOfficeInstruction = {
+        instructionId: `oi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        text: instructText,
+        sessionId: target ?? '',
+        contactId,
+      }
+      ack(contactId, `🔐 将向总监「${name}」下达指令：
+${previewText(instructText, 120)}
+回复「批准」执行，「拒绝」取消`)
       return true
     }
     case 'reset': {
@@ -518,6 +596,26 @@ function startTurn(sessionId: string, contactId: string, text: string): void {
   }
 }
 
+/**
+ * Agent 通过 office_instruct 工具提交总监指令：挂起等待该联系人在微信侧
+ * 批准/拒绝（与 /office instruct 共用确认流）。导出供工具调用。
+ */
+export function proposeOfficeInstruction(sessionId: string, text: string, targetSessionId?: string): string {
+  const contactId = contactBySession.get(sessionId)
+  if (!contactId) return '无法定位微信联系人（会话映射缺失），指令未提交'
+  if (!text.trim()) return '指令内容为空，未提交'
+  pendingOfficeInstruction = {
+    instructionId: `oi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    text: text.trim(),
+    sessionId: targetSessionId ?? '',
+    contactId,
+  }
+  ack(contactId, `🔐 Agent 提议向总监下达指令：
+${previewText(text, 120)}
+回复「批准」执行，「拒绝」取消`)
+  return '指令已提交给微信用户确认，等待批准/拒绝'
+}
+
 /** 本轮结束后依次处理 agent 级排队消息（startTurn 会再次兜底防并发）。 */
 function drainQueue(): void {
   const next = agentQueue.shift()
@@ -550,7 +648,31 @@ async function onInbound(msg: WechatInboundEvent): Promise<void> {
     return
   }
 
-  // 2) /reset 二次确认
+  // 2) 总监指令确认（office_instruct 工具或 /office instruct 提交后）
+  if (pendingOfficeInstruction && pendingOfficeInstruction.contactId === contactId) {
+    const pending = pendingOfficeInstruction
+    if (YES_RE.test(text)) {
+      pendingOfficeInstruction = null
+      const res = await window.electronAPI.sendOfficeInstruction({
+        instructionId: pending.instructionId,
+        sessionId: pending.sessionId,
+        text: pending.text,
+      })
+      if (res.ok) {
+        ack(contactId, res.status === 'started' ? '✅ 指令已转达，总监开始处理' : '✅ 指令已转达，公司正忙，已排队')
+      } else {
+        ack(contactId, `❌ 指令未送达：${res.message ?? '未知错误'}`)
+      }
+    } else if (NO_RE.test(text)) {
+      pendingOfficeInstruction = null
+      ack(contactId, '已取消指令')
+    } else {
+      ack(contactId, '请回复「批准」执行或「拒绝」取消')
+    }
+    return
+  }
+
+  // 3) /reset 二次确认
   if (pendingReset) {
     pendingReset = false
     if (text.toLowerCase() === '/reset confirm') {

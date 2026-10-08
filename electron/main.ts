@@ -9,7 +9,7 @@ import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { AppUpdater } from './services/app-updater'
 import { WechatChannel } from './services/wechat-channel'
-import type { WechatGatewayEvent, WechatAgentState } from '../shared/types'
+import type { WechatGatewayEvent, WechatAgentState, OfficeSnapshot, OfficeInstructionRequest, OfficeInstructionResult } from '../shared/types'
 import { FileSystemService } from './services/file-system'
 import { FileIndexService } from './services/file-index'
 import { SQLiteStore } from './services/sqlite-store'
@@ -436,6 +436,10 @@ function runGh(cwd: string, args: string[]): Promise<string> {
 
 let mainWindow: BrowserWindow | null = null
 const allWindows: Set<BrowserWindow> = new Set()
+/** 一人公司窗口（独立于 allWindows 单独跟踪：微信指令路由与快照归属用）。 */
+const officeWindows: Set<BrowserWindow> = new Set()
+/** 一人公司窗口推送的最近运行状态快照（微信侧观察用；无窗口 = null）。 */
+let officeSnapshot: OfficeSnapshot | null = null
 let fileSystem: FileSystemService
 let fileIndex: FileIndexService
 let store: SQLiteStore
@@ -800,8 +804,12 @@ function createOfficeWindow(): void {
   attachWindowLifecycle(win)
 
   allWindows.add(win)
+  officeWindows.add(win)
   win.on('closed', () => {
     allWindows.delete(win)
+    officeWindows.delete(win)
+    // 最后一个办公室窗口关闭：清掉快照，微信侧观察不再返回过期状态。
+    if (officeWindows.size === 0) officeSnapshot = null
   })
 }
 
@@ -3012,6 +3020,52 @@ app.whenReady().then(() => {
     if (typeof sessionId !== 'string' || !['main', 'office', 'wechat'].includes(mode)) return { ok: false }
     store.updateSessionMode(sessionId, mode)
     return { ok: true }
+  })
+
+  // ── 微信 Agent × 一人公司：观察与干预的中继 ────────────────────────────
+  // 一人公司窗口把运行状态快照节流推上来缓存；微信侧读快照（观察）或经确认后
+  // 向总监会话注入指令（干预），指令结果由 office 窗口回执后原路返回。
+  const pendingOfficeInstructions = new Map<string, (result: OfficeInstructionResult) => void>()
+
+  ipcMain.on(IPC_CHANNELS.OFFICE_PUSH_STATUS, (event, snapshot: OfficeSnapshot) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || !officeWindows.has(win)) return
+    officeSnapshot = snapshot
+  })
+
+  ipcMain.on(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION_RESULT, (event, result: OfficeInstructionResult) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || !officeWindows.has(win)) return
+    const resolve = pendingOfficeInstructions.get(result?.instructionId ?? '')
+    if (resolve) {
+      pendingOfficeInstructions.delete(result.instructionId)
+      resolve(result)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WECHAT_GET_OFFICE_SNAPSHOT, () => {
+    return officeSnapshot
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WECHAT_SEND_OFFICE_INSTRUCTION, async (_event, req: OfficeInstructionRequest) => {
+    if (!req || typeof req.instructionId !== 'string' || typeof req.text !== 'string' || !req.text.trim()) {
+      return { instructionId: req?.instructionId ?? '', ok: false, status: 'failed', message: '参数无效' }
+    }
+    const target = [...officeWindows].find((w) => !w.isDestroyed())
+    if (!target) {
+      return { instructionId: req.instructionId, ok: false, status: 'failed', message: '办公室窗口未打开' }
+    }
+    return new Promise<OfficeInstructionResult>((resolve) => {
+      const timer = setTimeout(() => {
+        pendingOfficeInstructions.delete(req.instructionId)
+        resolve({ instructionId: req.instructionId, ok: false, status: 'failed', message: '办公室无响应（超时）' })
+      }, 10_000)
+      pendingOfficeInstructions.set(req.instructionId, (result) => {
+        clearTimeout(timer)
+        resolve(result)
+      })
+      target.webContents.send(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION, req)
+    })
   })
   backup = new BackupService(join(userDataPath, 'backups'))
   // Tool-output spill store: full outputs of oversized tool results live under

@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // pattern as chatStore.test.ts). The bridge never touches monaco directly.
 vi.mock('@/editor/monacoSetup', () => ({ monaco: {} }))
 
-import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfig } from '@/services/wechat/wechatBridge'
+import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfig, formatOfficeSnapshotText } from '@/services/wechat/wechatBridge'
 import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -41,6 +41,8 @@ const electronApi = {
   wechatUpdateSessionMode: vi.fn(async () => ({ ok: true })),
   authorize: vi.fn(async () => true),
   getSessions: vi.fn(async () => []),
+  getOfficeSnapshot: vi.fn(async () => null),
+  sendOfficeInstruction: vi.fn(async () => ({ instructionId: 'i1', ok: false, status: 'failed', message: '未打开' })),
 }
 
 vi.stubGlobal('window', { electronAPI: electronApi })
@@ -224,6 +226,26 @@ describe('wechatBridge 会话映射', () => {
     const resolved = resolveWechatConfig()
     expect(resolved.configGroupId).toBe('g2')
     expect(resolved.modelId).toBeNull()
+  })
+})
+
+describe('wechatBridge 办公室快照格式化', () => {
+  it('办公室未启动时给出明确提示', () => {
+    expect(formatOfficeSnapshotText(null)).toContain('办公室未启动')
+  })
+
+  it('格式化公司/员工/活动', () => {
+    const text = formatOfficeSnapshotText({
+      companies: [
+        { sessionId: 's1', title: '部署任务', projectPath: 'C:/proj', running: true, phase: 'streaming' },
+      ],
+      workers: [{ sessionId: 'w1', role: '研发', slot: 4, running: false, task: '待命中' }],
+      recentActivity: [{ label: '研发', task: '实现登录', status: 'running', startedAt: 1 }],
+      updatedAt: 0,
+    })
+    expect(text).toContain('部署任务')
+    expect(text).toContain('运行中')
+    expect(text).toContain('研发')
   })
 })
 

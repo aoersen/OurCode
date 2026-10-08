@@ -891,3 +891,57 @@ export interface WechatAgentState {
   updatedAt: number
 }
 
+// ── 微信 Agent × 一人公司：观察与干预 ────────────────────────────────────
+// 一人公司窗口把运行状态推成紧凑快照（节流），主进程缓存供微信侧读取；
+// 微信侧经确认后向总监会话（公司）注入指令，office 渲染层校验后注入。
+
+export interface OfficeCompanySnapshot {
+  sessionId: string
+  title: string
+  projectPath: string
+  running: boolean
+  phase: string | null
+}
+
+export interface OfficeWorkerSnapshot {
+  sessionId: string
+  role: string
+  slot: number
+  running: boolean
+  task: string
+}
+
+export interface OfficeActivitySnapshot {
+  label: string
+  task: string
+  status: 'running' | 'done' | 'failed' | 'pending'
+  startedAt: number
+}
+
+/** 一人公司运行状态快照（office 渲染层节流推给主进程）。 */
+export interface OfficeSnapshot {
+  /** 公司（总监会话）列表，按最近更新排序。 */
+  companies: OfficeCompanySnapshot[]
+  workers: OfficeWorkerSnapshot[]
+  /** 近期角色活动（子智能体/派发），最多 10 条。 */
+  recentActivity: OfficeActivitySnapshot[]
+  updatedAt: number
+}
+
+/** 微信侧向总监下达的指令（经主进程路由到 office 窗口）。 */
+export interface OfficeInstructionRequest {
+  instructionId: string
+  /** 目标公司（总监会话）id；空 = 由 office 侧解析（唯一运行中/最近更新）。 */
+  sessionId: string
+  /** 指令正文（作为用户消息注入总监会话）。 */
+  text: string
+}
+
+export interface OfficeInstructionResult {
+  instructionId: string
+  ok: boolean
+  /** started = 总监立即开跑；queued = 公司忙，已排队；failed = 会话不可用。 */
+  status?: 'started' | 'queued' | 'failed'
+  message?: string
+}
+

@@ -254,6 +254,12 @@ export interface ElectronAPI {
   saveWechatAgentState: (state: import('@shared/types').WechatAgentState) => Promise<{ ok: boolean }>
   wechatGrantWorkspace: (path: string) => Promise<{ ok: boolean }>
   wechatUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => Promise<{ ok: boolean }>
+  // 微信 Agent × 一人公司：观察（快照）与干预（指令）的中继
+  getOfficeSnapshot: () => Promise<import('@shared/types').OfficeSnapshot | null>
+  sendOfficeInstruction: (req: import('@shared/types').OfficeInstructionRequest) => Promise<import('@shared/types').OfficeInstructionResult>
+  pushOfficeStatus: (snapshot: import('@shared/types').OfficeSnapshot) => void
+  onOfficeWechatInstruction: (callback: (req: import('@shared/types').OfficeInstructionRequest) => void) => () => void
+  replyOfficeWechatInstruction: (result: import('@shared/types').OfficeInstructionResult) => void
   onWechatEvent: (callback: (event: import('@shared/types').WechatGatewayEvent) => void) => () => void
 }
 

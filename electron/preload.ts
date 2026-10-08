@@ -354,4 +354,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on(IPC_CHANNELS.WECHAT_EVENT, listener)
     return () => { ipcRenderer.removeListener(IPC_CHANNELS.WECHAT_EVENT, listener) }
   },
+  // 微信 Agent × 一人公司：观察（快照）与干预（指令）的中继
+  getOfficeSnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GET_OFFICE_SNAPSHOT),
+  sendOfficeInstruction: (req: unknown) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SEND_OFFICE_INSTRUCTION, req),
+  pushOfficeStatus: (snapshot: unknown) => ipcRenderer.send(IPC_CHANNELS.OFFICE_PUSH_STATUS, snapshot),
+  onOfficeWechatInstruction: (callback: (req: unknown) => void) => {
+    const listener = (_event: any, payload: any) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION, listener) }
+  },
+  replyOfficeWechatInstruction: (result: unknown) => ipcRenderer.send(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION_RESULT, result),
 })
