@@ -31,11 +31,8 @@ const SESSION_MAP_KEY = 'wechat_session_map'
 const FLUSH_INTERVAL_MS = 1_000
 /** 流式阶段攒够多少字符才发第一批。 */
 const SEND_BATCH_CHARS = 400
-/** 单条微信文本上限（保守值，远低于服务端限制，避免多字节超限）。 */
-const SEND_CHUNK_CHARS = 1_700
-/** 单轮任务微信侧累计发送上限：超限即截断，避免长回复刷屏。 */
-const MAX_TURN_SEND_CHARS = 6_000
-const TRUNCATION_NOTICE = '…\n（内容过长，微信侧已截断，完整内容保留在会话记录中）'
+/** 单条微信文本上限（官方通道 textChunkLimit=4000，按其上限分片）。 */
+const SEND_CHUNK_CHARS = 4_000
 
 const sessionByContact = new Map<string, string>() // contactId -> sessionId
 const contactBySession = new Map<string, string>() // sessionId -> contactId
@@ -49,7 +46,6 @@ const agentQueue: Array<{ contactId: string; sessionId: string; text: string }> 
 let pendingWorkspaceSwitch: { path: string; contactId: string } | null = null // 工作区切换信任门
 let pendingOfficeInstruction: { instructionId: string; text: string; sessionId: string; contactId: string } | null = null // 总监指令确认
 let pendingReset = false // /reset 二次确认
-let truncatedNotified = false // 本轮是否已发过截断提示（每轮一次）
 let runningSnapshot = new Set<string>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 let unsubs: Array<() => void> = []
@@ -448,6 +444,15 @@ async function doReset(contactId: string): Promise<void> {
   ack(contactId, '✅ 已重置：回到沙盒、清空记忆')
 }
 
+/** 微信回复风格：压缩总字数（结论先行、精炼、不客套），不截断内容。 */
+const WECHAT_STYLE_BLOCK = `
+
+## 回复风格（微信用户，手机阅读）
+- 结论与要点先行，直接回答，不赘述推导过程
+- 普通问题尽量控制在 300 字以内；复杂任务用短要点列表
+- 不客套开场（如「好的，我来…」）、不重复用户原话
+- 日志、中间步骤、不相关细节一律省略`
+
 /** 记忆注入系统提示（任务开始前由 startTurn 传入 runAgentLoop）。 */
 function buildMemoryBlock(): string {
   const items = agentState()?.memory ?? []
@@ -561,7 +566,6 @@ function beginRun(sessionId: string): void {
   filteredAcc.set(sessionId, '')
   sentLen.set(sessionId, 0)
   lastRaw.set(sessionId, '')
-  truncatedNotified = false
 }
 
 /** 微信 Agent 是否正忙：任一微信会话在运行（共享工作区 → 串行）。 */
@@ -582,7 +586,8 @@ function startTurn(sessionId: string, contactId: string, text: string): void {
   // 工作区快照：本轮运行期间切换工作区不影响（runAgentLoop 的轮内快照语义）。
   const workspacePath = st ? st.currentWorkspace || st.sandboxPath : ''
   beginRun(sessionId)
-  const extraSystemText = buildMemoryBlock() || undefined
+  // 记忆 + 微信回复风格一起注入（压缩总字数靠风格约束，不靠截断）。
+  const extraSystemText = (buildMemoryBlock() + WECHAT_STYLE_BLOCK).trim() || undefined
   void cs.sendMessage(sessionId, text, [], [], {
     workspacePath: workspacePath || undefined,
     extraSystemText,
@@ -732,10 +737,10 @@ function trackStreaming(sessionId: string, state: ChatState): void {
  * 流式阶段（force=false）攒够 SEND_BATCH_CHARS 才发；完成阶段（force=true）
  * 无条件发送剩余内容。返回 null 表示当前无可发内容。
  */
-export function nextSendChunk(acc: string, sent: number, force: boolean, maxChars = SEND_CHUNK_CHARS): string | null {
+export function nextSendChunk(acc: string, sent: number, force: boolean): string | null {
   const unsent = acc.slice(sent)
   if (!unsent) return null
-  if (force || unsent.length >= SEND_BATCH_CHARS) return unsent.slice(0, maxChars)
+  if (force || unsent.length >= SEND_BATCH_CHARS) return unsent.slice(0, SEND_CHUNK_CHARS)
   return null
 }
 
@@ -746,15 +751,7 @@ async function flushFor(contactId: string, sessionId: string, force: boolean): P
   for (;;) {
     // 发送期间新一轮已开始 → 立即停止，旧轮内容不再外发（防跨轮重复发送）。
     if ((runGen.get(sessionId) ?? 0) !== gen) return
-    // 单轮累计上限：到达后补一条截断提示并停止，长回复不再刷屏。
-    if (sent >= MAX_TURN_SEND_CHARS) {
-      if (!truncatedNotified) {
-        truncatedNotified = true
-        await useWechatStore.getState().sendText(contactId, TRUNCATION_NOTICE)
-      }
-      break
-    }
-    const chunk = nextSendChunk(acc, sent, force, MAX_TURN_SEND_CHARS - sent)
+    const chunk = nextSendChunk(acc, sent, force)
     if (!chunk) break
     const res = await useWechatStore.getState().sendText(contactId, chunk)
     if (!res.ok) break // 发送失败：保留未发部分，下轮重试
@@ -800,7 +797,7 @@ async function flushComplete(sessionId: string, contactId: string): Promise<void
       const f = new StreamingMarkdownFilter()
       const text = f.feed(lastAssistant.content) + f.flush()
       if (text.trim()) {
-        filteredAcc.set(sessionId, text.slice(0, MAX_TURN_SEND_CHARS))
+        filteredAcc.set(sessionId, text)
         await flushFor(contactId, sessionId, true)
       }
     }

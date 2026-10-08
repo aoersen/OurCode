@@ -254,7 +254,7 @@ describe('wechatBridge 分片发送', () => {
     const acc = 'x'.repeat(2000)
     expect(nextSendChunk(acc, 1601, false)).toBeNull() // 剩 399
     expect(nextSendChunk(acc, 1600, false)).toBe('x'.repeat(400))
-    expect(nextSendChunk(acc, 0, false)).toBe('x'.repeat(1700))
+    expect(nextSendChunk(acc, 0, false)).toBe('x'.repeat(2000)) // 上限已对齐官方 4000
     expect(nextSendChunk(acc, 1700, false)).toBeNull() // 剩 300 < 400
   })
 
@@ -264,10 +264,10 @@ describe('wechatBridge 分片发送', () => {
     expect(nextSendChunk(acc, 5, true)).toBeNull()
   })
 
-  it('单轮累计上限：超限部分被截到 cap 内', () => {
-    const acc = 'x'.repeat(2000)
-    // sent 已到 5500，cap 6000 → 只补 500
-    expect(nextSendChunk(acc, 0, true, 500)).toBe('x'.repeat(500))
-    expect(nextSendChunk(acc, 0, true, 5000)).toBe('x'.repeat(2000))
+  it('超长内容按官方上限 4000 分片', () => {
+    const acc = 'x'.repeat(5000)
+    expect(nextSendChunk(acc, 0, true)).toBe('x'.repeat(4000))
+    expect(nextSendChunk(acc, 4000, true)).toBe('x'.repeat(1000))
   })
+
 })
