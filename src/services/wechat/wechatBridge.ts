@@ -33,6 +33,9 @@ const FLUSH_INTERVAL_MS = 1_000
 const SEND_BATCH_CHARS = 400
 /** 单条微信文本上限（保守值，远低于服务端限制，避免多字节超限）。 */
 const SEND_CHUNK_CHARS = 1_700
+/** 单轮任务微信侧累计发送上限：超限即截断，避免长回复刷屏。 */
+const MAX_TURN_SEND_CHARS = 6_000
+const TRUNCATION_NOTICE = '…\n（内容过长，微信侧已截断，完整内容保留在会话记录中）'
 
 const sessionByContact = new Map<string, string>() // contactId -> sessionId
 const contactBySession = new Map<string, string>() // sessionId -> contactId
@@ -46,6 +49,7 @@ const agentQueue: Array<{ contactId: string; sessionId: string; text: string }> 
 let pendingWorkspaceSwitch: { path: string; contactId: string } | null = null // 工作区切换信任门
 let pendingOfficeInstruction: { instructionId: string; text: string; sessionId: string; contactId: string } | null = null // 总监指令确认
 let pendingReset = false // /reset 二次确认
+let truncatedNotified = false // 本轮是否已发过截断提示（每轮一次）
 let runningSnapshot = new Set<string>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 let unsubs: Array<() => void> = []
@@ -557,6 +561,7 @@ function beginRun(sessionId: string): void {
   filteredAcc.set(sessionId, '')
   sentLen.set(sessionId, 0)
   lastRaw.set(sessionId, '')
+  truncatedNotified = false
 }
 
 /** 微信 Agent 是否正忙：任一微信会话在运行（共享工作区 → 串行）。 */
@@ -727,10 +732,10 @@ function trackStreaming(sessionId: string, state: ChatState): void {
  * 流式阶段（force=false）攒够 SEND_BATCH_CHARS 才发；完成阶段（force=true）
  * 无条件发送剩余内容。返回 null 表示当前无可发内容。
  */
-export function nextSendChunk(acc: string, sent: number, force: boolean): string | null {
+export function nextSendChunk(acc: string, sent: number, force: boolean, maxChars = SEND_CHUNK_CHARS): string | null {
   const unsent = acc.slice(sent)
   if (!unsent) return null
-  if (force || unsent.length >= SEND_BATCH_CHARS) return unsent.slice(0, SEND_CHUNK_CHARS)
+  if (force || unsent.length >= SEND_BATCH_CHARS) return unsent.slice(0, maxChars)
   return null
 }
 
@@ -741,7 +746,15 @@ async function flushFor(contactId: string, sessionId: string, force: boolean): P
   for (;;) {
     // 发送期间新一轮已开始 → 立即停止，旧轮内容不再外发（防跨轮重复发送）。
     if ((runGen.get(sessionId) ?? 0) !== gen) return
-    const chunk = nextSendChunk(acc, sent, force)
+    // 单轮累计上限：到达后补一条截断提示并停止，长回复不再刷屏。
+    if (sent >= MAX_TURN_SEND_CHARS) {
+      if (!truncatedNotified) {
+        truncatedNotified = true
+        await useWechatStore.getState().sendText(contactId, TRUNCATION_NOTICE)
+      }
+      break
+    }
+    const chunk = nextSendChunk(acc, sent, force, MAX_TURN_SEND_CHARS - sent)
     if (!chunk) break
     const res = await useWechatStore.getState().sendText(contactId, chunk)
     if (!res.ok) break // 发送失败：保留未发部分，下轮重试
@@ -787,7 +800,7 @@ async function flushComplete(sessionId: string, contactId: string): Promise<void
       const f = new StreamingMarkdownFilter()
       const text = f.feed(lastAssistant.content) + f.flush()
       if (text.trim()) {
-        filteredAcc.set(sessionId, text)
+        filteredAcc.set(sessionId, text.slice(0, MAX_TURN_SEND_CHARS))
         await flushFor(contactId, sessionId, true)
       }
     }

@@ -263,4 +263,11 @@ describe('wechatBridge 分片发送', () => {
     expect(nextSendChunk(acc, 0, true)).toBe('hello')
     expect(nextSendChunk(acc, 5, true)).toBeNull()
   })
+
+  it('单轮累计上限：超限部分被截到 cap 内', () => {
+    const acc = 'x'.repeat(2000)
+    // sent 已到 5500，cap 6000 → 只补 500
+    expect(nextSendChunk(acc, 0, true, 500)).toBe('x'.repeat(500))
+    expect(nextSendChunk(acc, 0, true, 5000)).toBe('x'.repeat(2000))
+  })
 })
