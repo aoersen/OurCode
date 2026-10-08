@@ -37,6 +37,7 @@ const filters = new Map<string, StreamingMarkdownFilter>() // sessionId -> 本�
 const filteredAcc = new Map<string, string>() // sessionId -> 已过滤文本累计
 const sentLen = new Map<string, number>() // sessionId -> 已发送字符数
 const lastRaw = new Map<string, string>() // sessionId -> 上次看到的流式原文
+const pendingBySession = new Map<string, string[]>() // sessionId -> agent 忙时排队的微信消息
 const notifiedKinds = new Set<string>() // `${sessionId}:${kind}` 已通知的决策种类
 let runningSnapshot = new Set<string>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -254,6 +255,43 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
 }
 
 // ── 入站 ──────────────────────────────────────────────────────────────────
+/** 新一轮开始：重置该会话的流式水位。必须在 sendMessage 之前调用。 */
+function beginRun(sessionId: string): void {
+  filters.set(sessionId, new StreamingMarkdownFilter())
+  filteredAcc.set(sessionId, '')
+  sentLen.set(sessionId, 0)
+  lastRaw.set(sessionId, '')
+}
+
+/** 启动一轮 agent 处理；若被前置守卫静默拦截（无模型组/无工作区）立刻回执指引。 */
+function startTurn(sessionId: string, contactId: string, text: string): void {
+  beginRun(sessionId)
+  void useChatStore.getState().sendMessage(sessionId, text)
+  // runAgentLoop 的前置守卫（无 API 配置组 / 无工作区等）是静默返回的——它
+  // 甚至不会把会话标为 running。sendMessage 的同步前缀已执行完守卫判定，
+  // 这里同步检查：没进入 running 就立刻给微信一个明确的失败指引。
+  if (!useChatStore.getState().runningSessionIds.includes(sessionId)) {
+    const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    ack(
+      contactId,
+      session?.configGroupId
+        ? '❌ 处理未启动：需要先配置工作区（设置→功能→微信通道 的「微信工作区」）。'
+        : '❌ 处理未启动：没有可用的 API 模型组。请先在 设置→API 配置 添加模型，再到 设置→功能→微信通道 里为微信选择模型。',
+    )
+  }
+}
+
+/** 本轮结束后依次处理桥接侧排队的微信消息（chatStore 的队列是面向 IDE 界面的，不能依赖）。 */
+function drainPending(sessionId: string, contactId: string): void {
+  const pending = pendingBySession.get(sessionId)
+  if (!pending || pending.length === 0) return
+  const nextText = pending.shift()
+  if (!nextText) return
+  if (pending.length === 0) pendingBySession.delete(sessionId)
+  ack(contactId, '继续处理排队消息…')
+  startTurn(sessionId, contactId, nextText)
+}
+
 async function onInbound(msg: WechatInboundEvent): Promise<void> {
   if (!channelEnabled()) return
   const contactId = msg.replyTo || msg.from
@@ -263,39 +301,31 @@ async function onInbound(msg: WechatInboundEvent): Promise<void> {
 
   console.log(`[wechat-bridge] inbound from ${contactId}: ${previewText(text, 80)}`)
 
+  // 优先当作对当前待决决策的应答（不用等配置组加载，审批应答有时效性）。
+  const mapped = sessionByContact.get(contactId)
+  if (mapped && answerPendingDecision(mapped, contactId, text)) return
+
   // 配置组可能尚未加载完成——等一小会儿，避免用空配置组创建坏会话。
   await waitForConfigGroups()
 
   const sessionId = ensureSession(contactId)
   if (!sessionId) return
 
-  // 优先当作对当前待决决策的应答；命中则不再作为新消息。
-  if (answerPendingDecision(sessionId, contactId, text)) return
-
   const cs = useChatStore.getState()
   if (cs.activeSessionId !== sessionId) {
     cs.setActiveSession(sessionId)
     cs.rebalanceDecisions()
   }
-  // 新一轮：重置该会话的流式水位（过滤器、已发长度、原文快照）。
-  filters.set(sessionId, new StreamingMarkdownFilter())
-  filteredAcc.set(sessionId, '')
-  sentLen.set(sessionId, 0)
-  lastRaw.set(sessionId, '')
-  ack(contactId, '已收到，开始处理…')
-  void cs.sendMessage(sessionId, text)
-
-  // runAgentLoop 的前置守卫（无 API 配置组 / 无工作区等）是静默返回的——它
-  // 甚至不会把会话标为 running。sendMessage 的同步前缀已执行完守卫判定，
-  // 这里同步检查：没进入 running 就立刻给微信一个明确的失败指引，而不是沉默。
-  if (!useChatStore.getState().runningSessionIds.includes(sessionId)) {
-    const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
-    if (!session?.configGroupId) {
-      ack(contactId, '❌ 处理未启动：没有可用的 API 模型组。请先在 设置→API 配置 添加模型，再到 设置→功能→微信通道 里为微信选择模型。')
-    } else {
-      ack(contactId, '❌ 处理未启动：需要先配置工作区（设置→功能→微信通道 的「微信工作区」）。')
-    }
+  if (cs.runningSessionIds.includes(sessionId)) {
+    // agent 忙：桥接侧排队，本轮结束后由 drainPending 自动继续。
+    const pending = pendingBySession.get(sessionId) ?? []
+    pending.push(text)
+    pendingBySession.set(sessionId, pending)
+    ack(contactId, '⏳ 正在处理上一条任务，这条已排队，完成后自动继续')
+    return
   }
+  ack(contactId, '已收到，开始处理…')
+  startTurn(sessionId, contactId, text)
 }
 
 // ── 出站（流式） ──────────────────────────────────────────────────────────
@@ -384,38 +414,49 @@ async function flushComplete(sessionId: string, contactId: string): Promise<void
 
 // ── 决策通知 ──────────────────────────────────────────────────────────────
 function notifyDecisions(sessionId: string, contactId: string, state: ChatState): void {
+  // 会话不 active 时决策会被停入 decisionBacklog，agent 一直等审批而微信侧
+  // 永远收不到通知——把会话提回前台再平衡，让决策回到槽位（与 IDE 自身
+  // 切换会话时的行为一致；被交换停下的对侧决策在其会话再次激活时回提）。
+  let current = state
+  if (current.decisionBacklog.some((d) => d.sessionId === sessionId)) {
+    const cs = useChatStore.getState()
+    if (cs.activeSessionId !== sessionId) {
+      cs.setActiveSession(sessionId)
+      cs.rebalanceDecisions()
+      current = useChatStore.getState()
+    }
+  }
+
   const present = new Set<string>()
   let notice: string | null = null
   let kind: string | null = null
 
-  const approval = state.pendingApproval
+  const approval = current.pendingApproval
   if (approval?.sessionId === sessionId) {
     kind = 'approval'
     notice = `🔐 微信会话请求批准执行工具\n工具：${approval.toolCall.name}\n${previewText(approval.preview)}\n回复「批准」执行，「拒绝」取消`
-  } else if (state.batchApproval?.sessionId === sessionId) {
+  } else if (current.batchApproval?.sessionId === sessionId) {
     kind = 'batch'
-    const names = state.batchApproval.tools.map((t) => t.name).join('、')
-    notice = `🔐 批量批准（${state.batchApproval.tools.length} 项）：${previewText(names, 120)}\n回复「批准」全部执行，「拒绝」取消`
-  } else if (state.pendingScope?.sessionId === sessionId) {
+    const names = current.batchApproval.tools.map((t) => t.name).join('、')
+    notice = `🔐 批量批准（${current.batchApproval.tools.length} 项）：${previewText(names, 120)}\n回复「批准」全部执行，「拒绝」取消`
+  } else if (current.pendingScope?.sessionId === sessionId) {
     kind = 'scope'
-    notice = `🔐 作用域决策：${previewText(state.pendingScope.preview)}\n涉及：${previewText(state.pendingScope.paths.join('、'), 120)}\n回复「加入计划」/「切换模式」/「拒绝」`
-  } else if (state.pendingQuestion?.sessionId === sessionId) {
+    notice = `🔐 作用域决策：${previewText(current.pendingScope.preview)}\n涉及：${previewText(current.pendingScope.paths.join('、'), 120)}\n回复「加入计划」/「切换模式」/「拒绝」`
+  } else if (current.pendingQuestion?.sessionId === sessionId) {
     kind = 'question'
-    const q = state.pendingQuestion
+    const q = current.pendingQuestion
     const opts = q.options?.length
       ? `\n${q.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`
       : ''
     notice = `❓ ${q.question}${opts}\n直接回复答案${q.options?.length ? '或编号' : ''}`
   }
 
-  const sess = state.sessions.find((s) => s.id === sessionId)
+  const sess = current.sessions.find((s) => s.id === sessionId)
   if (sess?.planStatus === 'pending_approval') {
     kind = 'plan'
     notice = `📋 计划待批准\n${previewText(sess.planContent, 300)}\n回复「批准计划」开始执行，或「放弃计划」取消`
   }
 
-  // backlog 里的决策（会话未激活）不单独通知——把会话切到前台后
-  // rebalanceDecisions 会提回槽位，下个 tick 走上面的分支。
   if (kind) present.add(`${sessionId}:${kind}`)
 
   // 清理已消失的决策种类，让同类新决策可以再次通知。
@@ -438,7 +479,12 @@ function handleChatTick(state: ChatState): void {
     notifyDecisions(sessionId, contactId, state)
     trackStreaming(sessionId, state)
     if (runningSnapshot.has(sessionId) && !runningNow.has(sessionId)) {
-      void flushComplete(sessionId, contactId)
+      // 本轮结束：先冲刷剩余输出，再依次处理微信侧排队的下一条消息。
+      // 串行执行，避免 flushComplete 的异步发送与新一轮的水位重置交错。
+      void (async () => {
+        await flushComplete(sessionId, contactId)
+        drainPending(sessionId, contactId)
+      })()
     }
   }
   runningSnapshot = runningNow

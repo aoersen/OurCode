@@ -27,11 +27,17 @@ export interface WechatChannelOptions {
 
 /** sendText 等待网关 `sent` 回执的超时。 */
 const SEND_ACK_TIMEOUT_MS = 30_000
+/** 网关非主动退出后的自动重启：最多次数与重试间隔。 */
+const MAX_RESTARTS = 3
+const RESTART_DELAY_MS = 3_000
 
 export class WechatChannel extends EventEmitter {
   private child: ChildProcess | null = null
   private state: WechatChannelState = 'stopped'
   private readonly pendingSends = new Map<string, (ev: WechatSentEvent) => void>()
+  private readonly pendingSendTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private restartAttempts = 0
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
   private stopping = false
 
   constructor(private readonly opts: WechatChannelOptions) {
@@ -91,13 +97,34 @@ export class WechatChannel extends EventEmitter {
     })
     child.on('exit', (code) => {
       this.child = null
-      for (const resolve of this.pendingSends.values()) {
-        const ev: WechatSentEvent = { event: 'sent', ok: false, error: `网关已退出（code=${code}）` }
+      // 待确认的发送全部以失败收尾，并清掉各自的超时定时器。
+      for (const [id, resolve] of this.pendingSends) {
+        const ev: WechatSentEvent = { event: 'sent', clientMsgId: id, ok: false, error: `网关已退出（code=${code}）` }
         resolve(ev)
       }
       this.pendingSends.clear()
+      for (const timer of this.pendingSendTimers.values()) clearTimeout(timer)
+      this.pendingSendTimers.clear()
       this.emit('exit', code)
-      if (!this.stopping) this.setState('stopped')
+      if (this.stopping) {
+        this.setState('stopped')
+        return
+      }
+      // 非主动停止：自动重启（有限次数），无人值守时微信通道也能自愈。
+      if (this.restartAttempts < MAX_RESTARTS) {
+        this.restartAttempts++
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = null
+          this.start()
+        }, RESTART_DELAY_MS)
+      } else {
+        this.setState('stopped')
+        const ev: WechatGatewayEvent = {
+          event: 'error',
+          message: `微信网关多次崩溃，已停止自动重启（code=${code}）`,
+        }
+        this.emit('gatewayEvent', ev)
+      }
     })
   }
 
@@ -111,6 +138,8 @@ export class WechatChannel extends EventEmitter {
     }
     if (ev.event === 'status') {
       this.state = ev.state
+      // 网关成功重连后清零崩溃计数，允许未来的崩溃再次触发完整重试周期。
+      if (ev.state === 'connected') this.restartAttempts = 0
     }
     if (ev.event === 'sent' && ev.clientMsgId) {
       const resolve = this.pendingSends.get(ev.clientMsgId)
@@ -159,11 +188,14 @@ export class WechatChannel extends EventEmitter {
       }
       const timer = setTimeout(() => {
         this.pendingSends.delete(id)
+        this.pendingSendTimers.delete(id)
         const ev: WechatSentEvent = { event: 'sent', clientMsgId: id, ok: false, error: '发送确认超时' }
         resolve(ev)
       }, SEND_ACK_TIMEOUT_MS)
+      this.pendingSendTimers.set(id, timer)
       this.pendingSends.set(id, (ev) => {
         clearTimeout(timer)
+        this.pendingSendTimers.delete(id)
         resolve(ev)
       })
     })
@@ -171,6 +203,10 @@ export class WechatChannel extends EventEmitter {
 
   /** 优雅停止：先发 shutdown 让网关做 notifyStop 收尾，超时则强杀。 */
   async stop(): Promise<void> {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
     if (!this.child) {
       this.setState('stopped')
       return

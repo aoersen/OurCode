@@ -121,7 +121,7 @@ describe('WechatChannel', () => {
     expect(res.error).toContain('未运行')
   })
 
-  it('exit：子进程退出时待确认发送失败、状态置 stopped', async () => {
+  it('exit：子进程退出时待确认发送失败（非主动停止会安排自动重启）', async () => {
     const child = makeFakeChild()
     mocks.spawn.mockReturnValue(child)
 
@@ -138,7 +138,42 @@ describe('WechatChannel', () => {
     expect(res.ok).toBe(false)
     expect(res.error).toContain('网关已退出')
     expect(exits).toEqual([1])
-    expect(channel.getStatus().state).toBe('stopped')
+    await channel.stop() // 取消挂起的重启定时器，避免影响其他用例
+  })
+
+  it('exit：崩溃自动重启（最多 3 次），超过上限上报错误并停止', async () => {
+    vi.useFakeTimers()
+    try {
+      writeFileSync(gatewayPath, '')
+      let lastChild: ReturnType<typeof makeFakeChild> | null = null
+      mocks.spawn.mockImplementation(() => {
+        lastChild = makeFakeChild()
+        return lastChild
+      })
+
+      const channel = new WechatChannel({ gatewayPath, stateDir })
+      const events: unknown[] = []
+      channel.on('gatewayEvent', (ev: unknown) => events.push(ev))
+      channel.start()
+      expect(mocks.spawn).toHaveBeenCalledTimes(1)
+
+      const crash = () => lastChild!.emit('exit', 1)
+      crash()
+      await vi.advanceTimersByTimeAsync(3_100)
+      crash()
+      await vi.advanceTimersByTimeAsync(3_100)
+      crash()
+      await vi.advanceTimersByTimeAsync(3_100) // 第 3 次重启
+      crash() // 超过上限
+
+      expect(mocks.spawn).toHaveBeenCalledTimes(4) // 初始 + 3 次重启
+      const errors = events.filter((e) => (e as { event: string }).event === 'error')
+      expect(errors).toHaveLength(1)
+      expect((errors[0] as { message: string }).message).toContain('多次崩溃')
+      expect(channel.getStatus().state).toBe('stopped')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stop：先发 shutdown，网关超时未退出则强杀；重复调用安全', async () => {
