@@ -198,6 +198,10 @@ export const DEFAULT_PREFERENCES = {
   wechatApprovalMode: 'approve' as const,
   /** 微信工作区根目录（留空 = 使用最近打开的项目）。 */
   wechatWorkspaceDir: '',
+  /** 微信会话使用的 API 配置组（留空 = 跟随 IDE 当前组）。 */
+  wechatConfigGroupId: '',
+  /** 微信会话使用的模型（留空 = 组的默认模型）。 */
+  wechatModelId: '',
 }
 
 // Free model keywords

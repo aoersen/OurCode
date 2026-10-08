@@ -44,7 +44,8 @@ const MAX_CONSECUTIVE_POLL_FAILURES = 10
 const STALE_TOKEN_ERRCODE = -14
 const MESSAGE_TYPE_BOT = 2
 const ITEM_TYPE_TEXT = 1
-const MESSAGE_STATE_NEW = 0
+/** 去重缓存上限：长轮询可能重投已处理的消息，按 message_id 去重。 */
+const SEEN_MSG_ID_CAP = 2_000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -72,6 +73,7 @@ let account = null // { accountId, baseUrl, token } | null
 let loopAbort = null // getUpdates 长轮询的取消信号
 let loopPromise = null // 消息循环的 Promise，logout/shutdown 时等待收尾
 let verifyCodeResolve = null // 待输入的配对码 Promise
+const seenMsgIds = new Set() // 已处理消息去重（防止长轮询重投导致重复回复）
 
 function setMode(next) {
   mode = next
@@ -324,9 +326,20 @@ async function startMessageLoop(nextAccount) {
           }
         }
 
+        // 服务端对入站消息不做 message_state 过滤（官方 monitor 循环同样
+        // 全量处理；文本消息常以 FINISH=2 送达）。这里只跳过自己发出的回声，
+        // 并按 message_id 去重（长轮询可能重投）。
         for (const msg of resp.msgs ?? []) {
           if (msg.message_type === MESSAGE_TYPE_BOT) continue
-          if (msg.message_state != null && msg.message_state !== MESSAGE_STATE_NEW) continue
+          const key = msg.message_id ?? `${msg.from_user_id}:${msg.create_time_ms}:${msg.seq ?? ''}`
+          if (key && seenMsgIds.has(key)) continue
+          if (key) {
+            seenMsgIds.add(key)
+            if (seenMsgIds.size > SEEN_MSG_ID_CAP) {
+              const oldest = seenMsgIds.values().next().value
+              seenMsgIds.delete(oldest)
+            }
+          }
           const text = (msg.item_list ?? [])
             .filter((item) => item.type === ITEM_TYPE_TEXT && item.text_item?.text != null)
             .map((item) => String(item.text_item.text))

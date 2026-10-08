@@ -492,6 +492,10 @@ export interface UserPreferences {
   wechatApprovalMode?: 'approve' | 'full_access'
   /** 微信工作区根目录：微信任务都在此目录下进行；留空 = 使用最近打开的项目。 */
   wechatWorkspaceDir?: string
+  /** 微信会话使用的 API 配置组 id（留空 = 跟随 IDE 当前组）。 */
+  wechatConfigGroupId?: string
+  /** 微信会话使用的模型 id（留空 = 组的默认模型）。 */
+  wechatModelId?: string
 }
 
 // Model Info

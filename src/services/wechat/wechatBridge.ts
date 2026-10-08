@@ -66,15 +66,58 @@ function previewText(raw: string | undefined, max = 150): string {
 }
 
 // ── 会话映射 ──────────────────────────────────────────────────────────────
-function ensureSession(contactId: string): string | null {
+/**
+ * 解析微信会话应使用的 API 配置组与模型：优先取设置里显式选择的组/模型，
+ * 否则回退到 IDE 当前组，再到第一个组。
+ */
+export function resolveWechatConfig(): { configGroupId: string; modelId: string | null } {
+  const prefs = useEditorStore.getState().preferences
+  const config = useConfigStore.getState()
+  const groups = config.configGroups ?? []
+  const prefGroup = prefs.wechatConfigGroupId?.trim()
+  const configGroupId =
+    (prefGroup && groups.some((g) => g.id === prefGroup) ? prefGroup : '') ||
+    config.activeConfigGroupId ||
+    groups[0]?.id ||
+    ''
+  return { configGroupId, modelId: prefs.wechatModelId?.trim() || null }
+}
+
+/** 修复历史上用空配置组创建的微信会话（桥接早于配置加载时的竞态产物）。 */
+export function repairSession(sessionId: string): void {
+  const chat = useChatStore.getState()
+  const session = chat.sessions.find((s) => s.id === sessionId)
+  if (!session) return
+  const { configGroupId, modelId } = resolveWechatConfig()
+  const newGroup = !session.configGroupId && configGroupId ? configGroupId : undefined
+  const newModel = modelId && session.model !== modelId ? modelId : undefined
+  if (newGroup || newModel) {
+    chat.updateSessionModel(sessionId, newModel ?? session.model, newGroup)
+  }
+}
+
+/**
+ * 桥接先于配置加载初始化；首条微信消息若抢在配置组就绪前到达，会用空配置组
+ * 创建会话并被持久化（agent 永远静默失败）。这里最多等 5 秒让配置组加载。
+ */
+async function waitForConfigGroups(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (useConfigStore.getState().configGroups?.length) return
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+/** 取得（或创建并修复）微信联系人的专用会话。导出供单元测试使用。 */
+export function ensureSession(contactId: string): string | null {
   const existing = sessionByContact.get(contactId)
   if (existing && useChatStore.getState().sessions.some((s) => s.id === existing)) {
+    repairSession(existing)
     return existing
   }
   const prefs = useEditorStore.getState().preferences
-  const config = useConfigStore.getState()
-  const configGroupId = config.activeConfigGroupId ?? config.configGroups?.[0]?.id ?? ''
   const chat = useChatStore.getState()
+  const { configGroupId, modelId } = resolveWechatConfig()
   const projectPath =
     prefs.wechatWorkspaceDir?.trim() ||
     chat.sessions.find((s) => s.id === chat.activeSessionId)?.projectPath ||
@@ -82,6 +125,7 @@ function ensureSession(contactId: string): string | null {
     ''
   const sessionId = chat.createSession(configGroupId, projectPath)
   if (!sessionId) return null
+  if (modelId) chat.updateSessionModel(sessionId, modelId)
   if (prefs.wechatApprovalMode === 'full_access') {
     chat.setProjectEditMode(sessionId, 'full_access')
   }
@@ -210,12 +254,17 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
 }
 
 // ── 入站 ──────────────────────────────────────────────────────────────────
-function onInbound(msg: WechatInboundEvent): void {
+async function onInbound(msg: WechatInboundEvent): Promise<void> {
   if (!channelEnabled()) return
   const contactId = msg.replyTo || msg.from
   if (!contactId) return
   const text = (msg.text ?? '').trim()
   if (!text) return
+
+  console.log(`[wechat-bridge] inbound from ${contactId}: ${previewText(text, 80)}`)
+
+  // 配置组可能尚未加载完成——等一小会儿，避免用空配置组创建坏会话。
+  await waitForConfigGroups()
 
   const sessionId = ensureSession(contactId)
   if (!sessionId) return
@@ -235,6 +284,18 @@ function onInbound(msg: WechatInboundEvent): void {
   lastRaw.set(sessionId, '')
   ack(contactId, '已收到，开始处理…')
   void cs.sendMessage(sessionId, text)
+
+  // runAgentLoop 的前置守卫（无 API 配置组 / 无工作区等）是静默返回的——它
+  // 甚至不会把会话标为 running。sendMessage 的同步前缀已执行完守卫判定，
+  // 这里同步检查：没进入 running 就立刻给微信一个明确的失败指引，而不是沉默。
+  if (!useChatStore.getState().runningSessionIds.includes(sessionId)) {
+    const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    if (!session?.configGroupId) {
+      ack(contactId, '❌ 处理未启动：没有可用的 API 模型组。请先在 设置→API 配置 添加模型，再到 设置→功能→微信通道 里为微信选择模型。')
+    } else {
+      ack(contactId, '❌ 处理未启动：需要先配置工作区（设置→功能→微信通道 的「微信工作区」）。')
+    }
+  }
 }
 
 // ── 出站（流式） ──────────────────────────────────────────────────────────
@@ -303,6 +364,22 @@ async function flushComplete(sessionId: string, contactId: string): Promise<void
     if (tail) filteredAcc.set(sessionId, (filteredAcc.get(sessionId) ?? '') + tail)
   }
   await flushFor(contactId, sessionId, true)
+  // 本轮没有任何流式输出（agent 中途失败等）：把最后的助手消息（含错误卡）
+  // 补发出去，避免微信侧只看到沉默。
+  if ((sentLen.get(sessionId) ?? 0) === 0) {
+    const state = useChatStore.getState()
+    const lastAssistant = [...(state.sessions.find((s) => s.id === sessionId)?.messages ?? [])]
+      .reverse()
+      .find((m) => m.role === 'assistant')
+    if (lastAssistant?.content) {
+      const f = new StreamingMarkdownFilter()
+      const text = f.feed(lastAssistant.content) + f.flush()
+      if (text.trim()) {
+        filteredAcc.set(sessionId, text)
+        await flushFor(contactId, sessionId, true)
+      }
+    }
+  }
 }
 
 // ── 决策通知 ──────────────────────────────────────────────────────────────
@@ -368,7 +445,7 @@ function handleChatTick(state: ChatState): void {
 }
 
 function handleGatewayEvent(ev: WechatGatewayEvent): void {
-  if (ev.event === 'inbound') onInbound(ev)
+  if (ev.event === 'inbound') void onInbound(ev)
 }
 
 /** 应用启动时调用一次（App.tsx）。返回清理函数。 */

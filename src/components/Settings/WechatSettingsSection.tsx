@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
+import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useWechatStore } from '@/stores/wechatStore'
-import type { WechatChannelState } from '@/types'
+import type { ModelInfo, WechatChannelState } from '@/types'
 
 const STATE_META: Record<WechatChannelState, { label: string; color: string }> = {
   idle: { label: '未登录', color: '#8b8fa3' },
@@ -51,14 +52,51 @@ const accentBtn =
  */
 export default function WechatSettingsSection() {
   const { preferences, savePreferences } = useEditorStore()
+  const { configGroups, fetchModelsForGroup } = useConfigStore()
   const { state, qrUrl, scanned, needVerifyCode, verifyBlocked, notice, startLogin, submitVerifyCode, logout, clearNotice } =
     useWechatStore()
   const [verifyCode, setVerifyCode] = useState('')
+  const [groupModels, setGroupModels] = useState<ModelInfo[]>([])
 
   const enabled = preferences.wechatEnabled !== false
   const meta = STATE_META[state]
   const workspaceDir = preferences.wechatWorkspaceDir ?? ''
   const approvalMode = preferences.wechatApprovalMode ?? 'approve'
+  const groupIdPref = preferences.wechatConfigGroupId ?? ''
+  const selectedGroup = configGroups.find((g) => g.id === groupIdPref) ?? configGroups[0]
+  const selectedGroupId = selectedGroup?.id
+  const modelIdPref = preferences.wechatModelId ?? ''
+
+  // 组变化时拉取其模型列表；失败则回退到「默认模型」单选项。
+  useEffect(() => {
+    let cancelled = false
+    setGroupModels([])
+    const group = selectedGroupId ? configGroups.find((g) => g.id === selectedGroupId) : undefined
+    if (group) {
+      fetchModelsForGroup(group)
+        .then((ms) => {
+          if (!cancelled) setGroupModels(ms)
+        })
+        .catch(() => {
+          if (!cancelled) setGroupModels([])
+        })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [selectedGroupId, configGroups, fetchModelsForGroup])
+
+  const modelOptions = Array.from(
+    new Set([
+      ...groupModels.map((m) => m.id),
+      ...(selectedGroup?.defaultModel ? [selectedGroup.defaultModel] : []),
+    ]),
+  )
+
+  const pickGroup = (id: string) => {
+    // 换组后原组模型在新组大概率不可用：清掉模型偏好，回退到新组默认模型。
+    void savePreferences({ wechatConfigGroupId: id, wechatModelId: '' })
+  }
 
   const toggleEnabled = (on: boolean) => {
     void savePreferences({ wechatEnabled: on })
@@ -142,6 +180,35 @@ export default function WechatSettingsSection() {
           <button className={accentBtn} onClick={() => void logout()}>登出</button>
         } />
       )}
+
+      <Row label="微信模型组" desc="微信会话使用哪个 API 配置组（无可用组时微信消息无法驱动 AI，需先在 API 配置里添加）" right={
+        <select
+          value={selectedGroup?.id ?? ''}
+          onChange={(e) => pickGroup(e.target.value)}
+          className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-xs text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors max-w-[240px]"
+        >
+          {configGroups.length === 0 && <option value="">（无可用配置组）</option>}
+          {configGroups.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}（{g.defaultModel || '默认模型'}）
+            </option>
+          ))}
+        </select>
+      } />
+
+      <Row label="微信模型" desc={`留空 = 跟随模型组的默认模型${selectedGroup?.defaultModel ? `（${selectedGroup.defaultModel}）` : ''}`} right={
+        <select
+          value={modelOptions.includes(modelIdPref) ? modelIdPref : ''}
+          onChange={(e) => void savePreferences({ wechatModelId: e.target.value })}
+          disabled={modelOptions.length === 0}
+          className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-xs text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors max-w-[240px] disabled:opacity-50"
+        >
+          <option value="">（组的默认模型）</option>
+          {modelOptions.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+      } />
 
       <Row label="审批模式" desc="逐条审批：写文件/执行命令前发微信确认；免审批：微信会话直接执行（同 IDE 的 full_access）" right={
         <select

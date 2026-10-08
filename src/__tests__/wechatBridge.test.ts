@@ -5,9 +5,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // pattern as chatStore.test.ts). The bridge never touches monaco directly.
 vi.mock('@/editor/monacoSetup', () => ({ monaco: {} }))
 
-import { answerPendingDecision, nextSendChunk } from '@/services/wechat/wechatBridge'
+import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfig } from '@/services/wechat/wechatBridge'
 import { useChatStore } from '@/stores/chatStore'
-import type { WechatGatewayEvent } from '@/types'
+import { useConfigStore } from '@/stores/configStore'
+import { useEditorStore } from '@/stores/editorStore'
+import type { ApiConfigGroup, WechatGatewayEvent } from '@/types'
 
 type GatewayListener = (ev: WechatGatewayEvent) => void
 
@@ -123,6 +125,66 @@ describe('wechatBridge 决策应答', () => {
     const sessionId = makeActiveSession()
     expect(answerPendingDecision(sessionId, 'contact-1', '你好')).toBe(false)
     expect(sentTexts).toHaveLength(0)
+  })
+})
+
+describe('wechatBridge 会话映射', () => {
+  function makeGroup(id: string, defaultModel: string): ApiConfigGroup {
+    return {
+      id,
+      name: `组${id}`,
+      baseUrl: 'https://api.example.com',
+      apiKey: 'sk-test',
+      systemPrompt: '',
+      defaultModel,
+      provider: 'custom',
+      customHeaders: {},
+      createdAt: 0,
+      updatedAt: 0,
+    }
+  }
+
+  it('ensureSession 使用设置里的组与模型，并自动修复空配置组的旧会话', () => {
+    useConfigStore.setState({
+      configGroups: [makeGroup('g1', 'model-a'), makeGroup('g2', 'model-b')],
+      activeConfigGroupId: 'g2',
+    })
+    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: 'g1', wechatModelId: 'model-x' })
+
+    const sessionId = ensureSession('contact-map-1')
+    const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    expect(session?.configGroupId).toBe('g1')
+    expect(session?.model).toBe('model-x')
+
+    // 模拟早期竞态产物（空配置组会话）：下次入站时被自动修复
+    useChatStore.setState((prev) => ({
+      sessions: prev.sessions.map((x) => (x.id === sessionId ? { ...x, configGroupId: '' } : x)),
+    }))
+    expect(ensureSession('contact-map-1')).toBe(sessionId)
+    expect(useChatStore.getState().sessions.find((s) => s.id === sessionId)?.configGroupId).toBe('g1')
+  })
+
+  it('resolveWechatConfig 未显式选择时回退到当前组，再到第一个组', () => {
+    useConfigStore.setState({
+      configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
+      activeConfigGroupId: 'g2',
+    })
+    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: '', wechatModelId: '' })
+    expect(resolveWechatConfig().configGroupId).toBe('g2')
+
+    useConfigStore.setState({ activeConfigGroupId: null })
+    expect(resolveWechatConfig().configGroupId).toBe('g1')
+  })
+
+  it('resolveWechatConfig 显式选择的组优先于当前组', () => {
+    useConfigStore.setState({
+      configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
+      activeConfigGroupId: 'g2',
+    })
+    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: 'g1', wechatModelId: 'm1' })
+    const resolved = resolveWechatConfig()
+    expect(resolved.configGroupId).toBe('g1')
+    expect(resolved.modelId).toBe('m1')
   })
 })
 
