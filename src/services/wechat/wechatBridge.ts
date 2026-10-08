@@ -20,7 +20,7 @@ import { StreamingMarkdownFilter } from '@tencent-weixin/openclaw-weixin/dist/sr
 
 import { useChatStore } from '@/stores/chatStore'
 import type { ChatState } from '@/stores/chatStore'
-import { useConfigStore } from '@/stores/configStore'
+import { getLastModelForGroup, useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useWechatStore } from '@/stores/wechatStore'
 import type { OfficeSnapshot, WechatAgentState, WechatGatewayEvent, WechatInboundEvent } from '@/types'
@@ -131,10 +131,19 @@ export function repairSession(sessionId: string): void {
   // 决策也才会走后台队列）。init 时扫不到尚未加载的会话，这里兜底。
   if (session.mode !== 'wechat') chat.updateSessionMode(sessionId, 'wechat')
   const { configGroupId, modelId } = resolveWechatConfig()
-  const newGroup = !session.configGroupId && configGroupId ? configGroupId : undefined
-  const newModel = modelId && session.model !== modelId ? modelId : undefined
-  if (newGroup || newModel) {
-    chat.updateSessionModel(sessionId, newModel ?? session.model, newGroup)
+  const groupChanged = Boolean(configGroupId) && session.configGroupId !== configGroupId
+  // 换组必须连带换模型：AgentState 的模型已在目标组校验过（switchWechatModel），
+  // 未指定时用目标组默认模型——绝不能把旧组模型绑到新组密钥上（400/401）。
+  const targetModel = groupChanged
+    ? modelId ||
+        useConfigStore.getState().configGroups.find((g) => g.id === configGroupId)?.defaultModel ||
+        getLastModelForGroup(configGroupId) ||
+        session.model
+    : modelId && session.model !== modelId
+      ? modelId
+      : undefined
+  if (groupChanged || targetModel) {
+    chat.updateSessionModel(sessionId, targetModel ?? session.model, groupChanged ? configGroupId : undefined)
   }
   const ws = currentWorkspacePath()
   if (ws && session.projectPath !== ws) chat.updateSessionProjectPath(sessionId, ws)

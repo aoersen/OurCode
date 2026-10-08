@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // pattern as chatStore.test.ts). The bridge never touches monaco directly.
 vi.mock('@/editor/monacoSetup', () => ({ monaco: {} }))
 
-import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfig, formatOfficeSnapshotText } from '@/services/wechat/wechatBridge'
+import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfig, formatOfficeSnapshotText, repairSession } from '@/services/wechat/wechatBridge'
 import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -215,6 +215,24 @@ describe('wechatBridge 会话映射', () => {
     const resolved = resolveWechatConfig()
     expect(resolved.configGroupId).toBe('g1')
     expect(resolved.modelId).toBe('m1')
+  })
+
+  it('repairSession 随 AgentState 换组并连带换模型（防旧组密钥绑新模型 400/401）', () => {
+    useConfigStore.setState({
+      configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
+      activeConfigGroupId: 'g1',
+    })
+    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: '', modelId: null } })
+    const sessionId = ensureSession('contact-rebind')
+    const before = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    expect(before?.configGroupId).toBe('g1')
+
+    // 对话里切到 g2 组的模型：repairSession 必须连带换组，不能只换模型
+    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g2', modelId: 'm2' } })
+    repairSession(sessionId)
+    const after = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    expect(after?.configGroupId).toBe('g2')
+    expect(after?.model).toBe('m2')
   })
 
   it('resolveWechatConfig 显式组被删除时回退当前组并忽略旧模型偏好', () => {

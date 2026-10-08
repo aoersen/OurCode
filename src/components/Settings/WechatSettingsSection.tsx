@@ -63,11 +63,12 @@ export default function WechatSettingsSection() {
   const enabled = preferences.wechatEnabled !== false
   const meta = STATE_META[state]
   const workspaceDir = preferences.wechatWorkspaceDir ?? ''
-  const approvalMode = preferences.wechatApprovalMode ?? 'approve'
-  const groupIdPref = preferences.wechatConfigGroupId ?? ''
+  // AgentState 是运行期权威（对话可调）；偏好仅作初始值/回退。
+  const approvalMode = agentState?.approvalMode ?? preferences.wechatApprovalMode ?? 'approve'
+  const groupIdPref = agentState?.configGroupId ?? preferences.wechatConfigGroupId ?? ''
   const selectedGroup = configGroups.find((g) => g.id === groupIdPref) ?? configGroups[0]
   const selectedGroupId = selectedGroup?.id
-  const modelIdPref = preferences.wechatModelId ?? ''
+  const modelIdPref = agentState?.modelId ?? preferences.wechatModelId ?? ''
   // Agent 状态是运行期权威（对话可调）：面板显示的是 agent 的实际状态。
   const agentWorkspace = agentState?.currentWorkspace || agentState?.sandboxPath || ''
 
