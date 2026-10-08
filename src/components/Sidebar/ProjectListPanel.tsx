@@ -279,7 +279,7 @@ export default function ProjectListPanel() {
   // time). They used to be invisible here — "conversations got lost" — so they
   // get their own group at the bottom of the list instead.
   const orphanSessions = useMemo(() => {
-    let list = sessions.filter((s) => !s.projectPath && !isGhostSession(s) && !s.hidden)
+    let list = sessions.filter((s) => !s.projectPath && !isGhostSession(s) && !s.hidden && s.mode !== 'wechat')
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase()
       list = list.filter((s) => s.title.toLowerCase().includes(q))

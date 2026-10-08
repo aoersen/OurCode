@@ -1,17 +1,20 @@
 /**
- * 微信 ↔ agent 管道桥接（渲染层）。
+ * 微信 Agent 桥接（对话窗口单例）。
  *
- * 微信消息经主进程广播（WechatGatewayEvent['inbound']）到达这里，桥接层负责：
- *  - 会话映射：微信联系人/群 ↔ 专用会话（localStorage 持久化）；
- *  - 入站：审批应答优先（批准/拒绝/选项编号），否则作为新消息注入
- *    chatStore.sendMessage 驱动同一个 agent 循环；
+ * 微信不是「微信 → IDE 会话」的管道，而是一个独立的常驻 WeChat Agent：
+ *  - 自有状态（WechatAgentState，经主进程 SQLite 持久化）：当前工作区
+ *    （初始为沙盒，可随时经 /workspace 切换）、审批模式、模型、记忆；
+ *  - 会话映射：微信联系人/群 ↔ 专用会话（mode='wechat'，不进主界面列表，
+ *    localStorage 持久化映射）；
+ *  - 入站：命令路由（/status /workspace /mode /model /group /memory /reset）
+ *    优先 → 决策应答（后台队列，不抢 IDE 焦点）→ 否则作为新任务注入
+ *    chatStore.sendMessage 驱动 agent 循环（工作区快照传入）；
  *  - 出站：订阅 chatStore 的流式增量，经 StreamingMarkdownFilter 过滤成
  *    微信可读文本，节流分片回发；
  *  - 决策通知：本会话的审批/提问/批量/作用域/计划决策转成微信选项消息。
  *
- * 前置约束（chatStore 的决策槽机制）：决策只有在该会话为 activeSessionId 时
- * 才会入槽（offerDecision），否则停入 decisionBacklog；因此应答前先
- * setActiveSession + rebalanceDecisions 把决策提回槽位。
+ * 微信决策走 chatStore 的后台决策通道（wechatDecisions）：不进 UI 槽位、
+ * 不触碰 activeSessionId，与 IDE 会话的槽位机制完全隔离。
  */
 import { StreamingMarkdownFilter } from '@tencent-weixin/openclaw-weixin/dist/src/messaging/markdown-filter.js'
 
@@ -19,9 +22,9 @@ import { useChatStore } from '@/stores/chatStore'
 import type { ChatState } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
-import { useUIStore } from '@/stores/uiStore'
 import { useWechatStore } from '@/stores/wechatStore'
-import type { WechatGatewayEvent, WechatInboundEvent } from '@/types'
+import type { WechatAgentState, WechatGatewayEvent, WechatInboundEvent } from '@/types'
+import { IS_OFFICE } from '@/utils/windowMode'
 
 const SESSION_MAP_KEY = 'wechat_session_map'
 /** 流式外发节流间隔：攒批后统一冲刷，避免每个 token 都发一条微信。 */
@@ -38,8 +41,10 @@ const filteredAcc = new Map<string, string>() // sessionId -> 已过滤文本累
 const sentLen = new Map<string, number>() // sessionId -> 已发送字符数
 const lastRaw = new Map<string, string>() // sessionId -> 上次看到的流式原文
 const runGen = new Map<string, number>() // sessionId -> 轮次代数（beginRun 递增，防跨轮竞态）
-const pendingBySession = new Map<string, string[]>() // sessionId -> agent 忙时排队的微信消息
 const notifiedKinds = new Set<string>() // `${sessionId}:${kind}` 已通知的决策种类
+const agentQueue: Array<{ contactId: string; sessionId: string; text: string }> = [] // agent 级忙队列
+let pendingWorkspaceSwitch: { path: string; contactId: string } | null = null // 工作区切换信任门
+let pendingReset = false // /reset 二次确认
 let runningSnapshot = new Set<string>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 let unsubs: Array<() => void> = []
@@ -47,6 +52,23 @@ let initialized = false
 
 function channelEnabled(): boolean {
   return useEditorStore.getState().preferences.wechatEnabled !== false
+}
+
+function agentState(): WechatAgentState | null {
+  return useWechatStore.getState().agentState
+}
+
+async function saveAgentState(patch: Partial<WechatAgentState>): Promise<void> {
+  const cur = agentState()
+  if (!cur) return
+  await useWechatStore.getState().saveAgentState(patch)
+}
+
+/** 当前有效工作区：AgentState.currentWorkspace，null = 沙盒。 */
+function currentWorkspacePath(): string {
+  const st = agentState()
+  if (!st) return ''
+  return st.currentWorkspace || st.sandboxPath
 }
 
 function persistSessionMap(): void {
@@ -67,46 +89,74 @@ function previewText(raw: string | undefined, max = 150): string {
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine
 }
 
+function isAbsoluteLocalPath(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('/')
+}
+
+function newMemoryId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 // ── 会话映射 ──────────────────────────────────────────────────────────────
 /**
- * 解析微信会话应使用的 API 配置组与模型：优先取设置里显式选择的组/模型，
- * 否则回退到 IDE 当前组，再到第一个组。
+ * 解析微信会话应使用的 API 配置组与模型：优先取 AgentState（对话可调），
+ * 回退设置偏好（初始值），再到 IDE 当前组，再到第一个组。
  */
 export function resolveWechatConfig(): { configGroupId: string; modelId: string | null } {
+  const st = agentState()
   const prefs = useEditorStore.getState().preferences
   const config = useConfigStore.getState()
   const groups = config.configGroups ?? []
-  const prefGroup = prefs.wechatConfigGroupId?.trim()
+  const prefGroup = st?.configGroupId?.trim() || prefs.wechatConfigGroupId?.trim()
   const prefGroupValid = Boolean(prefGroup && groups.some((g) => g.id === prefGroup))
   const configGroupId =
     (prefGroupValid ? prefGroup : '') || config.activeConfigGroupId || groups[0]?.id || ''
   // 模型偏好只在显式组仍存在时生效：组被删除后回退到别的组时，旧组的模型
   // 绑新组的密钥必然 401（见 chatStore.updateSessionConfigGroup 的 rebinding 注释）。
-  const modelId = prefGroupValid ? prefs.wechatModelId?.trim() || null : null
+  const modelId = prefGroupValid ? st?.modelId?.trim() || prefs.wechatModelId?.trim() || null : null
   return { configGroupId, modelId }
 }
 
-/** 修复历史上用空配置组创建的微信会话（桥接早于配置加载时的竞态产物）。 */
+/**
+ * 修复历史微信会话：补空配置组、同步当前工作区与审批模式（AgentState 是权威，
+ * 会话字段只作记录/运行快照）。
+ */
 export function repairSession(sessionId: string): void {
   const chat = useChatStore.getState()
   const session = chat.sessions.find((s) => s.id === sessionId)
   if (!session) return
+  // 惰性迁移：历史上以 mode='main' 创建的微信会话 → 'wechat'（隔离出主界面，
+  // 决策也才会走后台队列）。init 时扫不到尚未加载的会话，这里兜底。
+  if (session.mode !== 'wechat') chat.updateSessionMode(sessionId, 'wechat')
   const { configGroupId, modelId } = resolveWechatConfig()
   const newGroup = !session.configGroupId && configGroupId ? configGroupId : undefined
   const newModel = modelId && session.model !== modelId ? modelId : undefined
   if (newGroup || newModel) {
     chat.updateSessionModel(sessionId, newModel ?? session.model, newGroup)
   }
+  const ws = currentWorkspacePath()
+  if (ws && session.projectPath !== ws) chat.updateSessionProjectPath(sessionId, ws)
+  const st = agentState()
+  const editMode = st?.approvalMode === 'full_access' ? 'full_access' : 'confirm_before_change'
+  if (session.projectEditMode !== editMode) chat.setProjectEditMode(sessionId, editMode, false)
 }
 
 /**
- * 桥接先于配置加载初始化；首条微信消息若抢在配置组就绪前到达，会用空配置组
- * 创建会话并被持久化（agent 永远静默失败）。这里最多等 5 秒让配置组加载。
+ * 桥接先于配置加载初始化；首条微信消息若抢在配置组/AgentState 就绪前到达，
+ * 会用空配置组创建会话并被持久化（agent 永远静默失败）。这里最多等 5 秒。
  */
 async function waitForConfigGroups(timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (useConfigStore.getState().configGroups?.length) return
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+async function waitForAgentState(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (agentState()) return
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 }
@@ -118,60 +168,229 @@ export function ensureSession(contactId: string): string | null {
     repairSession(existing)
     return existing
   }
-  const prefs = useEditorStore.getState().preferences
   const chat = useChatStore.getState()
   const { configGroupId, modelId } = resolveWechatConfig()
-  const projectPath =
-    prefs.wechatWorkspaceDir?.trim() ||
-    chat.sessions.find((s) => s.id === chat.activeSessionId)?.projectPath ||
-    useUIStore.getState().rootPath ||
-    ''
-  const sessionId = chat.createSession(configGroupId, projectPath)
+  const st = agentState()
+  const projectPath = st ? st.currentWorkspace || st.sandboxPath : ''
+  const sessionId = chat.createSession(configGroupId, projectPath, { mode: 'wechat' })
   if (!sessionId) return null
   if (modelId) chat.updateSessionModel(sessionId, modelId)
-  if (prefs.wechatApprovalMode === 'full_access') {
-    chat.setProjectEditMode(sessionId, 'full_access')
-  }
+  chat.setProjectEditMode(sessionId, st?.approvalMode === 'full_access' ? 'full_access' : 'confirm_before_change', false)
   sessionByContact.set(contactId, sessionId)
   contactBySession.set(sessionId, contactId)
   persistSessionMap()
   return sessionId
 }
 
-// ── 决策应答 ──────────────────────────────────────────────────────────────
-function collectPendingKinds(sessionId: string): string[] {
-  const cs = useChatStore.getState()
-  const kinds: string[] = []
-  if (cs.pendingApproval?.sessionId === sessionId) kinds.push('approval')
-  if (cs.pendingQuestion?.sessionId === sessionId) kinds.push('question')
-  if (cs.batchApproval?.sessionId === sessionId) kinds.push('batch')
-  if (cs.pendingScope?.sessionId === sessionId) kinds.push('scope')
-  if (cs.decisionBacklog.some((d) => d.sessionId === sessionId)) kinds.push('backlog')
-  if (cs.sessions.find((s) => s.id === sessionId)?.planStatus === 'pending_approval') kinds.push('plan')
-  return kinds
+// ── 工作区切换（信任门） ──────────────────────────────────────────────────
+async function requestWorkspaceSwitch(contactId: string, path: string): Promise<void> {
+  // 已信任目录（含沙盒）直接切换；未信任 → 微信侧确认后才授予。
+  let trusted = false
+  try {
+    trusted = Boolean(await window.electronAPI.authorize(path))
+  } catch {
+    trusted = false
+  }
+  if (trusted) {
+    await applyWorkspace(contactId, path)
+    return
+  }
+  pendingWorkspaceSwitch = { path, contactId }
+  ack(
+    contactId,
+    `🔐 你请求将工作区切换到：${path}\n该目录尚未获得本机信任，确认后微信 Agent 将有权读写该目录。\n回复「批准」切换，「拒绝」取消`,
+  )
 }
 
+async function applyWorkspace(contactId: string, path: string): Promise<void> {
+  const res = await window.electronAPI.wechatGrantWorkspace(path)
+  if (!res?.ok) {
+    ack(contactId, '❌ 切换失败：目录不存在或无法授予信任')
+    return
+  }
+  await saveAgentState({ currentWorkspace: path })
+  ack(contactId, `✅ 已切换到工作区：${path}`)
+}
+
+// ── 命令路由 ──────────────────────────────────────────────────────────────
+const HELP_TEXT = `可用命令：
+/status 查看当前状态（工作区/审批模式/模型）
+/workspace [路径] 切换工作区（绝对路径）；/workspace sandbox 回到沙盒
+/mode approve | full_access 切换审批模式
+/model <模型名> 切换模型
+/group <组名或ID> 切换 API 配置组
+/memory add <内容> | list | clear 管理长期记忆
+/reset 重置（回沙盒 + 清记忆，需 /reset confirm 确认）
+/help 显示本帮助`
+
+async function statusText(): Promise<string> {
+  const st = agentState()
+  const groups = useConfigStore.getState().configGroups ?? []
+  const group = groups.find((g) => g.id === (st?.configGroupId || ''))
+  const workspace = st?.currentWorkspace ? st.currentWorkspace : `沙盒（${st?.sandboxPath ?? '未初始化'}）`
+  const lines = [
+    `📋 WeChat Agent 状态`,
+    `工作区：${workspace}`,
+    `审批模式：${st?.approvalMode === 'full_access' ? '免审批' : '逐条审批'}`,
+    `模型：${st?.modelId || group?.defaultModel || '跟随组默认'}（${group?.name ?? '未选组'}）`,
+    `记忆：${st?.memory?.length ?? 0} 条`,
+  ]
+  return lines.join('\n')
+}
+
+async function workspaceStatusText(): Promise<string> {
+  const st = agentState()
+  if (!st) return '（状态未就绪，请稍后再试）'
+  return `当前工作区：${st.currentWorkspace || `沙盒（${st.sandboxPath}）`}\n切换：/workspace <绝对路径>；回到沙盒：/workspace sandbox`
+}
+
+/** 命令路由：命中返回 true（已处理并回执）；未命中返回 false（作为任务交给 agent）。 */
+async function runCommand(contactId: string, raw: string): Promise<boolean> {
+  const text = raw.trim()
+  let cmdName = ''
+  let rest = ''
+  if (text.startsWith('/')) {
+    const sp = text.split(/\s+/)
+    cmdName = sp[0].slice(1).toLowerCase()
+    rest = text.slice(sp[0].length).trim()
+  } else {
+    // 固定中文短命令（确定性词表）
+    if (text === '状态') {
+      cmdName = 'status'
+    } else if (text === '帮助') {
+      cmdName = 'help'
+    } else if (text === '沙盒') {
+      cmdName = 'workspace'
+      rest = 'sandbox'
+    } else {
+      return false
+    }
+  }
+
+  const st = agentState()
+  switch (cmdName) {
+    case 'help':
+      ack(contactId, HELP_TEXT)
+      return true
+    case 'status':
+      ack(contactId, await statusText())
+      return true
+    case 'workspace': {
+      if (!rest) {
+        ack(contactId, await workspaceStatusText())
+        return true
+      }
+      if (rest.toLowerCase() === 'sandbox') {
+        await saveAgentState({ currentWorkspace: null })
+        ack(contactId, '✅ 已回到沙盒空间')
+        return true
+      }
+      if (!isAbsoluteLocalPath(rest)) {
+        ack(contactId, '❌ 需要绝对路径，例如：/workspace E:\\project')
+        return true
+      }
+      await requestWorkspaceSwitch(contactId, rest)
+      return true
+    }
+    case 'mode': {
+      if (rest === 'approve' || rest === 'full_access') {
+        await saveAgentState({ approvalMode: rest })
+        ack(contactId, rest === 'full_access' ? '✅ 已切换到免审批模式' : '✅ 已切换到逐条审批模式')
+      } else {
+        ack(contactId, '用法：/mode approve 或 /mode full_access')
+      }
+      return true
+    }
+    case 'model': {
+      if (!rest) {
+        ack(contactId, `用法：/model <模型名>。当前：${st?.modelId || '跟随组默认'}`)
+        return true
+      }
+      await saveAgentState({ modelId: rest })
+      ack(contactId, `✅ 模型已设为 ${rest}`)
+      return true
+    }
+    case 'group': {
+      const groups = useConfigStore.getState().configGroups ?? []
+      if (!rest) {
+        ack(contactId, `用法：/group <组名或ID>。可用组：${groups.map((g) => g.name).join('、') || '（无）'}`)
+        return true
+      }
+      const g = groups.find((x) => x.id === rest || x.name === rest)
+      if (!g) {
+        ack(contactId, '❌ 找不到该配置组')
+        return true
+      }
+      await saveAgentState({ configGroupId: g.id, modelId: null })
+      ack(contactId, `✅ 已切换到配置组 ${g.name}（模型跟随组默认）`)
+      return true
+    }
+    case 'memory': {
+      const items = st?.memory ?? []
+      if (rest.startsWith('add ')) {
+        const content = rest.slice(4).trim()
+        if (!content) {
+          ack(contactId, '用法：/memory add <内容>')
+          return true
+        }
+        await saveAgentState({
+          memory: [...items, { id: newMemoryId(), text: content, createdAt: Date.now() }],
+        })
+        ack(contactId, '✅ 已记住')
+      } else if (rest === 'list') {
+        if (items.length === 0) {
+          ack(contactId, '记忆为空。用 /memory add <内容> 添加')
+        } else {
+          ack(contactId, `📝 记忆（${items.length} 条）：\n${items.map((m, i) => `${i + 1}. ${m.text}`).join('\n')}`)
+        }
+      } else if (rest === 'clear') {
+        await saveAgentState({ memory: [] })
+        ack(contactId, '✅ 已清空记忆')
+      } else {
+        ack(contactId, '用法：/memory add <内容> | list | clear')
+      }
+      return true
+    }
+    case 'reset': {
+      pendingReset = true
+      ack(contactId, '⚠️ /reset 将回到沙盒并清空记忆。确认请回复 /reset confirm')
+      return true
+    }
+    default:
+      return false
+  }
+}
+
+async function doReset(contactId: string): Promise<void> {
+  await saveAgentState({ currentWorkspace: null, memory: [] })
+  ack(contactId, '✅ 已重置：回到沙盒、清空记忆')
+}
+
+/** 记忆注入系统提示（任务开始前由 startTurn 传入 runAgentLoop）。 */
+function buildMemoryBlock(): string {
+  const items = agentState()?.memory ?? []
+  if (items.length === 0) return ''
+  const lines = items.map((m) => `- ${m.text}`).join('\n')
+  return `\n\n## 长期记忆（来自微信 /memory 命令，属于 WeChat Agent 的状态）\n${lines}\n`
+}
+
+// ── 决策应答 ──────────────────────────────────────────────────────────────
 const YES_RE = /^(批准|同意|确认|执行|可以|ok|yes|y|1)$/i
 const NO_RE = /^(拒绝|否|不|取消|no|n|2)$/i
 
 /**
  * 判断一条微信文本是否为对该会话待决决策的应答；命中则执行应答并回执，
- * 返回 true（消息被消费）。导出供单元测试直接驱动。
+ * 返回 true（消息被消费）。决策来自 chatStore 的微信后台队列（wechatDecisions），
+ * 不触碰 IDE 槽位与 activeSessionId。导出供单元测试直接驱动。
  */
 export function answerPendingDecision(sessionId: string, contactId: string, rawText: string): boolean {
-  const kinds = collectPendingKinds(sessionId)
-  if (kinds.length === 0) return false
-
-  const cs = useChatStore.getState()
-  if (cs.activeSessionId !== sessionId) {
-    cs.setActiveSession(sessionId)
-    cs.rebalanceDecisions()
-  }
   const s = useChatStore.getState()
+  const wd = s.wechatDecisions
   const text = rawText.trim()
 
-  // 计划审批以 sessionId 为目标，不依赖槽位，最先判。
-  if (s.sessions.find((x) => x.id === sessionId)?.planStatus === 'pending_approval') {
+  // 计划审批以 sessionId 为目标（会话字段），不依赖槽位，最先判。
+  const session = s.sessions.find((x) => x.id === sessionId)
+  if (session?.planStatus === 'pending_approval') {
     if (YES_RE.test(text)) {
       void s.approvePlan(sessionId)
       ack(contactId, '计划已批准，开始执行 ✅')
@@ -186,14 +405,14 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
     return true
   }
 
-  if (s.pendingApproval?.sessionId === sessionId) {
+  if (wd.approval?.sessionId === sessionId) {
     if (YES_RE.test(text)) {
-      s.approveToolCall()
+      s.wechatAnswerApproval(sessionId, true)
       ack(contactId, '已批准 ✅')
       return true
     }
     if (NO_RE.test(text)) {
-      s.rejectToolCall()
+      s.wechatAnswerApproval(sessionId, false)
       ack(contactId, '已拒绝')
       return true
     }
@@ -201,14 +420,14 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
     return true
   }
 
-  if (s.batchApproval?.sessionId === sessionId) {
+  if (wd.batch?.sessionId === sessionId) {
     if (YES_RE.test(text) || /^全部/.test(text)) {
-      s.decideBatchApproval(/^全部/.test(text) ? 'all' : 'confirm')
+      s.wechatAnswerBatch(sessionId, /^全部/.test(text) ? 'all' : 'confirm')
       ack(contactId, '已批准 ✅')
       return true
     }
     if (NO_RE.test(text)) {
-      s.decideBatchApproval('reject')
+      s.wechatAnswerBatch(sessionId, 'reject')
       ack(contactId, '已拒绝')
       return true
     }
@@ -216,19 +435,19 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
     return true
   }
 
-  if (s.pendingScope?.sessionId === sessionId) {
+  if (wd.scope?.sessionId === sessionId) {
     if (/加入计划|add|plan/i.test(text)) {
-      s.resolveScopeDecision('add_to_plan')
+      s.wechatAnswerScope(sessionId, 'add_to_plan')
       ack(contactId, '已加入计划 ✅')
       return true
     }
     if (/切换|switch/i.test(text)) {
-      s.resolveScopeDecision('switch_mode')
+      s.wechatAnswerScope(sessionId, 'switch_mode')
       ack(contactId, '已切换模式 ✅')
       return true
     }
     if (NO_RE.test(text)) {
-      s.resolveScopeDecision('reject')
+      s.wechatAnswerScope(sessionId, 'reject')
       ack(contactId, '已拒绝')
       return true
     }
@@ -236,23 +455,19 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
     return true
   }
 
-  if (s.pendingQuestion?.sessionId === sessionId) {
-    const q = s.pendingQuestion
+  if (wd.question?.sessionId === sessionId) {
+    const q = wd.question
     const num = /^([0-9]+)$/.exec(text)
     let answer = text
     if (num && q.options?.length) {
       const idx = Number(num[1]) - 1
       if (idx >= 0 && idx < q.options.length) answer = q.options[idx]
     }
-    s.answerQuestion(answer)
+    s.wechatAnswerQuestion(sessionId, answer)
     ack(contactId, `已回答：${previewText(answer, 40)}`)
     return true
   }
 
-  if (kinds.includes('backlog')) {
-    ack(contactId, '有条决策正在排队处理，请稍候再回复')
-    return true
-  }
   return false
 }
 
@@ -266,18 +481,29 @@ function beginRun(sessionId: string): void {
   lastRaw.set(sessionId, '')
 }
 
-/** 启动一轮 agent 处理；若被前置守卫静默拦截（无模型组/无工作区）立刻回执指引。 */
+/** 微信 Agent 是否正忙：任一微信会话在运行（共享工作区 → 串行）。 */
+function wechatBusy(): boolean {
+  const cs = useChatStore.getState()
+  return cs.runningSessionIds.some((id) => cs.sessions.find((s) => s.id === id)?.mode === 'wechat')
+}
+
+/** 启动一轮 agent 处理；若被前置守卫静默拦截（无模型组/工作区不可用）立刻回执指引。 */
 function startTurn(sessionId: string, contactId: string, text: string): void {
-  if (useChatStore.getState().runningSessionIds.includes(sessionId)) {
-    // 极小竞态（完成冲刷窗口内又有新轮被拉起）：退回桥接侧排队，
-    // 绝不能把消息送进 chatStore 那个无人消费的队列，也不能重置在跑轮的水位。
-    const pending = pendingBySession.get(sessionId) ?? []
-    pending.push(text)
-    pendingBySession.set(sessionId, pending)
+  const cs = useChatStore.getState()
+  if (cs.runningSessionIds.includes(sessionId) || wechatBusy()) {
+    agentQueue.push({ contactId, sessionId, text })
+    ack(contactId, '⏳ Agent 正在处理其他任务，这条已排队，完成后自动继续')
     return
   }
+  const st = agentState()
+  // 工作区快照：本轮运行期间切换工作区不影响（runAgentLoop 的轮内快照语义）。
+  const workspacePath = st ? st.currentWorkspace || st.sandboxPath : ''
   beginRun(sessionId)
-  void useChatStore.getState().sendMessage(sessionId, text)
+  const extraSystemText = buildMemoryBlock() || undefined
+  void cs.sendMessage(sessionId, text, [], [], {
+    workspacePath: workspacePath || undefined,
+    extraSystemText,
+  })
   // runAgentLoop 的前置守卫（无 API 配置组 / 无工作区等）是静默返回的——它
   // 甚至不会把会话标为 running。sendMessage 的同步前缀已执行完守卫判定，
   // 这里同步检查：没进入 running 就立刻给微信一个明确的失败指引。
@@ -286,53 +512,69 @@ function startTurn(sessionId: string, contactId: string, text: string): void {
     ack(
       contactId,
       session?.configGroupId
-        ? '❌ 处理未启动：需要先配置工作区（设置→功能→微信通道 的「微信工作区」）。'
-        : '❌ 处理未启动：没有可用的 API 模型组。请先在 设置→API 配置 添加模型，再到 设置→功能→微信通道 里为微信选择模型。',
+        ? '❌ 处理未启动：工作区不可用，请用 /workspace 检查或切换'
+        : '❌ 处理未启动：没有可用的 API 模型组。请先在 设置→API 配置 添加模型。',
     )
   }
 }
 
-/** 本轮结束后依次处理桥接侧排队的微信消息（chatStore 的队列是面向 IDE 界面的，不能依赖）。 */
-function drainPending(sessionId: string, contactId: string): void {
-  const pending = pendingBySession.get(sessionId)
-  if (!pending || pending.length === 0) return
-  const nextText = pending.shift()
-  if (!nextText) return
-  if (pending.length === 0) pendingBySession.delete(sessionId)
-  ack(contactId, '继续处理排队消息…')
-  startTurn(sessionId, contactId, nextText)
+/** 本轮结束后依次处理 agent 级排队消息（startTurn 会再次兜底防并发）。 */
+function drainQueue(): void {
+  const next = agentQueue.shift()
+  if (!next) return
+  ack(next.contactId, '继续处理排队消息…')
+  startTurn(next.sessionId, next.contactId, next.text)
 }
 
 async function onInbound(msg: WechatInboundEvent): Promise<void> {
-  if (!channelEnabled()) return
+  if (!channelEnabled() || IS_OFFICE) return
   const contactId = msg.replyTo || msg.from
   if (!contactId) return
   const text = (msg.text ?? '').trim()
   if (!text) return
 
-  console.log(`[wechat-bridge] inbound from ${contactId}: ${previewText(text, 80)}`)
+  console.log(`[wechat-agent] inbound from ${contactId}: ${previewText(text, 80)}`)
 
-  // 优先当作对当前待决决策的应答（不用等配置组加载，审批应答有时效性）。
+  // 1) 工作区切换确认（同一联系人）
+  if (pendingWorkspaceSwitch && pendingWorkspaceSwitch.contactId === contactId) {
+    const pending = pendingWorkspaceSwitch
+    if (YES_RE.test(text)) {
+      pendingWorkspaceSwitch = null
+      await applyWorkspace(contactId, pending.path)
+    } else if (NO_RE.test(text)) {
+      pendingWorkspaceSwitch = null
+      ack(contactId, '已取消切换')
+    } else {
+      ack(contactId, '请回复「批准」切换或「拒绝」取消')
+    }
+    return
+  }
+
+  // 2) /reset 二次确认
+  if (pendingReset) {
+    pendingReset = false
+    if (text.toLowerCase() === '/reset confirm') {
+      await doReset(contactId)
+    }
+    // 非确认输入按普通消息继续处理
+  }
+
+  // 3) 命令路由（确定性，不依赖配置/会话状态）
+  if (await runCommand(contactId, text)) return
+
+  // 4) 决策应答（审批应答有时效性，优先于任务排队）
+  await waitForAgentState()
   const mapped = sessionByContact.get(contactId)
   if (mapped && answerPendingDecision(mapped, contactId, text)) return
 
-  // 配置组可能尚未加载完成——等一小会儿，避免用空配置组创建坏会话。
+  // 5) 新任务：等配置组就绪，避免用空配置组创建坏会话。
   await waitForConfigGroups()
-
   const sessionId = ensureSession(contactId)
   if (!sessionId) return
 
-  const cs = useChatStore.getState()
-  if (cs.activeSessionId !== sessionId) {
-    cs.setActiveSession(sessionId)
-    cs.rebalanceDecisions()
-  }
-  if (cs.runningSessionIds.includes(sessionId)) {
-    // agent 忙：桥接侧排队，本轮结束后由 drainPending 自动继续。
-    const pending = pendingBySession.get(sessionId) ?? []
-    pending.push(text)
-    pendingBySession.set(sessionId, pending)
-    ack(contactId, '⏳ 正在处理上一条任务，这条已排队，完成后自动继续')
+  if (useChatStore.getState().runningSessionIds.includes(sessionId) || wechatBusy()) {
+    agentQueue.push({ contactId, sessionId, text })
+    ack(contactId, '⏳ Agent 正在处理其他任务，这条已排队，完成后自动继续')
     return
   }
   ack(contactId, '已收到，开始处理…')
@@ -375,6 +617,8 @@ async function flushFor(contactId: string, sessionId: string, force: boolean): P
   const acc = filteredAcc.get(sessionId) ?? ''
   let sent = sentLen.get(sessionId) ?? 0
   for (;;) {
+    // 发送期间新一轮已开始 → 立即停止，旧轮内容不再外发（防跨轮重复发送）。
+    if ((runGen.get(sessionId) ?? 0) !== gen) return
     const chunk = nextSendChunk(acc, sent, force)
     if (!chunk) break
     const res = await useWechatStore.getState().sendText(contactId, chunk)
@@ -429,45 +673,33 @@ async function flushComplete(sessionId: string, contactId: string): Promise<void
 }
 
 // ── 决策通知 ──────────────────────────────────────────────────────────────
+/** 把本会话的后台决策（微信队列）转成微信选项消息；计划审批走会话字段。 */
 function notifyDecisions(sessionId: string, contactId: string, state: ChatState): void {
-  // 会话不 active 时决策会被停入 decisionBacklog，agent 一直等审批而微信侧
-  // 永远收不到通知——把会话提回前台再平衡，让决策回到槽位（与 IDE 自身
-  // 切换会话时的行为一致；被交换停下的对侧决策在其会话再次激活时回提）。
-  let current = state
-  if (current.decisionBacklog.some((d) => d.sessionId === sessionId)) {
-    const cs = useChatStore.getState()
-    if (cs.activeSessionId !== sessionId) {
-      cs.setActiveSession(sessionId)
-      cs.rebalanceDecisions()
-      current = useChatStore.getState()
-    }
-  }
-
+  const wd = state.wechatDecisions
   const present = new Set<string>()
   let notice: string | null = null
   let kind: string | null = null
 
-  const approval = current.pendingApproval
-  if (approval?.sessionId === sessionId) {
+  if (wd.approval?.sessionId === sessionId) {
     kind = 'approval'
-    notice = `🔐 微信会话请求批准执行工具\n工具：${approval.toolCall.name}\n${previewText(approval.preview)}\n回复「批准」执行，「拒绝」取消`
-  } else if (current.batchApproval?.sessionId === sessionId) {
+    notice = `🔐 微信 Agent 请求批准执行工具\n工具：${wd.approval.toolCall.name}\n${previewText(wd.approval.preview)}\n回复「批准」执行，「拒绝」取消`
+  } else if (wd.batch?.sessionId === sessionId) {
     kind = 'batch'
-    const names = current.batchApproval.tools.map((t) => t.name).join('、')
-    notice = `🔐 批量批准（${current.batchApproval.tools.length} 项）：${previewText(names, 120)}\n回复「批准」全部执行，「拒绝」取消`
-  } else if (current.pendingScope?.sessionId === sessionId) {
+    const names = wd.batch.tools.map((t) => t.name).join('、')
+    notice = `🔐 批量批准（${wd.batch.tools.length} 项）：${previewText(names, 120)}\n回复「批准」全部执行，「拒绝」取消`
+  } else if (wd.scope?.sessionId === sessionId) {
     kind = 'scope'
-    notice = `🔐 作用域决策：${previewText(current.pendingScope.preview)}\n涉及：${previewText(current.pendingScope.paths.join('、'), 120)}\n回复「加入计划」/「切换模式」/「拒绝」`
-  } else if (current.pendingQuestion?.sessionId === sessionId) {
+    notice = `🔐 作用域决策：${previewText(wd.scope.preview)}\n涉及：${previewText(wd.scope.paths.join('、'), 120)}\n回复「加入计划」/「切换模式」/「拒绝」`
+  } else if (wd.question?.sessionId === sessionId) {
     kind = 'question'
-    const q = current.pendingQuestion
+    const q = wd.question
     const opts = q.options?.length
       ? `\n${q.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`
       : ''
     notice = `❓ ${q.question}${opts}\n直接回复答案${q.options?.length ? '或编号' : ''}`
   }
 
-  const sess = current.sessions.find((s) => s.id === sessionId)
+  const sess = state.sessions.find((s) => s.id === sessionId)
   if (sess?.planStatus === 'pending_approval') {
     kind = 'plan'
     notice = `📋 计划待批准\n${previewText(sess.planContent, 300)}\n回复「批准计划」开始执行，或「放弃计划」取消`
@@ -488,18 +720,28 @@ function notifyDecisions(sessionId: string, contactId: string, state: ChatState)
 }
 
 // ── 主循环 ────────────────────────────────────────────────────────────────
+/** 会话加载完成后的首次 tick 做历史迁移（init 时 sessions 还没加载，扫不到）。 */
+let migratedSessionModes = false
+
 function handleChatTick(state: ChatState): void {
   if (!channelEnabled()) return
+  if (!migratedSessionModes && state.sessions.length > 0) {
+    migratedSessionModes = true
+    for (const sessionId of sessionByContact.values()) {
+      const s = state.sessions.find((x) => x.id === sessionId)
+      if (s && s.mode !== 'wechat') useChatStore.getState().updateSessionMode(sessionId, 'wechat')
+    }
+  }
   const runningNow = new Set(state.runningSessionIds)
   for (const [contactId, sessionId] of sessionByContact) {
     notifyDecisions(sessionId, contactId, state)
     trackStreaming(sessionId, state)
     if (runningSnapshot.has(sessionId) && !runningNow.has(sessionId)) {
-      // 本轮结束：先冲刷剩余输出，再依次处理微信侧排队的下一条消息。
+      // 本轮结束：先冲刷剩余输出，再处理 agent 级排队的下一条消息。
       // 串行执行，避免 flushComplete 的异步发送与新一轮的水位重置交错。
       void (async () => {
         await flushComplete(sessionId, contactId)
-        drainPending(sessionId, contactId)
+        drainQueue()
       })()
     }
   }
@@ -513,6 +755,8 @@ function handleGatewayEvent(ev: WechatGatewayEvent): void {
 /** 应用启动时调用一次（App.tsx）。返回清理函数。 */
 export function initWechatBridge(): () => void {
   if (initialized) return () => {}
+  // 微信 Agent 只在对话窗口（main）运行；一人公司窗口不重复处理入站消息。
+  if (IS_OFFICE) return () => {}
   initialized = true
 
   try {
@@ -531,6 +775,23 @@ export function initWechatBridge(): () => void {
   }
 
   const offStore = useWechatStore.getState().init()
+  // WeChat Agent 状态与微信会话（mode='wechat'）从主进程拉取；会话并入本窗口
+  // 状态供 runAgentLoop 定位，但不显示在主界面列表。
+  void useWechatStore.getState().loadAgentState()
+  void (async () => {
+    try {
+      const list = await window.electronAPI.getSessions('wechat')
+      useChatStore.getState().loadWechatSessions(list)
+    } catch {
+      // 拉取失败不阻塞桥接：下一次入站会重建会话映射
+    }
+  })()
+  // 迁移：历史上以 mode='main' 创建的微信会话 → 'wechat'，隔离出主界面。
+  for (const sessionId of sessionByContact.values()) {
+    const s = useChatStore.getState().sessions.find((x) => x.id === sessionId)
+    if (s && s.mode !== 'wechat') useChatStore.getState().updateSessionMode(sessionId, 'wechat')
+  }
+
   const offGateway = window.electronAPI.onWechatEvent(handleGatewayEvent)
   const offChat = useChatStore.subscribe(handleChatTick)
   runningSnapshot = new Set(useChatStore.getState().runningSessionIds)

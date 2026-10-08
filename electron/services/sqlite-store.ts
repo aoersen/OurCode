@@ -3,7 +3,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { CryptoService } from './crypto'
-import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow } from '../../shared/types'
+import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow, WechatAgentState } from '../../shared/types'
 import { DEFAULT_PREFERENCES } from '../../shared/constants'
 
 /** 每个会话保留的子任务记录条数上限（一人公司任务流的回看深度）。 */
@@ -373,6 +373,12 @@ export class SQLiteStore {
         trusted_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS wechat_agent_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id, sort_order);
       CREATE INDEX IF NOT EXISTS idx_sessions_config ON chat_sessions(config_group_id);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at);
@@ -469,9 +475,11 @@ export class SQLiteStore {
   }
 
   // Chat Sessions
-  getSessions(mode?: 'main' | 'office'): ChatSession[] {
+  getSessions(mode?: 'main' | 'office' | 'wechat'): ChatSession[] {
     // 一人公司与对话模式完全隔离:office 窗口只看到 mode='office' 的会话,
     // main 窗口只看到 mode='main' / 无模式(升级前的旧会话)的会话。
+    // 微信 Agent 会话（mode='wechat'）不进主界面：由微信桥接单独按
+    // mode='wechat' 拉取。
     // 开公司不会把普通 agent 模式的对话带过来;反之 main 窗口也看不到公司会话。
     const sessions = !mode
       ? (this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC').all() as any[])
@@ -481,11 +489,17 @@ export class SQLiteStore {
                WHERE mode = 'office'
                ORDER BY updated_at DESC`
           ).all() as any[])
-        : (this.db.prepare(
-            `SELECT * FROM chat_sessions
-               WHERE mode = 'main' OR mode IS NULL OR mode = ''
-               ORDER BY updated_at DESC`
-          ).all() as any[])
+        : mode === 'wechat'
+          ? (this.db.prepare(
+              `SELECT * FROM chat_sessions
+                 WHERE mode = 'wechat'
+                 ORDER BY updated_at DESC`
+            ).all() as any[])
+          : (this.db.prepare(
+              `SELECT * FROM chat_sessions
+                 WHERE mode = 'main' OR mode IS NULL OR mode = ''
+                 ORDER BY updated_at DESC`
+            ).all() as any[])
 
     // Load all messages in one query and bucket by session, instead of one
     // query per session (N+1) — opening the sidebar with many sessions used to
@@ -827,6 +841,33 @@ export class SQLiteStore {
     })
 
     saveMany(Object.entries(prefs))
+  }
+
+  // ── 微信 Agent 状态（WechatAgentState）──────────────────────────────────
+  // 与用户偏好分离：微信 agent 的运行期状态（当前工作区/审批模式/模型/记忆）
+  // 由对话命令调整，经 wechat:saveAgentState IPC 写回；偏好只作初始值。
+  getWechatAgentState(): WechatAgentState | null {
+    const row = this.db.prepare('SELECT state FROM wechat_agent_state WHERE id = 1').get() as
+      | { state: string }
+      | undefined
+    if (!row) return null
+    try {
+      return JSON.parse(row.state) as WechatAgentState
+    } catch {
+      return null
+    }
+  }
+
+  saveWechatAgentState(state: WechatAgentState): void {
+    this.db.prepare(`
+      INSERT INTO wechat_agent_state (id, state, updated_at) VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at
+    `).run(JSON.stringify(state), state.updatedAt ?? Date.now())
+  }
+
+  /** 会话 mode 迁移/调整（微信桥接把历史会话标记为 'wechat' 隔离出主界面）。 */
+  updateSessionMode(sessionId: string, mode: 'main' | 'office' | 'wechat'): void {
+    this.db.prepare('UPDATE chat_sessions SET mode = ? WHERE id = ?').run(mode, sessionId)
   }
 
   // ── Workspace trust ──────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, session, Notification, protocol, type WebContents, type IpcMainInvokeEvent, type MessageBoxOptions } from 'electron'
 import { join, resolve, dirname, relative, isAbsolute, extname, basename } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, unlinkSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
 import { exec, execFile, spawn } from 'child_process'
@@ -9,7 +9,7 @@ import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { AppUpdater } from './services/app-updater'
 import { WechatChannel } from './services/wechat-channel'
-import type { WechatGatewayEvent } from '../shared/types'
+import type { WechatGatewayEvent, WechatAgentState } from '../shared/types'
 import { FileSystemService } from './services/file-system'
 import { FileIndexService } from './services/file-index'
 import { SQLiteStore } from './services/sqlite-store'
@@ -1641,7 +1641,7 @@ function registerIpcHandlers(): void {
     return store.getCrypto().decryptForImport(encryptedData, password)
   })
 
-  ipcMain.handle('store:getSessions', async (_event, mode?: 'main' | 'office') => {
+  ipcMain.handle('store:getSessions', async (_event, mode?: 'main' | 'office' | 'wechat') => {
     return store.getSessions(mode)
   })
 
@@ -2929,6 +2929,90 @@ app.whenReady().then(() => {
     remove: (p) => store.untrustWorkspace(p),
   })
   trust.addAppOwned(userDataPath)
+
+  // ── 微信 Agent：沙盒工作区与状态初始化 ──────────────────────────────────
+  // 沙盒 = WeChat Agent 的默认工作区。安装目录优先（打包版 = exe 所在目录，
+  // 开发版 = 项目根目录），不可写时回退 userData；选定后写入 AgentState 固定，
+  // 下次启动沿用（避免路径漂移）。沙盒是应用自建目录，注册为 app-owned 免信任。
+  const installDir = app.isPackaged ? dirname(app.getPath('exe')) : app.getAppPath()
+  const userDataSandbox = join(userDataPath, 'wechat-agent', 'sandbox')
+  const installSandbox = join(installDir, 'wechat-agent', 'sandbox')
+
+  const probeWritableDir = (dir: string): boolean => {
+    try {
+      mkdirSync(dir, { recursive: true })
+      const probe = join(dir, `.probe-${Date.now()}`)
+      writeFileSync(probe, 'ok')
+      unlinkSync(probe)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const pickSandboxPath = (): string => {
+    // 上次选定的沙盒仍在且可写 → 沿用（安装目录更换后也不漂移）。
+    const saved = store.getWechatAgentState()
+    if (saved?.sandboxPath && probeWritableDir(saved.sandboxPath)) return saved.sandboxPath
+    if (probeWritableDir(installSandbox)) return installSandbox
+    return userDataSandbox
+  }
+
+  // 微信通道关闭时不建沙盒、不初始化状态（避免给不用的用户留下空目录）。
+  const wechatAgentEnabled = store.getPreferences().wechatEnabled !== false
+
+  const sandboxPath = wechatAgentEnabled ? pickSandboxPath() : userDataSandbox
+  if (wechatAgentEnabled) {
+    mkdirSync(sandboxPath, { recursive: true })
+    trust.addAppOwned(sandboxPath)
+    registerRoot(sandboxPath)
+  }
+
+  const ensureWechatAgentState = (): WechatAgentState | null => {
+    if (!wechatAgentEnabled) return null
+    const saved = store.getWechatAgentState()
+    if (saved) {
+      if (saved.sandboxPath !== sandboxPath) {
+        const merged: WechatAgentState = { ...saved, sandboxPath, updatedAt: Date.now() }
+        store.saveWechatAgentState(merged)
+        return merged
+      }
+      return saved
+    }
+    const prefs = store.getPreferences()
+    const state: WechatAgentState = {
+      sandboxPath,
+      currentWorkspace: null,
+      approvalMode: prefs.wechatApprovalMode === 'full_access' ? 'full_access' : 'approve',
+      configGroupId: prefs.wechatConfigGroupId ?? '',
+      modelId: prefs.wechatModelId ?? null,
+      memory: [],
+      updatedAt: Date.now(),
+    }
+    store.saveWechatAgentState(state)
+    return state
+  }
+  ensureWechatAgentState()
+
+  // 微信 Agent 状态 IPC：状态读写 / 工作区信任注册 / 会话 mode 迁移。
+  ipcMain.handle(IPC_CHANNELS.WECHAT_GET_AGENT_STATE, () => {
+    return store.getWechatAgentState()
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_SAVE_AGENT_STATE, (_event, state: WechatAgentState) => {
+    if (!state || typeof state !== 'object' || typeof state.sandboxPath !== 'string') return { ok: false }
+    store.saveWechatAgentState({ ...state, updatedAt: Date.now() })
+    return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_GRANT_WORKSPACE, (_event, path: string) => {
+    // 微信侧「批准」确认后由桥接调用；与 fs:openProject 走同一条信任注册路径
+    // （存在性校验 + 持久化 grant + 注册根目录）。
+    return { ok: grantRendererProject(String(path ?? '')) }
+  })
+  ipcMain.handle(IPC_CHANNELS.WECHAT_UPDATE_SESSION_MODE, (_event, sessionId: string, mode: 'main' | 'office' | 'wechat') => {
+    if (typeof sessionId !== 'string' || !['main', 'office', 'wechat'].includes(mode)) return { ok: false }
+    store.updateSessionMode(sessionId, mode)
+    return { ok: true }
+  })
   backup = new BackupService(join(userDataPath, 'backups'))
   // Tool-output spill store: full outputs of oversized tool results live under
   // userData/spill/<session>/ (read_file can page them back). Sweep the TTL on

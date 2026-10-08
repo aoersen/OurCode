@@ -147,6 +147,10 @@ export const IPC_CHANNELS = {
   WECHAT_LOGOUT: 'wechat:logout',
   WECHAT_SET_ENABLED: 'wechat:setEnabled',
   WECHAT_EVENT: 'wechat:event',
+  WECHAT_GET_AGENT_STATE: 'wechat:getAgentState',
+  WECHAT_SAVE_AGENT_STATE: 'wechat:saveAgentState',
+  WECHAT_GRANT_WORKSPACE: 'wechat:grantWorkspace',
+  WECHAT_UPDATE_SESSION_MODE: 'wechat:updateSessionMode',
 } as const
 
 // Default Model Parameters

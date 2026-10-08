@@ -11,7 +11,7 @@ interface ChatSidebarProps {
 export default function ChatSidebar({ onClose }: ChatSidebarProps) {
   // Individual selectors — a whole-store subscription would re-render the
   // session list on every streaming chunk / queue update of ANY session.
-  const sessions = useChatStore((s) => s.sessions)
+  const sessions = useChatStore((s) => s.sessions).filter((sess) => sess.mode !== 'wechat')
   const activeSessionId = useChatStore((s) => s.activeSessionId)
   const runningSessionIds = useChatStore((s) => s.runningSessionIds)
   const pendingQuestion = useChatStore((s) => s.pendingQuestion)

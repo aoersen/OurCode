@@ -61,3 +61,6 @@ e2e/*.png
 
 # Docs (not committed per user request)
 docs/
+
+# WeChat Agent sandbox (dev: created next to the app in the repo root)
+wechat-agent/

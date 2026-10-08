@@ -804,6 +804,24 @@ export interface ChatState {
    *  whatever they currently hold for a different session. */
   rebalanceDecisions: () => void
 
+  // ── 微信 Agent 后台决策通道 ────────────────────────────────────────────
+  /** 微信会话（mode='wechat'）的待决决策：不进 UI 槽位、不抢占 activeSession，
+   *  由微信桥接读取并通过对话应答（批准/拒绝/编号）。槽位机制只服务 IDE 会话。 */
+  wechatDecisions: {
+    approval: NonNullable<ChatState['pendingApproval']> | null
+    question: NonNullable<ChatState['pendingQuestion']> | null
+    batch: NonNullable<ChatState['batchApproval']> | null
+    scope: NonNullable<ChatState['pendingScope']> | null
+  }
+  /** 微信应答已批准/已拒绝工具审批；返回 false = 该会话当前没有待决审批。 */
+  wechatAnswerApproval: (sessionId: string, approve: boolean) => boolean
+  /** 微信应答提问（原文或选项文本）；返回 false = 该会话当前没有待答提问。 */
+  wechatAnswerQuestion: (sessionId: string, answer: string) => boolean
+  /** 微信应答批量批准；返回 false = 该会话当前没有待决批量批准。 */
+  wechatAnswerBatch: (sessionId: string, decision: 'confirm' | 'all' | 'reject') => boolean
+  /** 微信应答计划外写入决策；返回 false = 该会话当前没有待决作用域决策。 */
+  wechatAnswerScope: (sessionId: string, decision: 'add_to_plan' | 'switch_mode' | 'reject') => boolean
+
   // ── Inline decision dock (docked above the mode bar, replaces popups) ──
   /** Pending regenerate / revert-all confirmation rendered inline in the
    *  conversation panel instead of a popup dialog. */
@@ -885,7 +903,13 @@ export interface ChatState {
 
   // Session management
   loadSessions: () => Promise<void>
-  createSession: (configGroupId: string, projectPath?: string) => string
+  /** 微信桥接专用：把 mode='wechat' 的会话并入本窗口状态（不进主界面列表）。 */
+  loadWechatSessions: (sessions: ChatSession[]) => void
+  /** 微信桥接专用：本轮任务开始前把当前工作区快照进会话记录。 */
+  updateSessionProjectPath: (sessionId: string, projectPath: string) => void
+  /** 微信桥接专用：历史会话迁移 mode（旧会话标记为 'wechat' 隔离出主界面）。 */
+  updateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => void
+  createSession: (configGroupId: string, projectPath?: string, opts?: { mode?: 'main' | 'office' | 'wechat' }) => string
   // 一人公司角色员工（M4）：员工会话对用户隐藏，由总监经 send_message 派活，
   // 完成后主动回报。ensureWorkers 幂等补齐项目的最低编制；addWorker/removeWorker
   // 支持研发/测试动态增员（各保留最少 1 名——调用方保证）。
@@ -909,7 +933,7 @@ export interface ChatState {
   rollActiveSessionAwayFrom: (projectPath: string) => void
 
   // Agent mode + plan approval
-  setProjectEditMode: (sessionId: string, mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access') => void
+  setProjectEditMode: (sessionId: string, mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access', recordLast?: boolean) => void
   // Target mode: the agent keeps working autonomously (auto-approve tool calls,
   // auto-continue after rounds are exhausted) until the user stops it.
   setTargetMode: (sessionId: string, enabled: boolean) => void
@@ -932,7 +956,7 @@ export interface ChatState {
   clearMessages: (sessionId: string) => void
 
   // Core functionality
-  sendMessage: (sessionId: string, content: string, contextFiles?: string[], attachments?: MessageAttachment[]) => Promise<void>
+  sendMessage: (sessionId: string, content: string, contextFiles?: string[], attachments?: MessageAttachment[], opts?: { workspacePath?: string; extraSystemText?: string }) => Promise<void>
   regenerateFromMessage: (sessionId: string, msgId: string) => Promise<void>
   stopGeneration: (sessionId: string) => void
 
@@ -1449,11 +1473,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   batchApproval: null,
   pendingScope: null,
   decisionBacklog: [],
+  wechatDecisions: { approval: null, question: null, batch: null, scope: null },
   inlineConfirm: null,
   targetModeStatus: null,
 
   offerDecision: (decision) => {
     const state = get()
+    // 微信 Agent 会话的决策走后台队列：不进 UI 槽位、不碰 activeSession，
+    // 由微信桥接读取 wechatDecisions 并通过对话应答。
+    const session = state.sessions.find((s) => s.id === decision.sessionId)
+    if (session?.mode === 'wechat') {
+      // 队列键名与 ParkedDecision.kind 一致（approval/question/batch/scope），
+      // 与槽位字段名（pendingApproval 等）不同——不要用 DECISION_SLOT 映射。
+      set((s) => ({ wechatDecisions: { ...s.wechatDecisions, [decision.kind]: decision.value } }))
+      return
+    }
     const current = readSlot(state, decision.kind)
     if (!current && decision.sessionId === state.activeSessionId) {
       set(slotPatch(decision.kind, decision.value))
@@ -1462,6 +1496,66 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Parked rather than swapped in: overwriting the slot would strand the other
     // session's run on a dialog that can no longer be answered.
     set((s) => ({ decisionBacklog: [...s.decisionBacklog, decision] }))
+  },
+
+  wechatAnswerApproval: (sessionId, approve) => {
+    const d = get().wechatDecisions.approval
+    if (!d || d.sessionId !== sessionId) return false
+    _approvalResolves.get(sessionId)?.(approve)
+    _approvalResolves.delete(sessionId)
+    set((s) => ({ wechatDecisions: { ...s.wechatDecisions, approval: null } }))
+    return true
+  },
+
+  wechatAnswerQuestion: (sessionId, answer) => {
+    const d = get().wechatDecisions.question
+    if (!d || d.sessionId !== sessionId) return false
+    const timer = _questionTimers.get(sessionId)
+    if (timer) clearTimeout(timer)
+    _questionTimers.delete(sessionId)
+    _questionResolves.get(sessionId)?.(answer)
+    _questionResolves.delete(sessionId)
+    set((s) => {
+      const questionGate = { ...s.questionGate }
+      delete questionGate[sessionId]
+      return { wechatDecisions: { ...s.wechatDecisions, question: null }, questionGate }
+    })
+    return true
+  },
+
+  wechatAnswerBatch: (sessionId, decision) => {
+    const d = get().wechatDecisions.batch
+    if (!d || d.sessionId !== sessionId) return false
+    _batchResolves.get(sessionId)?.(decision)
+    _batchResolves.delete(sessionId)
+    set((s) => ({ wechatDecisions: { ...s.wechatDecisions, batch: null } }))
+    return true
+  },
+
+  wechatAnswerScope: (sessionId, decision) => {
+    const d = get().wechatDecisions.scope
+    if (!d || d.sessionId !== sessionId) return false
+    _scopeResolves.get(sessionId)?.(decision !== 'reject')
+    _scopeResolves.delete(sessionId)
+    if (decision === 'add_to_plan') {
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === sessionId
+            ? {
+                ...sess,
+                planDeliverables: Array.from(new Set([...(sess.planDeliverables || []), ...d.paths])),
+                updatedAt: Date.now(),
+              }
+            : sess
+        ),
+      }))
+      void get().saveSession(sessionId)
+    } else if (decision === 'switch_mode') {
+      // 微信侧切换模式不算 IDE 用户的选择，不写全局「最后编辑模式」记忆。
+      get().setProjectEditMode(sessionId, 'auto_edit', false)
+    }
+    set((s) => ({ wechatDecisions: { ...s.wechatDecisions, scope: null } }))
+    return true
   },
 
   withdrawDecisions: (sessionId) => {
@@ -1477,6 +1571,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const kept = s.decisionBacklog.filter((d) => d.sessionId !== sessionId)
       const patch: Partial<ChatState> = kept.length === s.decisionBacklog.length ? {} : { decisionBacklog: kept }
       if (s.pendingScope?.sessionId === sessionId) patch.pendingScope = null
+      // 微信后台队列同样清理（其 run 已结束/停止）。
+      const wd = { ...s.wechatDecisions }
+      if (wd.approval?.sessionId === sessionId) wd.approval = null
+      if (wd.question?.sessionId === sessionId) wd.question = null
+      if (wd.batch?.sessionId === sessionId) wd.batch = null
+      if (wd.scope?.sessionId === sessionId) wd.scope = null
+      patch.wechatDecisions = wd
       return patch
     })
   },
@@ -2180,20 +2281,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  createSession: (configGroupId, projectPath) => {
+  loadWechatSessions: (list) => {
+    if (!list || list.length === 0) return
+    // 微信会话不进主界面列表，但必须存在于本窗口状态里：桥接靠
+    // sessions.find 取会话、runAgentLoop 也要能定位到它。
+    set((s) => {
+      const known = new Set(s.sessions.map((x) => x.id))
+      const incoming = list
+        .map((x) => ({ ...reconcileInterruptedRuns(x), agentMode: 'agent' as const, mode: 'wechat' as const }))
+        .filter((x) => !known.has(x.id))
+      for (const x of incoming) _persistedSessionIds.add(x.id)
+      if (incoming.length === 0) return s
+      return { sessions: [...incoming, ...s.sessions] }
+    })
+  },
+
+  updateSessionProjectPath: (sessionId, projectPath) => {
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === sessionId && sess.projectPath !== projectPath
+          ? { ...sess, projectPath, updatedAt: Date.now() }
+          : sess
+      ),
+    }))
+    void get().saveSession(sessionId)
+  },
+
+  updateSessionMode: (sessionId, mode) => {
+    set((s) => ({
+      sessions: s.sessions.map((sess) => (sess.id === sessionId ? { ...sess, mode } : sess)),
+    }))
+    void window.electronAPI.wechatUpdateSessionMode(sessionId, mode)
+    void get().saveSession(sessionId)
+  },
+
+  createSession: (configGroupId, projectPath, opts?: { mode?: 'main' | 'office' | 'wechat' }) => {
     // The project binding is captured at creation so the session shows up under
     // its project in the left sidebar. Callers may pass an explicit project
     // (e.g. the "新建对话" button on a project list item) — otherwise fall back
     // to the current project (the active session's project, since the current
     // project follows the conversation), then the folder being browsed.
     const rootPath = projectPath || getCurrentProjectPath() || document.getElementById('file-tree-root')?.getAttribute('data-root-path') || useUIStore.getState().rootPath || ''
+    const sessionMode = opts?.mode ?? WINDOW_MODE
+    const isWechat = sessionMode === 'wechat'
     // 一人公司排他：办公室建会话走 targetMode 直置（见下），绕过了 setTargetMode
     // 的「同项目仅一个目标模式会话」门禁。这里只拦「正在运行」的公司——同项目
     // 有目标模式会话在运行时，直接激活既有会话而不是再开一家，防止两个监管对
     // 同一项目双跑（状态文件互相覆盖、预算分别记账）。**未在运行的既有会话不
     // 占位**：新建任务 = 新会话（干净上下文），旧会话保留在历史区回看；否则会
     // 出现「我没在跑任务，却提示已有公司在运营」的误导（会话存在 ≠ 在运营）。
-    if (IS_OFFICE && rootPath) {
+    if (IS_OFFICE && !isWechat && rootPath) {
       const running = get().sessions.find(
         (s) =>
           s.targetMode === true &&
@@ -2223,27 +2360,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // gone. The session still records its workspace (or the default project)
       // so the agent loop has somewhere to operate.
       agentMode: 'agent',
-      // The last edit mode (手动确认/完全访问/自动编辑/计划) also carries over —
-      // opening a new window / chat keeps the mode the user had selected.
-      projectEditMode: getLastProjectEditMode() ?? undefined,
+      // 微信会话不继承 IDE 用户的最后编辑模式：审批行为由 AgentState 决定，
+      // 桥接层创建会话后按 approvalMode 显式设置（approve → confirm_before_change）。
+      projectEditMode: isWechat ? undefined : getLastProjectEditMode() ?? undefined,
       todos: [],
       planStatus: 'none',
       projectPath: rootPath || undefined,
       // 会话所属窗口模式：一人公司窗口的会话与对话窗口完全隔离（SQLite mode 过滤）。
-      mode: WINDOW_MODE,
+      // 微信 Agent 会话 mode='wechat'：不进主界面列表，由桥接单独加载。
+      mode: sessionMode,
       // 一人公司窗口的会话一律默认进入目标模式：办公室的对话就是「派活给公司」，
       // 而非普通 agent 对话。此前只有 App 启动兜底会话被置位 targetMode，其余
       // 入口（双击项目/打开文件夹/新建任务对话）建出的会话都是普通 agent 模式——
       // 在办公室右下对话区看起来就是一条普通对话（无目标条/无监管调度）。
       // 主窗口会话保持默认关闭。
-      targetMode: IS_OFFICE || undefined,
+      targetMode: !isWechat && IS_OFFICE ? true : undefined,
     }
 
     set((s) => ({
       sessions: [session, ...s.sessions],
-      activeSessionId: id,
+      // 微信 Agent 会话不抢占 IDE 当前会话（后台 agent，不打断用户）。
+      activeSessionId: isWechat ? s.activeSessionId : id,
     }))
-    localStorage.setItem(LAST_SESSION_KEY, id)
+    if (!isWechat) localStorage.setItem(LAST_SESSION_KEY, id)
 
     // 新会话先不落盘：创建即保存会让"新建对话"在磁盘上堆积一堆没有消息的
     // 空白会话（重启后全部加载回来）。首条消息发出后才会持久化——发送流程
@@ -2516,8 +2655,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ───────────── Agent mode / plan / todo ─────────────
 
-  setProjectEditMode: (sessionId, mode) => {
-    try { localStorage.setItem(LAST_PROJECT_EDIT_MODE_KEY, mode) } catch { /* ignore */ }
+  setProjectEditMode: (sessionId, mode, recordLast = true) => {
+    // 微信 Agent 的审批模式变化不算 IDE 用户的选择，不写全局「最后编辑模式」。
+    if (recordLast) { try { localStorage.setItem(LAST_PROJECT_EDIT_MODE_KEY, mode) } catch { /* ignore */ } }
     set((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === sessionId ? { ...sess, projectEditMode: mode, updatedAt: Date.now() } : sess
@@ -2867,7 +3007,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveSession(sessionId)
   },
 
-  sendMessage: async (sessionId, content, contextFiles = [], attachments = []) => {
+  sendMessage: async (sessionId, content, contextFiles = [], attachments = [], opts) => {
     if (!sessionId) return
 
     // One agent loop per session: while it is generating, type-ahead messages
@@ -2907,7 +3047,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })()
     }
 
-    await runAgentLoop(sessionId)
+    await runAgentLoop(sessionId, opts ? { workspacePath: opts.workspacePath, extraSystemText: opts.extraSystemText } : undefined)
   },
 
   regenerateFromMessage: async (sessionId, msgId) => {
@@ -3317,7 +3457,7 @@ function flushUsageEvents(events: UsageEvent[]): void {
  */
 async function runAgentLoop(
   sessionId: string,
-  opts?: { agentModeOverride?: 'chat' | 'agent'; extraSystemText?: string; resumeRunId?: string; planApproved?: boolean },
+  opts?: { agentModeOverride?: 'chat' | 'agent'; extraSystemText?: string; resumeRunId?: string; planApproved?: boolean; workspacePath?: string },
 ): Promise<void> {
   const chatStore = useChatStore.getState()
   const session = chatStore.sessions.find((s) => s.id === sessionId)
@@ -3325,6 +3465,10 @@ async function runAgentLoop(
 
   const configGroup = useConfigStore.getState().configGroups.find((g) => g.id === session.configGroupId)
   if (!configGroup) return
+
+  // 本轮工作区快照：微信 Agent 会话由桥接在任务开始前传入（AgentState 的
+  // currentWorkspace 快照），运行期间切换工作区不影响本轮（轮内快照语义）。
+  const workspacePath = opts?.workspacePath || session.projectPath || undefined
 
   const agentMode = opts?.agentModeOverride || 'agent'
   // Target mode: the agent runs the autonomous .ourcode/targemode/ workflow
@@ -3357,7 +3501,9 @@ async function runAgentLoop(
   // project selected the session must not run tool calls against a stale
   // workspace path. The app-owned default project is ensured at startup, so
   // this only fires when the user removed it without opening another folder.
-  if (agentMode === 'agent') {
+  // 微信 Agent 会话例外：其工作区由 AgentState 快照（沙盒或已信任目录），
+  // 不依赖 IDE 当前打开的项目——IDE 一个项目都没开也能在沙盒里干活。
+  if (agentMode === 'agent' && session.mode !== 'wechat') {
     const hasProject = Boolean(
       document.getElementById('file-tree-root')?.getAttribute('data-root-path')
       || useUIStore.getState().rootPath
@@ -3497,15 +3643,15 @@ async function runAgentLoop(
     // 目标模式会话、跨窗口恢复的会话等）。run 启动前把它的项目注册为受信任
     // 根，保证整个任务期间的读写不会因「路径不在允许范围内」中途失败或弹
     // 逐文件读取授权框。幂等：已信任/已注册的项目直接返回 true。
-    const runRoot = session.projectPath || getWorkspaceRoot()
+    const runRoot = workspacePath || getWorkspaceRoot()
     if (runRoot) {
       await timePrepStep('授权项目目录', () => window.electronAPI.openProject(runRoot))
     }
     // Refresh dynamic tools (MCP servers + workspace skills) before building the tool list.
     // Skill tools scope to the RUNNING session's project (global skills always
     // included) — the browsing root would leak other projects' skills in.
-    await timePrepStep('刷新MCP工具', () => toolExecutor.refreshMcpTools(session.projectPath || null))
-    await timePrepStep('刷新技能', () => toolExecutor.refreshSkillTools(session.projectPath || getWorkspaceRoot()))
+    await timePrepStep('刷新MCP工具', () => toolExecutor.refreshMcpTools(workspacePath || null))
+    await timePrepStep('刷新技能', () => toolExecutor.refreshSkillTools(workspacePath || getWorkspaceRoot()))
 
   // Build the system prompt with memories / rules / skills / retrieved context
   const lastUserMessage = [...session.messages].reverse().find((m) => m.role === 'user')
@@ -3515,21 +3661,21 @@ async function runAgentLoop(
   let baseSystemPrompt = configGroup.systemPrompt || 'You are a helpful AI coding assistant.'
   let workerGuard: SubagentGuard | null = null
   if (session.workerRole) {
-    const workerDef = await loadAgentDefinition(session.workerRole, session.projectPath || undefined)
+    const workerDef = await loadAgentDefinition(session.workerRole, workspacePath || undefined)
     baseSystemPrompt = await buildWorkerSystemPrompt(
       session.workerRole,
       workerDef?.systemPrompt ?? '',
     )
     // 员工模式：send_message（回报总监）与 run_subagent（派只读调研助手）
     // 对员工放行，其余控制类工具照旧封禁。
-    workerGuard = new SubagentGuard(workerDef, session.projectPath || '', { workerMode: true })
+    workerGuard = new SubagentGuard(workerDef, workspacePath || '', { workerMode: true })
   }
   // Split the prompt into a byte-stable prefix + per-turn dynamic context so
   // provider prefix caches (OpenAI / DeepSeek / Anthropic) keep hitting across
   // turns instead of re-billing the whole history every time.
   const { stable, dynamic } = await timePrepStep('构建提示词', () => buildSystemPrompt(
     baseSystemPrompt, userContent, lastUserMessage?.contextFiles || [],
-    session.projectPath,
+    workspacePath,
     // Pure chat mode has no tool loop — auto-retrieval is its most expensive
     // and least useful step there; explicit @-attached files still get read.
     agentMode !== 'agent',
@@ -3570,7 +3716,7 @@ async function runAgentLoop(
       // Bootstrap the state skeleton (idempotent) and inject the current
       // status so the agent resumes from the files instead of its memory.
       // Always the session's own project — not the globally opened folder.
-      const root = session.projectPath || getWorkspaceRoot()
+      const root = workspacePath || getWorkspaceRoot()
       if (root) {
         await ensureInitialized(root)
         const statusMd = await readStatusText(root)
@@ -3688,7 +3834,7 @@ async function runAgentLoop(
   // below). Original messages are never deleted — the summary replaces history
   // only in this request view. Falls back to the lossy trim when compaction is
   // disabled or the summarizer fails.
-  const projectPath = session.projectPath || getWorkspaceRoot()
+  const projectPath = workspacePath || getWorkspaceRoot()
   const compactionPrefs = useEditorStore.getState().preferences
   const compactionEnabled = compactionPrefs.contextCompaction !== false
   // The model actually used for summaries (may be a cheaper override) — used
@@ -3865,7 +4011,7 @@ async function runAgentLoop(
     const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     const deliverables = session?.planDeliverables || []
     const paths = targetPathsOf(tc)
-    const inScope = isPathInScope(paths, deliverables, session?.projectPath || getWorkspaceRoot() || '')
+    const inScope = isPathInScope(paths, deliverables, workspacePath || getWorkspaceRoot() || '')
     if (inScope) return true
     touchActivity() // waiting on the user ≠ model silence
     return new Promise<boolean>((resolve) => {

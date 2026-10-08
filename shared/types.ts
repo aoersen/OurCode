@@ -125,8 +125,9 @@ export interface ChatSession {
    *  the next load (the pre-crash summary stays valid). Not user-visible. */
   compactionInProgress?: boolean
   /** 会话所属窗口模式：'main' = 对话窗口（默认），'office' = 一人公司独立
-   *  窗口。两个模式的会话完全隔离（SQLite 按 mode 过滤），互不显示。 */
-  mode?: 'main' | 'office'
+   *  窗口，'wechat' = 微信 Agent 专用会话（不显示在主界面会话列表）。三个
+   *  模式的会话完全隔离（SQLite 按 mode 过滤），互不显示。 */
+  mode?: 'main' | 'office' | 'wechat'
   /** 一人公司角色员工（M4）：本会话是某个工位的员工。workerRole = 角色类型
    *  （tm-developer / tm-ui-developer / tm-requirement-analyst / tm-tester），
    *  workerSlot = 1~8 工位号。此类会话对用户隐藏（hidden），只在 list_agents /
@@ -862,4 +863,31 @@ export type WechatGatewayEvent =
   | WechatInboundEvent
   | WechatSentEvent
   | { event: 'error'; message: string }
+
+// ── 微信 Agent 状态（WechatAgentState）─────────────────────────────────────
+// 微信接入是一个独立的常驻 agent：状态与用户偏好（user_preferences）分离，
+// 运行期一切以这里的 AgentState 为准；偏好只作初始值。持久化在
+// SQLite wechat_agent_state 表（单行），经主进程 IPC 读写。
+
+export interface WechatAgentMemoryItem {
+  id: string
+  text: string
+  createdAt: number
+}
+
+export interface WechatAgentState {
+  /** 沙盒根目录（安装目录优先，不可写回退 userData；由主进程探测并固定）。 */
+  sandboxPath: string
+  /** 当前工作区；null = 沙盒模式。切换工作区即修改此字段。 */
+  currentWorkspace: string | null
+  /** 审批模式：approve = 逐条审批（默认），full_access = 免审批。 */
+  approvalMode: 'approve' | 'full_access'
+  /** 微信 Agent 使用的 API 配置组 id（空 = 回退 IDE 当前组/第一个组）。 */
+  configGroupId: string
+  /** 模型偏好；null = 跟随配置组默认模型。 */
+  modelId: string | null
+  /** agent 自己的记忆条目（注入系统提示）。 */
+  memory: WechatAgentMemoryItem[]
+  updatedAt: number
+}
 

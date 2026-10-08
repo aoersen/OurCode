@@ -103,7 +103,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getConfigGroups: () => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_CONFIG_GROUPS),
   saveConfigGroup: (group: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_CONFIG_GROUP, group),
   deleteConfigGroup: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.STORE_DELETE_CONFIG_GROUP, id),
-  getSessions: (mode?: 'main' | 'office') => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_SESSIONS, mode),
+  getSessions: (mode?: 'main' | 'office' | 'wechat') => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET_SESSIONS, mode),
   saveSession: (session: any) => ipcRenderer.invoke(IPC_CHANNELS.STORE_SAVE_SESSION, session),
   deleteSession: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.STORE_DELETE_SESSION, id),
   getSubagentRuns: (sessionIds: string[]) => ipcRenderer.invoke('store:getSubagentRuns', sessionIds),
@@ -344,6 +344,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   wechatSendText: (to: string, text: string, clientMsgId?: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SEND_TEXT, to, text, clientMsgId),
   wechatLogout: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_LOGOUT),
   wechatSetEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SET_ENABLED, enabled),
+  // WeChat Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
+  getWechatAgentState: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GET_AGENT_STATE),
+  saveWechatAgentState: (state: unknown) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SAVE_AGENT_STATE, state),
+  wechatGrantWorkspace: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GRANT_WORKSPACE, path),
+  wechatUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_UPDATE_SESSION_MODE, sessionId, mode),
   onWechatEvent: (callback: (event: unknown) => void) => {
     const listener = (_event: any, payload: any) => callback(payload)
     ipcRenderer.on(IPC_CHANNELS.WECHAT_EVENT, listener)

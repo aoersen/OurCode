@@ -43,7 +43,7 @@ function formatElapsed(run: AgentRun, t: (key: TranslationKey, vars?: Record<str
 }
 
 export default function AgentTasksPanel() {
-  const sessions = useChatStore((s) => s.sessions)
+  const sessions = useChatStore((s) => s.sessions).filter((sess) => sess.mode !== 'wechat')
   const activeRuns = useChatStore((s) => s.activeRuns)
   const stopGeneration = useChatStore((s) => s.stopGeneration)
   const setActiveSession = useChatStore((s) => s.setActiveSession)

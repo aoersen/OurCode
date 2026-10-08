@@ -84,7 +84,7 @@ function findCheckpointForChange(checkpoints: Checkpoint[], change: FileChange):
 }
 
 export default function FileChangesPanel() {
-  const sessions = useChatStore((s) => s.sessions)
+  const sessions = useChatStore((s) => s.sessions).filter((sess) => sess.mode !== 'wechat')
   const loadCheckpoints = useChatStore((s) => s.loadCheckpoints)
   const revertCheckpoint = useChatStore((s) => s.revertCheckpoint)
   // Select the ACTION only — a whole-store subscription would re-render this

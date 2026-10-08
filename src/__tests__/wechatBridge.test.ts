@@ -9,11 +9,22 @@ import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfi
 import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
-import type { ApiConfigGroup, WechatGatewayEvent } from '@/types'
+import { useWechatStore } from '@/stores/wechatStore'
+import type { ApiConfigGroup, WechatAgentState, WechatGatewayEvent } from '@/types'
 
 type GatewayListener = (ev: WechatGatewayEvent) => void
 
 const sentTexts: Array<{ to: string; text: string }> = []
+
+const AGENT_STATE: WechatAgentState = {
+  sandboxPath: 'C:\\sandbox',
+  currentWorkspace: null,
+  approvalMode: 'approve',
+  configGroupId: '',
+  modelId: null,
+  memory: [],
+  updatedAt: 0,
+}
 
 const electronApi = {
   wechatSendText: vi.fn(async (to: string, text: string) => {
@@ -24,17 +35,28 @@ const electronApi = {
   onWechatEvent: vi.fn((_cb: GatewayListener) => () => {}),
   getWechatStatus: vi.fn(async () => ({ state: 'idle' as const })),
   openProject: vi.fn(async () => {}),
+  getWechatAgentState: vi.fn(async () => AGENT_STATE),
+  saveWechatAgentState: vi.fn(async () => ({ ok: true })),
+  wechatGrantWorkspace: vi.fn(async () => ({ ok: true })),
+  wechatUpdateSessionMode: vi.fn(async () => ({ ok: true })),
+  authorize: vi.fn(async () => true),
+  getSessions: vi.fn(async () => []),
 }
 
 vi.stubGlobal('window', { electronAPI: electronApi })
 
 const initialState = useChatStore.getState()
 
-/** 建一个活动会话（微信会话的替身），供决策槽测试使用。 */
-function makeActiveSession(): string {
-  const sessionId = useChatStore.getState().createSession('', '')
-  useChatStore.getState().setActiveSession(sessionId)
-  return sessionId
+beforeEach(() => {
+  useChatStore.setState(initialState)
+  useWechatStore.setState({ agentState: AGENT_STATE })
+  sentTexts.length = 0
+  vi.clearAllMocks()
+})
+
+/** 建一个微信会话（mode='wechat'），决策走后台队列而非 UI 槽位。 */
+function makeWechatSession(): string {
+  return useChatStore.getState().createSession('g-test', 'C:\\sandbox', { mode: 'wechat' })
 }
 
 function offer(kind: 'approval' | 'question' | 'batch' | 'scope', sessionId: string): void {
@@ -52,65 +74,62 @@ function offer(kind: 'approval' | 'question' | 'batch' | 'scope', sessionId: str
   useChatStore.getState().offerDecision({ kind, sessionId, value } as never)
 }
 
-beforeEach(() => {
-  useChatStore.setState(initialState)
-  sentTexts.length = 0
-  vi.clearAllMocks()
-})
-
-describe('wechatBridge 决策应答', () => {
-  it('批准/拒绝单个工具审批', () => {
-    const sessionId = makeActiveSession()
+describe('wechatBridge 决策应答（后台队列）', () => {
+  it('批准/拒绝单个工具审批（微信决策不进入 UI 槽位）', () => {
+    const sessionId = makeWechatSession()
     offer('approval', sessionId)
 
+    expect(useChatStore.getState().wechatDecisions.approval?.sessionId).toBe(sessionId)
+    expect(useChatStore.getState().pendingApproval).toBeNull() // 不占 IDE 槽位
+
     expect(answerPendingDecision(sessionId, 'contact-1', '批准')).toBe(true)
-    expect(useChatStore.getState().pendingApproval).toBeNull()
+    expect(useChatStore.getState().wechatDecisions.approval).toBeNull()
     expect(sentTexts.at(-1)?.text).toBe('已批准 ✅')
     expect(sentTexts.at(-1)?.to).toBe('contact-1')
 
     offer('approval', sessionId)
     expect(answerPendingDecision(sessionId, 'contact-1', '拒绝')).toBe(true)
-    expect(useChatStore.getState().pendingApproval).toBeNull()
+    expect(useChatStore.getState().wechatDecisions.approval).toBeNull()
     expect(sentTexts.at(-1)?.text).toBe('已拒绝')
   })
 
-  it('审批等待期间的非答案消息被消费并给出指引，不清空槽位', () => {
-    const sessionId = makeActiveSession()
+  it('审批等待期间的非答案消息被消费并给出指引，不清空队列', () => {
+    const sessionId = makeWechatSession()
     offer('approval', sessionId)
     expect(answerPendingDecision(sessionId, 'contact-1', '随便说点什么')).toBe(true)
-    expect(useChatStore.getState().pendingApproval).not.toBeNull()
+    expect(useChatStore.getState().wechatDecisions.approval).not.toBeNull()
     expect(sentTexts.at(-1)?.text).toContain('批准')
   })
 
   it('提问按编号映射到选项', () => {
-    const sessionId = makeActiveSession()
+    const sessionId = makeWechatSession()
     offer('question', sessionId)
     expect(answerPendingDecision(sessionId, 'contact-1', '2')).toBe(true)
-    expect(useChatStore.getState().pendingQuestion).toBeNull()
+    expect(useChatStore.getState().wechatDecisions.question).toBeNull()
     expect(sentTexts.at(-1)?.text).toContain('方案乙')
   })
 
   it('批量审批：全部 / 批准 / 拒绝', () => {
-    const sessionId = makeActiveSession()
+    const sessionId = makeWechatSession()
     offer('batch', sessionId)
     expect(answerPendingDecision(sessionId, 'contact-1', '全部')).toBe(true)
-    expect(useChatStore.getState().batchApproval).toBeNull()
+    expect(useChatStore.getState().wechatDecisions.batch).toBeNull()
 
     offer('batch', sessionId)
     expect(answerPendingDecision(sessionId, 'contact-1', '拒绝')).toBe(true)
-    expect(useChatStore.getState().batchApproval).toBeNull()
+    expect(useChatStore.getState().wechatDecisions.batch).toBeNull()
   })
 
   it('作用域决策：加入计划', () => {
-    const sessionId = makeActiveSession()
+    const sessionId = makeWechatSession()
     offer('scope', sessionId)
     expect(answerPendingDecision(sessionId, 'contact-1', '加入计划')).toBe(true)
-    expect(useChatStore.getState().pendingScope).toBeNull()
+    expect(useChatStore.getState().wechatDecisions.scope).toBeNull()
     expect(sentTexts.at(-1)?.text).toBe('已加入计划 ✅')
   })
 
   it('计划待批准时非答案消息被消费并给出指引（不触发执行）', () => {
-    const sessionId = makeActiveSession()
+    const sessionId = makeWechatSession()
     useChatStore.setState((s) => ({
       sessions: s.sessions.map((x) =>
         x.id === sessionId ? { ...x, planStatus: 'pending_approval' as const, planContent: '做一个项目' } : x,
@@ -122,7 +141,7 @@ describe('wechatBridge 决策应答', () => {
   })
 
   it('无待决决策时返回 false（消息继续作为新消息处理）', () => {
-    const sessionId = makeActiveSession()
+    const sessionId = makeWechatSession()
     expect(answerPendingDecision(sessionId, 'contact-1', '你好')).toBe(false)
     expect(sentTexts).toHaveLength(0)
   })
@@ -144,14 +163,23 @@ describe('wechatBridge 会话映射', () => {
     }
   }
 
-  it('ensureSession 使用设置里的组与模型，并自动修复空配置组的旧会话', () => {
+  it('ensureSession 创建 mode=wechat 的会话，工作区取自 AgentState（沙盒）', () => {
+    useConfigStore.setState({ configGroups: [makeGroup('g1', 'model-a')], activeConfigGroupId: 'g1' })
+    const sessionId = ensureSession('contact-map-1')
+    const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    expect(session?.mode).toBe('wechat')
+    expect(session?.projectPath).toBe('C:\\sandbox')
+    expect(session?.projectEditMode).toBe('confirm_before_change') // approve 模式
+  })
+
+  it('ensureSession 使用 AgentState 里的组与模型，并自动修复空配置组的旧会话', () => {
     useConfigStore.setState({
       configGroups: [makeGroup('g1', 'model-a'), makeGroup('g2', 'model-b')],
       activeConfigGroupId: 'g2',
     })
-    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: 'g1', wechatModelId: 'model-x' })
+    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g1', modelId: 'model-x' } })
 
-    const sessionId = ensureSession('contact-map-1')
+    const sessionId = ensureSession('contact-map-2')
     const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     expect(session?.configGroupId).toBe('g1')
     expect(session?.model).toBe('model-x')
@@ -160,7 +188,7 @@ describe('wechatBridge 会话映射', () => {
     useChatStore.setState((prev) => ({
       sessions: prev.sessions.map((x) => (x.id === sessionId ? { ...x, configGroupId: '' } : x)),
     }))
-    expect(ensureSession('contact-map-1')).toBe(sessionId)
+    expect(ensureSession('contact-map-2')).toBe(sessionId)
     expect(useChatStore.getState().sessions.find((s) => s.id === sessionId)?.configGroupId).toBe('g1')
   })
 
@@ -176,12 +204,12 @@ describe('wechatBridge 会话映射', () => {
     expect(resolveWechatConfig().configGroupId).toBe('g1')
   })
 
-  it('resolveWechatConfig 显式选择的组优先于当前组', () => {
+  it('resolveWechatConfig AgentState 显式选择的组优先于偏好与当前组', () => {
     useConfigStore.setState({
       configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
       activeConfigGroupId: 'g2',
     })
-    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: 'g1', wechatModelId: 'm1' })
+    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g1', modelId: 'm1' } })
     const resolved = resolveWechatConfig()
     expect(resolved.configGroupId).toBe('g1')
     expect(resolved.modelId).toBe('m1')

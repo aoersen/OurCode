@@ -1,11 +1,14 @@
 import { create } from 'zustand'
 
-import type { WechatChannelState, WechatGatewayEvent, WechatSentEvent } from '@/types'
+import type { WechatAgentState, WechatChannelState, WechatGatewayEvent, WechatSentEvent } from '@/types'
 
 /**
  * 微信通道 UI 状态。主进程（网关子进程）是唯一事实来源，事件经
  * `window.electronAPI.onWechatEvent` 推入；本 store 把它们翻译成
  * 设置面板可直接渲染的状态。消息处理逻辑不在这里（见 services/wechat/wechatBridge.ts）。
+ *
+ * WeChat Agent 状态（agentState）：独立常驻 agent 的运行期状态（当前工作区/
+ * 审批模式/模型/记忆），经主进程 SQLite 持久化；桥接层读写它驱动 agent。
  */
 interface WechatStoreState {
   /** 通道状态（idle / loggingIn / connected / …）。 */
@@ -21,9 +24,17 @@ interface WechatStoreState {
   /** 登录失败 / 会话过期 / 通道错误等一次性提示。 */
   notice: string | null
   initialized: boolean
+  /** WeChat Agent 状态（沙盒/工作区/审批模式/模型/记忆）。 */
+  agentState: WechatAgentState | null
 
   /** 一次性接线：拉取初始状态并订阅主进程事件；返回取消函数。 */
   init: () => () => void
+  /** 从主进程加载 WeChat Agent 状态。 */
+  loadAgentState: () => Promise<void>
+  /** 本地更新 + 持久化 Agent 状态（partial patch 合并）。 */
+  saveAgentState: (patch: Partial<WechatAgentState>) => Promise<void>
+  /** 仅更新内存态（loadAgentState 用，避免回环）。 */
+  setAgentState: (state: WechatAgentState | null) => void
   startLogin: () => Promise<void>
   submitVerifyCode: (code: string) => Promise<void>
   logout: () => Promise<void>
@@ -39,6 +50,7 @@ export const useWechatStore = create<WechatStoreState>((set, get) => ({
   verifyBlocked: false,
   notice: null,
   initialized: false,
+  agentState: null,
 
   init: () => {
     if (get().initialized) return () => {}
@@ -86,6 +98,21 @@ export const useWechatStore = create<WechatStoreState>((set, get) => ({
       set({ initialized: false })
     }
   },
+
+  loadAgentState: async () => {
+    const state = await window.electronAPI.getWechatAgentState()
+    set({ agentState: state })
+  },
+
+  saveAgentState: async (patch) => {
+    const cur = get().agentState
+    if (!cur) return
+    const next: WechatAgentState = { ...cur, ...patch, updatedAt: Date.now() }
+    set({ agentState: next })
+    await window.electronAPI.saveWechatAgentState(next)
+  },
+
+  setAgentState: (state) => set({ agentState: state }),
 
   startLogin: async () => {
     set({ notice: null, verifyBlocked: false })

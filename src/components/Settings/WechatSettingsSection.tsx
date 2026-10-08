@@ -53,8 +53,10 @@ const accentBtn =
 export default function WechatSettingsSection() {
   const { preferences, savePreferences } = useEditorStore()
   const { configGroups, fetchModelsForGroup } = useConfigStore()
-  const { state, qrUrl, scanned, needVerifyCode, verifyBlocked, notice, startLogin, submitVerifyCode, logout, clearNotice } =
-    useWechatStore()
+  const {
+    state, qrUrl, scanned, needVerifyCode, verifyBlocked, notice,
+    startLogin, submitVerifyCode, logout, clearNotice, agentState, saveAgentState,
+  } = useWechatStore()
   const [verifyCode, setVerifyCode] = useState('')
   const [groupModels, setGroupModels] = useState<ModelInfo[]>([])
 
@@ -66,6 +68,8 @@ export default function WechatSettingsSection() {
   const selectedGroup = configGroups.find((g) => g.id === groupIdPref) ?? configGroups[0]
   const selectedGroupId = selectedGroup?.id
   const modelIdPref = preferences.wechatModelId ?? ''
+  // Agent 状态是运行期权威（对话可调）：面板显示的是 agent 的实际状态。
+  const agentWorkspace = agentState?.currentWorkspace || agentState?.sandboxPath || ''
 
   // 组变化时拉取其模型列表；失败则回退到「默认模型」单选项。
   useEffect(() => {
@@ -96,6 +100,18 @@ export default function WechatSettingsSection() {
   const pickGroup = (id: string) => {
     // 换组后原组模型在新组大概率不可用：清掉模型偏好，回退到新组默认模型。
     void savePreferences({ wechatConfigGroupId: id, wechatModelId: '' })
+    // 同步到 Agent 状态（运行期权威，可在微信里用 /group 随时改）。
+    void saveAgentState({ configGroupId: id, modelId: null })
+  }
+
+  const pickModel = (id: string) => {
+    void savePreferences({ wechatModelId: id })
+    void saveAgentState({ modelId: id || null })
+  }
+
+  const pickApprovalMode = (mode: 'approve' | 'full_access') => {
+    void savePreferences({ wechatApprovalMode: mode })
+    void saveAgentState({ approvalMode: mode })
   }
 
   const toggleEnabled = (on: boolean) => {
@@ -110,6 +126,8 @@ export default function WechatSettingsSection() {
     // 文件读写无需再弹原生授权框（与打开项目的信任流程一致）。
     await window.electronAPI.openProject(dir)
     void savePreferences({ wechatWorkspaceDir: dir })
+    // 仅当 agent 从未切换过工作区时，初始工作区才同步生效。
+    if (!agentState?.currentWorkspace) void saveAgentState({ currentWorkspace: dir })
   }
 
   return (
@@ -127,6 +145,13 @@ export default function WechatSettingsSection() {
         <div className="flex items-center gap-1.5 text-xs">
           <span className="inline-block w-2 h-2 rounded-full" style={{ background: meta.color }} />
           <span className="text-nova-text-primary">{meta.label}</span>
+        </div>
+      } />
+
+      <Row label="Agent 状态" desc="微信 Agent 当前工作区与审批模式（在微信里发「状态」或 /status 查看，/workspace 切换）" right={
+        <div className="flex flex-col items-end gap-0.5 text-[11px] text-nova-text-secondary max-w-[320px]">
+          <span className="truncate">工作区：{agentWorkspace ? (agentState?.currentWorkspace ?? `沙盒（${agentState?.sandboxPath}）`) : '未初始化'}</span>
+          <span>审批：{agentState?.approvalMode === 'full_access' ? '免审批' : '逐条审批'}</span>
         </div>
       } />
 
@@ -196,10 +221,10 @@ export default function WechatSettingsSection() {
         </select>
       } />
 
-      <Row label="微信模型" desc={`留空 = 跟随模型组的默认模型${selectedGroup?.defaultModel ? `（${selectedGroup.defaultModel}）` : ''}`} right={
+      <Row label="微信模型" desc={`初始模型：留空 = 跟随模型组的默认模型${selectedGroup?.defaultModel ? `（${selectedGroup.defaultModel}）` : ''}；可在微信里用 /model 随时改`} right={
         <select
           value={modelOptions.includes(modelIdPref) ? modelIdPref : ''}
-          onChange={(e) => void savePreferences({ wechatModelId: e.target.value })}
+          onChange={(e) => pickModel(e.target.value)}
           disabled={modelOptions.length === 0}
           className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-xs text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors max-w-[240px] disabled:opacity-50"
         >
@@ -210,10 +235,10 @@ export default function WechatSettingsSection() {
         </select>
       } />
 
-      <Row label="审批模式" desc="逐条审批：写文件/执行命令前发微信确认；免审批：微信会话直接执行（同 IDE 的 full_access）" right={
+      <Row label="审批模式" desc="初始审批模式：逐条审批 = 写文件/执行命令前发微信确认；免审批 = 直接执行。可在微信里用 /mode 随时改" right={
         <select
           value={approvalMode}
-          onChange={(e) => void savePreferences({ wechatApprovalMode: e.target.value as 'approve' | 'full_access' })}
+          onChange={(e) => pickApprovalMode(e.target.value as 'approve' | 'full_access')}
           className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-xs text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors"
         >
           <option value="approve">逐条审批</option>
@@ -221,13 +246,17 @@ export default function WechatSettingsSection() {
         </select>
       } />
 
-      <Row label="微信工作区" desc="微信任务都在此目录下进行（创建项目 = 在该目录下建子目录）；留空则使用最近打开的项目" right={
+      <Row label="初始工作区" desc="微信 Agent 起步工作区（历史兼容）：留空 = 从独立沙盒开始，此后在微信里用 /workspace 随时切换" right={
         <div className="flex items-center gap-1.5">
           <input
             type="text"
             value={workspaceDir}
-            onChange={(e) => void savePreferences({ wechatWorkspaceDir: e.target.value })}
-            placeholder="留空 = 最近项目"
+            onChange={(e) => {
+              void savePreferences({ wechatWorkspaceDir: e.target.value })
+              // 仅当 agent 从未切换过工作区时，初始工作区才同步生效。
+              if (!agentState?.currentWorkspace) void saveAgentState({ currentWorkspace: e.target.value.trim() || null })
+            }}
+            placeholder="留空 = 沙盒起步"
             className="px-2.5 py-1.5 bg-nova-input-bg border border-nova-border rounded-md text-xs text-nova-text-primary outline-none focus:border-nova-accent/50 transition-colors font-mono w-[240px]"
           />
           <button className={smallBtn} onClick={() => void pickWorkspace()}>浏览…</button>

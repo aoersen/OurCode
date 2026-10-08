@@ -69,7 +69,7 @@ export interface ElectronAPI {
   getConfigGroups: () => Promise<import('@shared/types').ApiConfigGroup[]>
   saveConfigGroup: (group: any) => Promise<import('@shared/types').ApiConfigGroup>
   deleteConfigGroup: (id: string) => Promise<void>
-  getSessions: (mode?: 'main' | 'office') => Promise<import('@shared/types').ChatSession[]>
+  getSessions: (mode?: 'main' | 'office' | 'wechat') => Promise<import('@shared/types').ChatSession[]>
   saveSession: (session: any) => Promise<import('@shared/types').ChatSession>
   deleteSession: (id: string) => Promise<void>
   /** Durable sub-agent run records (office 任务流 / 代码变更 / 终端 回看) */
@@ -249,6 +249,11 @@ export interface ElectronAPI {
   wechatSendText: (to: string, text: string, clientMsgId?: string) => Promise<import('@shared/types').WechatSentEvent>
   wechatLogout: () => Promise<{ ok: boolean }>
   wechatSetEnabled: (enabled: boolean) => Promise<{ ok: boolean }>
+  // WeChat Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
+  getWechatAgentState: () => Promise<import('@shared/types').WechatAgentState | null>
+  saveWechatAgentState: (state: import('@shared/types').WechatAgentState) => Promise<{ ok: boolean }>
+  wechatGrantWorkspace: (path: string) => Promise<{ ok: boolean }>
+  wechatUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => Promise<{ ok: boolean }>
   onWechatEvent: (callback: (event: import('@shared/types').WechatGatewayEvent) => void) => () => void
 }
 

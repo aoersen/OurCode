@@ -1058,6 +1058,95 @@ export function createToolRegistry(): Tool[] {
       },
       timeoutMs: 120_000,
     },
+    {
+      // WeChat Agent 自身状态工具：agent 任务执行中可以查看/调整自身状态。
+      // 工作区切换的安全门（信任确认）由微信侧 /workspace 命令承担——本工具
+      // 只允许切到已信任目录，未信任路径引导用户到微信里执行。
+      name: 'wechat_state',
+      description:
+        'Manage your own WeChat Agent state: view or adjust the current workspace, approval mode and long-term memory. ' +
+        'Use get to inspect current state. set_workspace switches future tasks to another ALREADY-TRUSTED directory ' +
+        '(for untrusted directories, tell the user to run /workspace in WeChat, which asks them for approval). ' +
+        'set_mode changes approval mode (approve / full_access). memory_add / memory_list / memory_clear manage long-term memory.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['get', 'set_workspace', 'set_mode', 'memory_add', 'memory_list', 'memory_clear'],
+            description: 'Which state operation to perform',
+          },
+          value: {
+            type: 'string',
+            description: 'Value for set_workspace (absolute path or "sandbox"), set_mode ("approve" | "full_access") or memory_add (text to remember)',
+          },
+        },
+        required: ['action'],
+      },
+      execute: async (args: Record<string, any>) => {
+        const { useWechatStore } = await import('@/stores/wechatStore')
+        const store = useWechatStore.getState()
+        const cur = store.agentState
+        if (!cur) return '微信 Agent 状态未初始化（稍后重试）'
+        const workspace = cur.currentWorkspace || cur.sandboxPath
+        switch (args.action) {
+          case 'get':
+            return [
+              `当前工作区：${cur.currentWorkspace ? cur.currentWorkspace : `沙盒（${cur.sandboxPath}）`}`,
+              `审批模式：${cur.approvalMode === 'full_access' ? '免审批' : '逐条审批'}`,
+              `模型：${cur.modelId || '跟随组默认'}`,
+              `记忆：${cur.memory?.length ?? 0} 条`,
+            ].join('\n')
+          case 'set_workspace': {
+            const value = String(args.value ?? '').trim()
+            if (!value || value === 'sandbox') {
+              await store.saveAgentState({ currentWorkspace: null })
+              return '已回到沙盒空间（后续任务在沙盒中执行）'
+            }
+            if (!/^[a-zA-Z]:[\\/]/.test(value) && !value.startsWith('/')) {
+              return '需要绝对路径（或 "sandbox" 回到沙盒）'
+            }
+            let trusted = false
+            try {
+              trusted = Boolean(await window.electronAPI.authorize(value))
+            } catch {
+              trusted = false
+            }
+            if (!trusted) {
+              return `目录 ${value} 尚未获得本机信任。请让用户在微信里发 /workspace ${value} 完成信任确认。`
+            }
+            await store.saveAgentState({ currentWorkspace: value })
+            return `已切换工作区：${value}（本轮任务仍继续在 ${workspace}，下一条微信消息起生效）`
+          }
+          case 'set_mode': {
+            const value = String(args.value ?? '').trim()
+            if (value !== 'approve' && value !== 'full_access') {
+              return 'value 必须是 approve 或 full_access'
+            }
+            await store.saveAgentState({ approvalMode: value })
+            return `审批模式已切换为 ${value === 'full_access' ? '免审批' : '逐条审批'}`
+          }
+          case 'memory_add': {
+            const text = String(args.value ?? '').trim()
+            if (!text) return 'value 是要记住的内容'
+            const item = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, createdAt: Date.now() }
+            await store.saveAgentState({ memory: [...(cur.memory ?? []), item] })
+            return '已加入长期记忆'
+          }
+          case 'memory_list': {
+            const items = cur.memory ?? []
+            return items.length === 0
+              ? '长期记忆为空'
+              : items.map((m, i) => `${i + 1}. ${m.text}`).join('\n')
+          }
+          case 'memory_clear':
+            await store.saveAgentState({ memory: [] })
+            return '已清空长期记忆'
+          default:
+            return `未知 action：${String(args.action)}`
+        }
+      },
+    },
   ]
 }
 
