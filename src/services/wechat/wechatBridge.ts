@@ -25,6 +25,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useWechatStore } from '@/stores/wechatStore'
 import type { OfficeSnapshot, WechatAgentState, WechatGatewayEvent, WechatInboundEvent } from '@/types'
 import { IS_OFFICE } from '@/utils/windowMode'
+import { switchWechatModel } from './modelSwitch'
 
 const SESSION_MAP_KEY = 'wechat_session_map'
 /** 流式外发节流间隔：攒批后统一冲刷，避免每个 token 都发一条微信。 */
@@ -351,8 +352,9 @@ async function runCommand(contactId: string, raw: string): Promise<boolean> {
 切换：/model <模型名>；换组：/group`)
         return true
       }
-      await saveAgentState({ modelId: rest })
-      ack(contactId, `✅ 模型已设为 ${rest}`)
+      // 跨组解析：模型在任何组里都能切过去（当前组优先）。
+      const result = await switchWechatModel(rest)
+      ack(contactId, result.startsWith('已') ? `✅ ${result}` : `❌ ${result}`)
       return true
     }
     case 'group': {

@@ -1214,42 +1214,25 @@ export function createToolRegistry(): Tool[] {
       execute: async (args: Record<string, any>) => {
         const { useConfigStore } = await import('@/stores/configStore')
         const { useWechatStore } = await import('@/stores/wechatStore')
+        const { switchWechatModel, listGroupModelIds, currentGroupId } = await import('@/services/wechat/modelSwitch')
         const cfg = useConfigStore.getState()
         const groups = cfg.configGroups ?? []
         const st = useWechatStore.getState().agentState
-        const currentGroupId = st?.configGroupId?.trim() || cfg.activeConfigGroupId || groups[0]?.id || ''
-        const currentGroup = groups.find((g) => g.id === currentGroupId)
 
         if (args.action === 'set_model') {
-          if (!currentGroup) return '没有可用的 API 配置组，无法切换模型'
           const modelId = String(args.modelId ?? '').trim()
           if (!modelId) return '需要 modelId（先用 action=list 查看可用模型）'
-          let ids: string[] = []
-          try {
-            ids = (await cfg.fetchModelsForGroup(currentGroup)).map((m) => m.id)
-          } catch {
-            ids = []
-          }
-          const available = new Set([...(currentGroup.defaultModel ? [currentGroup.defaultModel] : []), ...ids])
-          if (!available.has(modelId)) {
-            return `模型 ${modelId} 不在当前组可用。可用：${[...available].join('、')}`
-          }
-          await useWechatStore.getState().saveAgentState({ modelId })
-          return `已切换模型：${modelId}（当前组：${currentGroup.name}）`
+          // 跨组解析：模型在任何组里都能切过去（当前组优先）。
+          return switchWechatModel(modelId)
         }
 
         if (groups.length === 0) return '没有配置任何 API 模型组（用户需在 IDE 设置→API 配置里添加）'
+        const active = currentGroupId()
         const lines: string[] = []
         for (const g of groups) {
-          let ids: string[] = []
-          try {
-            ids = (await cfg.fetchModelsForGroup(g)).map((m) => m.id)
-          } catch {
-            ids = []
-          }
-          const set = new Set([...(g.defaultModel ? [g.defaultModel] : []), ...ids])
-          const mark = g.id === currentGroupId ? '（当前）' : ''
-          lines.push(`${g.name}${mark}：${[...set].join('、') || '（模型列表获取失败）'}`)
+          const ids = await listGroupModelIds(g)
+          const mark = g.id === active ? '（当前）' : ''
+          lines.push(`${g.name}${mark}：${ids.join('、') || '（模型列表获取失败）'}`)
         }
         return `当前模型：${st?.modelId || '跟随组默认'}\n${lines.join('\n')}`
       },
