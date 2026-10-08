@@ -37,6 +37,7 @@ const filters = new Map<string, StreamingMarkdownFilter>() // sessionId -> 本�
 const filteredAcc = new Map<string, string>() // sessionId -> 已过滤文本累计
 const sentLen = new Map<string, number>() // sessionId -> 已发送字符数
 const lastRaw = new Map<string, string>() // sessionId -> 上次看到的流式原文
+const runGen = new Map<string, number>() // sessionId -> 轮次代数（beginRun 递增，防跨轮竞态）
 const pendingBySession = new Map<string, string[]>() // sessionId -> agent 忙时排队的微信消息
 const notifiedKinds = new Set<string>() // `${sessionId}:${kind}` 已通知的决策种类
 let runningSnapshot = new Set<string>()
@@ -76,12 +77,13 @@ export function resolveWechatConfig(): { configGroupId: string; modelId: string 
   const config = useConfigStore.getState()
   const groups = config.configGroups ?? []
   const prefGroup = prefs.wechatConfigGroupId?.trim()
+  const prefGroupValid = Boolean(prefGroup && groups.some((g) => g.id === prefGroup))
   const configGroupId =
-    (prefGroup && groups.some((g) => g.id === prefGroup) ? prefGroup : '') ||
-    config.activeConfigGroupId ||
-    groups[0]?.id ||
-    ''
-  return { configGroupId, modelId: prefs.wechatModelId?.trim() || null }
+    (prefGroupValid ? prefGroup : '') || config.activeConfigGroupId || groups[0]?.id || ''
+  // 模型偏好只在显式组仍存在时生效：组被删除后回退到别的组时，旧组的模型
+  // 绑新组的密钥必然 401（见 chatStore.updateSessionConfigGroup 的 rebinding 注释）。
+  const modelId = prefGroupValid ? prefs.wechatModelId?.trim() || null : null
+  return { configGroupId, modelId }
 }
 
 /** 修复历史上用空配置组创建的微信会话（桥接早于配置加载时的竞态产物）。 */
@@ -257,6 +259,7 @@ export function answerPendingDecision(sessionId: string, contactId: string, rawT
 // ── 入站 ──────────────────────────────────────────────────────────────────
 /** 新一轮开始：重置该会话的流式水位。必须在 sendMessage 之前调用。 */
 function beginRun(sessionId: string): void {
+  runGen.set(sessionId, (runGen.get(sessionId) ?? 0) + 1)
   filters.set(sessionId, new StreamingMarkdownFilter())
   filteredAcc.set(sessionId, '')
   sentLen.set(sessionId, 0)
@@ -265,6 +268,14 @@ function beginRun(sessionId: string): void {
 
 /** 启动一轮 agent 处理；若被前置守卫静默拦截（无模型组/无工作区）立刻回执指引。 */
 function startTurn(sessionId: string, contactId: string, text: string): void {
+  if (useChatStore.getState().runningSessionIds.includes(sessionId)) {
+    // 极小竞态（完成冲刷窗口内又有新轮被拉起）：退回桥接侧排队，
+    // 绝不能把消息送进 chatStore 那个无人消费的队列，也不能重置在跑轮的水位。
+    const pending = pendingBySession.get(sessionId) ?? []
+    pending.push(text)
+    pendingBySession.set(sessionId, pending)
+    return
+  }
   beginRun(sessionId)
   void useChatStore.getState().sendMessage(sessionId, text)
   // runAgentLoop 的前置守卫（无 API 配置组 / 无工作区等）是静默返回的——它
@@ -360,6 +371,7 @@ export function nextSendChunk(acc: string, sent: number, force: boolean): string
 }
 
 async function flushFor(contactId: string, sessionId: string, force: boolean): Promise<void> {
+  const gen = runGen.get(sessionId) ?? 0
   const acc = filteredAcc.get(sessionId) ?? ''
   let sent = sentLen.get(sessionId) ?? 0
   for (;;) {
@@ -369,7 +381,8 @@ async function flushFor(contactId: string, sessionId: string, force: boolean): P
     if (!res.ok) break // 发送失败：保留未发部分，下轮重试
     sent += chunk.length
   }
-  sentLen.set(sessionId, sent)
+  // 发送期间新一轮已开始（beginRun 重置了水位）→ 不写回旧轮的 sentLen。
+  if ((runGen.get(sessionId) ?? 0) === gen) sentLen.set(sessionId, sent)
 }
 
 function flushAll(force: boolean): void {
@@ -388,12 +401,15 @@ function scheduleFlush(): void {
 
 /** 本轮结束时把过滤器滞留字符冲刷干净并强制发出剩余文本。 */
 async function flushComplete(sessionId: string, contactId: string): Promise<void> {
+  const gen = runGen.get(sessionId) ?? 0
   const filter = filters.get(sessionId)
   if (filter) {
     const tail = filter.flush()
     if (tail) filteredAcc.set(sessionId, (filteredAcc.get(sessionId) ?? '') + tail)
   }
   await flushFor(contactId, sessionId, true)
+  // 冲刷期间新一轮已开始 → 旧轮的「无输出兜底」交给新一轮，避免重复发送。
+  if ((runGen.get(sessionId) ?? 0) !== gen) return
   // 本轮没有任何流式输出（agent 中途失败等）：把最后的助手消息（含错误卡）
   // 补发出去，避免微信侧只看到沉默。
   if ((sentLen.get(sessionId) ?? 0) === 0) {

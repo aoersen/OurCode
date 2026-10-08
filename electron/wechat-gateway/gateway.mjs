@@ -150,6 +150,7 @@ async function startLogin() {
   let pendingVerifyCode = undefined
   let refreshCount = 0
   let consecutiveFailures = 0
+  let scannedPrinted = false // 每次换二维码只上报一次 scanned
   const deadline = Date.now() + QR_TOTAL_TIMEOUT_MS
 
   try {
@@ -180,7 +181,11 @@ async function startLogin() {
         case "scaned":
           // 若携带了配对码且服务端返回 scaned，说明验证码正确，清除暂存。
           if (pendingVerifyCode) pendingVerifyCode = undefined
-          emit({ event: "scanned" })
+          // 状态会停留在 scaned 直到用户在手机上确认：每个二维码只上报一次。
+          if (!scannedPrinted) {
+            scannedPrinted = true
+            emit({ event: "scanned" })
+          }
           await sleep(1_000)
           continue
         case "need_verifycode": {
@@ -206,6 +211,7 @@ async function startLogin() {
           {
             const blockedQr = await fetchQr(baseUrl)
             qrcode = blockedQr.qrcode
+            scannedPrinted = false
             emit({ event: "qr", qrcodeUrl: blockedQr.qrcodeUrl })
           }
           continue
@@ -217,6 +223,7 @@ async function startLogin() {
           {
             const fresh = await fetchQr(baseUrl)
             qrcode = fresh.qrcode
+            scannedPrinted = false
             emit({ event: "qr", qrcodeUrl: fresh.qrcodeUrl })
           }
           continue

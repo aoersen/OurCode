@@ -186,6 +186,17 @@ describe('wechatBridge 会话映射', () => {
     expect(resolved.configGroupId).toBe('g1')
     expect(resolved.modelId).toBe('m1')
   })
+
+  it('resolveWechatConfig 显式组被删除时回退当前组并忽略旧模型偏好', () => {
+    useConfigStore.setState({
+      configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
+      activeConfigGroupId: 'g2',
+    })
+    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: 'g-deleted', wechatModelId: 'stale-model' })
+    const resolved = resolveWechatConfig()
+    expect(resolved.configGroupId).toBe('g2')
+    expect(resolved.modelId).toBeNull()
+  })
 })
 
 describe('wechatBridge 分片发送', () => {
