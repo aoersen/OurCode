@@ -1190,6 +1190,70 @@ export function createToolRegistry(): Tool[] {
         )
       },
     },
+    {
+      // 微信 Agent 查询/切换真实模型：数据来自用户配置的 API 组（fetchModelsForGroup），
+      // 绝不编造提供商——回答「我有哪些可用模型」必须用本工具而不是凭训练知识猜。
+      name: 'wechat_models',
+      description:
+        "List the user's REAL configured API model groups and their available models (fetched from the configured " +
+        'API endpoints), and switch the WeChat Agent\'s model. Use list to answer questions like "which models can I use" ' +
+        'with actual configured data — never list generic providers from memory. Use set_model to switch to a model that ' +
+        'exists in the current group.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'set_model'],
+            description: 'list = show configured groups and models; set_model = switch the WeChat Agent model',
+          },
+          modelId: { type: 'string', description: 'For set_model: the model id from the list output' },
+        },
+        required: ['action'],
+      },
+      execute: async (args: Record<string, any>) => {
+        const { useConfigStore } = await import('@/stores/configStore')
+        const { useWechatStore } = await import('@/stores/wechatStore')
+        const cfg = useConfigStore.getState()
+        const groups = cfg.configGroups ?? []
+        const st = useWechatStore.getState().agentState
+        const currentGroupId = st?.configGroupId?.trim() || cfg.activeConfigGroupId || groups[0]?.id || ''
+        const currentGroup = groups.find((g) => g.id === currentGroupId)
+
+        if (args.action === 'set_model') {
+          if (!currentGroup) return '没有可用的 API 配置组，无法切换模型'
+          const modelId = String(args.modelId ?? '').trim()
+          if (!modelId) return '需要 modelId（先用 action=list 查看可用模型）'
+          let ids: string[] = []
+          try {
+            ids = (await cfg.fetchModelsForGroup(currentGroup)).map((m) => m.id)
+          } catch {
+            ids = []
+          }
+          const available = new Set([...(currentGroup.defaultModel ? [currentGroup.defaultModel] : []), ...ids])
+          if (!available.has(modelId)) {
+            return `模型 ${modelId} 不在当前组可用。可用：${[...available].join('、')}`
+          }
+          await useWechatStore.getState().saveAgentState({ modelId })
+          return `已切换模型：${modelId}（当前组：${currentGroup.name}）`
+        }
+
+        if (groups.length === 0) return '没有配置任何 API 模型组（用户需在 IDE 设置→API 配置里添加）'
+        const lines: string[] = []
+        for (const g of groups) {
+          let ids: string[] = []
+          try {
+            ids = (await cfg.fetchModelsForGroup(g)).map((m) => m.id)
+          } catch {
+            ids = []
+          }
+          const set = new Set([...(g.defaultModel ? [g.defaultModel] : []), ...ids])
+          const mark = g.id === currentGroupId ? '（当前）' : ''
+          lines.push(`${g.name}${mark}：${[...set].join('、') || '（模型列表获取失败）'}`)
+        }
+        return `当前模型：${st?.modelId || '跟随组默认'}\n${lines.join('\n')}`
+      },
+    },
   ]
 }
 

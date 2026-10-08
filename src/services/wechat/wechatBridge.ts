@@ -332,7 +332,23 @@ async function runCommand(contactId: string, raw: string): Promise<boolean> {
     }
     case 'model': {
       if (!rest) {
-        ack(contactId, `用法：/model <模型名>。当前：${st?.modelId || '跟随组默认'}`)
+        const groups = useConfigStore.getState().configGroups ?? []
+        const groupId = st?.configGroupId?.trim() || useConfigStore.getState().activeConfigGroupId || groups[0]?.id
+        const group = groups.find((g) => g.id === groupId)
+        if (!group) {
+          ack(contactId, '没有可用的 API 配置组。请先在 设置→API 配置 添加')
+          return true
+        }
+        let ids: string[] = []
+        try {
+          ids = (await useConfigStore.getState().fetchModelsForGroup(group)).map((m) => m.id)
+        } catch {
+          ids = []
+        }
+        const set = new Set([...(group.defaultModel ? [group.defaultModel] : []), ...ids])
+        ack(contactId, `当前：${st?.modelId || '跟随组默认'}（${group.name}）
+可用模型：${[...set].join('、') || '（获取失败）'}
+切换：/model <模型名>；换组：/group`)
         return true
       }
       await saveAgentState({ modelId: rest })
