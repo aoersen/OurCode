@@ -1,9 +1,9 @@
 {
   "name": "openclaw",
-  "version": "0.0.0-ourcode-stub",
+  "version": "2026.5.12",
   "private": true,
   "type": "module",
-  "description": "Local stub that satisfies the openclaw peer dependency of @tencent-weixin/openclaw-weixin. It provides only the plugin-sdk utilities the Weixin protocol layer imports; nothing else, and it is never published.",
+  "description": "Local stub that satisfies the openclaw peer dependency of @tencent-weixin/openclaw-weixin. It provides only the plugin-sdk utilities the Weixin protocol layer imports; nothing else, and it is never published. The version tracks the lowest openclaw the plugin declares support for (peer range >=2026.5.12), so a plain `npm ci` resolves; a prerelease suffix would fall outside that range.",
   "exports": {
     "./plugin-sdk/account-id": "./plugin-sdk/account-id.mjs",
     "./plugin-sdk/infra-runtime": "./plugin-sdk/infra-runtime.mjs",
