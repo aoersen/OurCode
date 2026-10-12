@@ -35,7 +35,6 @@ export default function ClawConnectionPanel({
   const enabled = config?.enabled ?? false
   const configured = status?.configured ?? true
   const state = ui?.state ?? status?.state ?? 'stopped'
-  const webhookUrl = status?.webhookUrl || config?.values?.webhookPublicBase || ''
 
   const copy = (value: string, tag: string) => {
     void navigator.clipboard?.writeText(value).then(() => {
@@ -127,34 +126,6 @@ export default function ClawConnectionPanel({
             </div>
           )}
         </>
-      )}
-
-      {meta.webhook && (
-        <div className="flex flex-col gap-1">
-          <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-            {t('claw.webhookLabel')}
-          </span>
-          <div className="flex items-center gap-2 min-w-0">
-            <code
-              className="flex-1 min-w-0 truncate px-2 py-1.5 rounded-md text-[11px] font-mono"
-              style={{ background: 'var(--hover)', color: 'var(--text-primary)' }}
-              title={webhookUrl || undefined}
-            >
-              {webhookUrl || t('claw.webhookPending')}
-            </code>
-            <button
-              className={smallBtn}
-              style={smallBtnStyle}
-              disabled={!webhookUrl}
-              onClick={() => copy(webhookUrl, 'webhook')}
-            >
-              {copied === 'webhook' ? t('claw.copied') : t('claw.copy')}
-            </button>
-          </div>
-          <span className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
-            {t('claw.webhookHelp')}
-          </span>
-        </div>
       )}
 
       {!configured && (

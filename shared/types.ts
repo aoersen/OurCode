@@ -875,7 +875,6 @@ export type ClawGatewayEvent =
   | { event: 'verifyBlocked'; channel: ClawChannelId }
   | { event: 'loginFailed'; channel: ClawChannelId; message: string }
   | { event: 'sessionExpired'; channel: ClawChannelId; message: string }
-  | { event: 'webhook'; channel: ClawChannelId; url: string | null }
   | { event: 'policyDrop'; channel: ClawChannelId; reason: string; from: string }
   | ClawInboundEvent
   | ClawSentEvent
@@ -914,6 +913,8 @@ export interface ClawAgentState {
 // 同等标准加密落盘（CryptoService），启动时解密写入 <userData>/claw/<渠道>/
 // config.json（0600）供网关子进程读取；不进命令行、不进日志。
 // 接入控制策略由主进程在**入站事件进入 agent 之前**强制执行。
+// 所有渠道都是主动长连接（WebSocket / 长轮询），因此没有回调地址、端口、
+// 加密密钥这类配置——凭据最多 2 个。
 
 export interface ClawChannelConfig {
   id: ClawChannelId
@@ -922,8 +923,6 @@ export interface ClawChannelConfig {
   values: Record<string, string>
   /** 接入控制策略；主进程在入站事件进入 agent 之前强制执行。 */
   policy: ClawAccessPolicy
-  /** 回调地址的路径令牌（webhook 渠道用；生成一次后固定，便于平台侧配置）。 */
-  webhookToken: string
   updatedAt: number
 }
 
@@ -936,8 +935,6 @@ export interface ClawChannelStatus {
   configured: boolean
   accountId?: string
   lastError?: string
-  /** webhook 渠道完整回调地址；null = 该渠道不需要回调地址。 */
-  webhookUrl: string | null
 }
 
 export interface ClawHubStatus {

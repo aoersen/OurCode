@@ -1,210 +1,189 @@
 /**
  * 企业微信适配器（Claw 渠道之一）。
  *
- * 入站：自建应用「接收消息」把用户消息推到回调地址（网关内的本地 HTTP 服务器）。
- * 企业微信的报文是 XML + AES（EncodingAESKey，PKCS7 块长 32），签名是
- * sha1(sort(token, timestamp, nonce, 密文))。GET 是配置回调时的 echostr 握手，
- * POST 才是消息本体。
+ * 用腾讯官方 SDK `@wecom/aibot-node-sdk` 的 **WebSocket 长连接通道**：插件主动
+ * 连到 `wss://openws.work.weixin.qq.com` 并发送认证帧，消息经同一条连接双向流
+ * 动。因此**不需要公网 IP、域名、回调地址、Token、EncodingAESKey**——使用者只
+ * 需要在企业微信后台建一个「智能机器人」并开启 API 模式，拿到机器人 ID + Secret。
  *
- * 出站：corpid + corpsecret 换 access_token，再调 message/send 往成员发文本。
- * 由于 agent 一轮远超企业微信 5 秒的被动回复窗口，入站一律**先空 200 收下**，
- * 再由上层用 message/send 主动回复（企业微信允许应用主动发消息给成员）。
+ * 能力对应（SDK 提供、我们只做映射）：
+ *   - 连接与重连：SDK 内部退避重连，这里把状态翻译成 Claw 的 status 事件；
+ *   - 入站：`message` / `message.text` 事件 → Claw inbound；
+ *   - 出站：优先用**流式回复**（replyStream）——agent 本来就是一段一段产出的；
+ *     `final=true` 时发收尾帧。SDK 对同一 req_id 的回复队列有上限，因此中间帧
+ *     走非阻塞版本（排队积压时跳过），最终帧始终发。
  */
-import { decryptWechatAes, timingSafeEqualStr, wechatSignature, xmlValue } from '../crypto.mjs'
+export const meta = { id: 'wecom', loginMode: 'credentials' }
 
-export const meta = { id: 'wecom', loginMode: 'credentials', webhook: true }
+/** 流式回复的累计上限：超过就先收尾再开一条新流，避免单条消息无限增长。 */
+const STREAM_ROLLOVER_CHARS = 3_500
+/** 启动后多久还没连上就提示用户检查凭据（SDK 会继续在内部重连，不打断它）。 */
+const CONNECT_HINT_MS = 15_000
 
-const DEFAULT_API_BASE = 'https://qyapi.weixin.qq.com'
-const REQUEST_TIMEOUT_MS = 30_000
-const TOKEN_EXPIRY_SKEW_MS = 60_000
+/** 企业微信帧 → Claw 入站消息（纯函数，供离线单测）。 */
+export function parseWecomFrame(frame) {
+  const body = frame?.body ?? {}
+  const content = String(body?.text?.content ?? '').trim()
+  if (!content) return null
+  const isGroup = body?.chattype === 'group'
+  return {
+    event: 'inbound',
+    msgId: body?.msgid,
+    from: String(body?.from?.userid ?? ''),
+    fromName: body?.from?.name,
+    replyTo: String(body?.chatid ?? body?.from?.userid ?? ''),
+    isGroup,
+    text: content,
+    ts: body?.create_time ? Number(body.create_time) * 1000 : Date.now(),
+    contextToken: String(frame?.headers?.req_id ?? ''),
+    // 企业微信机器人只推「发给它」的消息，群消息视为已提及。
+    mentioned: isGroup ? true : undefined,
+  }
+}
 
 export function createAdapter(ctx) {
   const emit = ctx.emit
   const log = ctx.log
   const values = ctx.config.values ?? {}
 
-  const apiBase = (values.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
-  const corpId = String(values.corpId ?? '').trim()
-  const corpSecret = String(values.corpSecret ?? '').trim()
-  const agentIdRaw = String(values.agentId ?? '').trim()
-  const callbackToken = String(values.callbackToken ?? '').trim()
-  const encodingAesKey = String(values.encodingAesKey ?? '').trim()
+  const botId = String(values.botId ?? '').trim()
+  const secret = String(values.secret ?? '').trim()
 
+  let client = null
   let state = 'idle'
-  let tokenCache = { value: '', expiresAt: 0 }
-  let server = null
+  /** req_id → 收到的原始帧（被动回复必须透传它）。 */
+  const frames = new Map()
+  /** req_id → { streamId, text }：流式回复的累计内容。 */
+  const streams = new Map()
 
   function setState(next) {
     if (state === next) return
     state = next
-    emit({ event: 'status', state: next, accountId: corpId || undefined })
+    emit({ event: 'status', state: next, accountId: botId || undefined })
   }
 
-  async function fetchJson(url, init) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-    try {
-      const res = await fetch(url, { ...init, signal: controller.signal })
-      const json = await res.json().catch(() => null)
-      return { status: res.status, json }
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
-  async function accessToken() {
-    if (tokenCache.value && Date.now() < tokenCache.expiresAt) return tokenCache.value
-    const { json } = await fetchJson(
-      `${apiBase}/cgi-bin/gettoken?corpid=${encodeURIComponent(corpId)}&corpsecret=${encodeURIComponent(corpSecret)}`,
-      { method: 'GET' },
-    )
-    if (!json || json.errcode !== 0 || !json.access_token) {
-      throw new Error(json?.errmsg ? `换取 access_token 失败：${json.errmsg}（errcode=${json.errcode}）` : '换取 access_token 失败')
-    }
-    tokenCache = {
-      value: json.access_token,
-      expiresAt: Date.now() + Math.max(60, Number(json.expires_in ?? 7200)) * 1000 - TOKEN_EXPIRY_SKEW_MS,
-    }
-    return tokenCache.value
-  }
-
-  async function handleCallback(req) {
-    const result = processWecomCallback(req, { callbackToken, encodingAesKey, corpId }, log)
-    if (result.inbound) {
-      // 处理与应答分离：先回 200（企业微信 5 秒窗口），入站消息下一 tick 再抛给上层。
-      setImmediate(() => emit(result.inbound))
-    }
-    return result.reply
+  function rememberFrame(reqId, frame) {
+    frames.set(reqId, frame)
+    if (frames.size > 200) frames.delete(frames.keys().next().value)
   }
 
   return {
     async start() {
-      if (!corpId || !corpSecret || !agentIdRaw) {
-        emit({ event: 'loginFailed', message: '缺少企业 ID / 应用 Secret / AgentId' })
+      if (!botId || !secret) {
+        emit({ event: 'loginFailed', message: '缺少机器人 ID / Secret' })
         setState('disconnected')
         return
       }
       setState('loggingIn')
+      let WSClient
       try {
-        await accessToken()
+        const sdk = await import('@wecom/aibot-node-sdk')
+        // SDK 把底层长连接客户端作为具名导出 WSClient（默认导出是更高层的 AiBot）。
+        // 这里用 WSClient：replyStream / sendMessage 的语义与返回值都有明确文档。
+        WSClient = sdk.WSClient ?? sdk.default
+        if (typeof WSClient !== 'function') throw new Error('SDK 未导出可用的客户端类')
       } catch (err) {
-        emit({ event: 'loginFailed', message: err instanceof Error ? err.message : String(err) })
+        emit({ event: 'loginFailed', message: `企业微信 SDK 加载失败：${err instanceof Error ? err.message : String(err)}` })
         setState('disconnected')
         return
       }
-      if (!encodingAesKey) {
-        emit({ event: 'error', message: '未配置 EncodingAESKey：可以主动发消息，但收不到入站消息' })
-      }
-      const { createWebhookServer } = await import('../webhook.mjs')
-      server = createWebhookServer({
-        channel: 'wecom',
-        token: ctx.config.webhookToken,
-        handler: handleCallback,
-        log,
+
+      client = new WSClient({
+        botId,
+        secret,
+        logger: { info: () => {}, debug: () => {}, warn: (m) => log(`warn: ${m}`), error: (m) => log(`error: ${m}`) },
       })
-      const bound = await server.start(Number(values.webhookPort) || 0, values.webhookHost || '0.0.0.0')
-      emit({ event: 'webhook', url: bound.localUrl })
-      setState('connected')
-    },
-    async stop() {
-      if (server) {
-        await server.stop()
-        server = null
+
+      client.on('connected', () => setState('connected'))
+      client.on('authenticated', () => setState('connected'))
+      client.on('disconnected', (reason) => {
+        log(`连接断开：${reason}`)
+        setState('disconnected')
+      })
+      client.on('reconnecting', (attempt) => log(`重连中（第 ${attempt} 次）`))
+      client.on('error', (err) => emit({ event: 'error', message: `企业微信连接错误：${err?.message ?? String(err)}` }))
+
+      const onMessage = (frame) => {
+        const reqId = String(frame?.headers?.req_id ?? '')
+        if (reqId) rememberFrame(reqId, frame)
+        const inbound = parseWecomFrame(frame)
+        if (!inbound) {
+          log(`忽略非文本消息（msgtype=${frame?.body?.msgtype ?? '未知'}）`)
+          return
+        }
+        emit(inbound)
       }
+
+      client.on('message', onMessage)
+      client.on('message.text', onMessage)
+      client.connect()
+
+      // 凭据错误时 SDK 只在内部重连、不报错，界面会一直显示「登录中」。超时给一条
+      // 明确提示（不停止重连：网络抖动也可能导致慢连上）。
+      setTimeout(() => {
+        if (state === 'loggingIn') {
+          emit({ event: 'error', message: '企业微信连接未在 15 秒内建立：请检查机器人 ID / Secret，或在后台确认机器人已开启 API 模式。' })
+        }
+      }, CONNECT_HINT_MS)
+    },
+
+    async stop() {
+      try {
+        client?.disconnect()
+      } catch (err) {
+        log(`断开失败：${err instanceof Error ? err.message : String(err)}`)
+      }
+      client = null
+      frames.clear()
+      streams.clear()
       state = 'stopped'
     },
-    async sendText({ to, text }) {
+
+    /**
+     * 发文本。首次回复走 replyStream 建立流，后续帧追加，`final=true` 收尾；
+     * 拿不到原始帧时退化为 SDK 的主动发送（sendMessage）。
+     */
+    async sendText({ to, text, contextToken, final }) {
+      const reqId = String(contextToken ?? '')
+      const frame = reqId ? frames.get(reqId) : undefined
       try {
-        const token = await accessToken()
-        const { status, json } = await fetchJson(`${apiBase}/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json; charset=utf-8' },
-          body: JSON.stringify({
-            touser: to,
-            msgtype: 'text',
-            agentid: Number(agentIdRaw) || agentIdRaw,
-            text: { content: text },
-            safe: 0,
-          }),
-        })
-        if (json?.errcode !== 0) {
-          return { ok: false, error: json?.errmsg ? `${json.errmsg}（errcode=${json.errcode}）` : `HTTP ${status}` }
+        if (!frame) {
+          await client?.sendMessage(to, { msgtype: 'markdown', markdown: { content: text } })
+          return { ok: true }
         }
-        return { ok: true, messageId: String(json?.msgid ?? '') }
+        const entry = streams.get(reqId) ?? {
+          streamId: `claw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          text: '',
+        }
+        const nextText = entry.text ? `${entry.text}${text}` : text
+        const streamId = entry.streamId
+
+        if (nextText.length > STREAM_ROLLOVER_CHARS && !final) {
+          // 单条流太长：先收尾，再开一条新流继续（否则平台侧会截断/拒绝）。
+          await client.replyStream(frame.headers, streamId, nextText, true)
+          streams.set(reqId, { streamId: `claw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text: '' })
+          return { ok: true }
+        }
+
+        if (entry.text) {
+          // 已有流：中间帧用非阻塞版本（上一条未 ack 时跳过），最终帧仍走阻塞版。
+          if (final) await client.replyStream(frame.headers, streamId, nextText, true)
+          else await client.replyStreamNonBlocking(frame.headers, streamId, nextText, false)
+          streams.set(reqId, { streamId, text: nextText })
+          return { ok: true }
+        }
+
+        await client.replyStream(frame.headers, streamId, nextText, Boolean(final))
+        if (final) streams.delete(reqId)
+        else streams.set(reqId, { streamId, text: nextText })
+        return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
+
     status() {
-      return { state, accountId: corpId || undefined }
+      return { state, accountId: botId || undefined }
     },
-  }
-}
-
-/**
- * 处理一次企业微信回调（纯函数，除日志外无副作用）。
- *
- * 返回 `{ reply, inbound? }`：`reply` 是要写给平台的 HTTP 响应，`inbound` 是解析
- * 出来待抛给上层的入站消息（若有）。把「解析 + 验签 + 解密」与「emit / 定时器」
- * 分开，是为了让这条安全关键路径能离线单测——签名与解密错了就是收别人的消息。
- */
-export function processWecomCallback({ method, query, rawBody }, opts, log = () => {}) {
-  const { callbackToken, encodingAesKey, corpId } = opts
-  const text = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8')
-  const encrypt = method === 'GET' ? (query.get('echostr') ?? '') : (xmlValue(text, 'Encrypt') ?? '')
-  if (!encrypt) return { reply: { status: 400, body: 'missing payload' } }
-
-  if (!callbackToken) {
-    // 未配置 Token 时不校验签名：只应出现在本机调试，且要留下痕迹。
-    log('未配置回调 Token：跳过签名校验（不推荐，请在企业微信后台配置后填入）')
-  } else {
-    const expected = wechatSignature([callbackToken, query.get('timestamp'), query.get('nonce'), encrypt])
-    if (!timingSafeEqualStr(expected, query.get('msg_signature'))) {
-      log('回调签名校验失败，已拒绝')
-      return { reply: { status: 401, body: 'bad signature' } }
-    }
-  }
-
-  if (!encodingAesKey) {
-    log('未配置 EncodingAESKey，无法解密回调')
-    return { reply: { status: 400, body: 'encoding aes key missing' } }
-  }
-
-  let plain
-  try {
-    plain = decryptWechatAes({ encodingAesKey, encrypt, receiveId: corpId })
-  } catch (err) {
-    log(`解密回调失败：${err instanceof Error ? err.message : String(err)}`)
-    return { reply: { status: 400, body: 'decrypt failed' } }
-  }
-
-  // GET = 配置回调地址时的 echostr 握手：原样回明文即可。
-  if (method === 'GET') return { reply: { status: 200, body: plain } }
-
-  const inbound = parseWecomMessageXml(plain, log)
-  // 空 200：表示「已收到，不被动回复」，企业微信不会再重投；回复由上层主动发出。
-  return { reply: { status: 200, body: '' }, ...(inbound ? { inbound } : {}) }
-}
-
-/** 企业微信消息 XML → Claw 入站事件（只处理文本，其余记日志后忽略）。 */
-export function parseWecomMessageXml(xml, log = () => {}) {
-  const msgType = xmlValue(xml, 'MsgType')
-  if (msgType !== 'text') {
-    log(`忽略非文本消息（MsgType=${msgType ?? '未知'}）`)
-    return null
-  }
-  const from = xmlValue(xml, 'FromUserName') ?? ''
-  const content = (xmlValue(xml, 'Content') ?? '').trim()
-  if (!from || !content) return null
-  const createTime = Number(xmlValue(xml, 'CreateTime') ?? 0)
-  return {
-    event: 'inbound',
-    msgId: xmlValue(xml, 'MsgId') ?? undefined,
-    from,
-    replyTo: from,
-    // 自建应用收到的是成员单聊；群聊需要另外的群机器人/会话能力。
-    isGroup: false,
-    text: content,
-    ts: createTime > 0 ? createTime * 1000 : Date.now(),
   }
 }

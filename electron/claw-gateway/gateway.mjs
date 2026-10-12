@@ -36,19 +36,18 @@ function emit(event) {
 }
 
 function readConfig() {
-  if (!configPath) return { values: {}, webhookToken: '' }
+  if (!configPath) return { values: {} }
   try {
     const raw = readFileSync(configPath, 'utf8')
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return { values: {}, webhookToken: '' }
+    if (!parsed || typeof parsed !== 'object') return { values: {} }
     return {
       values: parsed.values && typeof parsed.values === 'object' ? parsed.values : {},
-      webhookToken: String(parsed.webhookToken ?? ''),
       stateDir: String(parsed.stateDir ?? ''),
     }
   } catch (err) {
     log(`配置读取失败：${err instanceof Error ? err.message : String(err)}`)
-    return { values: {}, webhookToken: '' }
+    return { values: {} }
   }
 }
 
@@ -104,6 +103,8 @@ async function handleCommand(raw) {
           text: String(cmd.text ?? ''),
           clientMsgId,
           contextToken: cmd.contextToken ? String(cmd.contextToken) : undefined,
+          // 本轮输出的最后一片：支持流式回复的渠道（企业微信）用它收尾。
+          final: Boolean(cmd.final),
         })
         emit({ event: 'sent', clientMsgId, ...result })
       } catch (err) {

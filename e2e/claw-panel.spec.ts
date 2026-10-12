@@ -47,6 +47,54 @@ test.describe('Claw 渠道接入面板', () => {
     }
   })
 
+  test('设置页的凭据字段极简：每个渠道最多两个输入框，没有回调/密钥类字段', async () => {
+    const { app } = await launchApp()
+    try {
+      const win = await app.firstWindow()
+      await dismissOnboarding(win)
+      await win.click('button[title="设置"], button[aria-label="设置"]')
+      await win.click('text=功能')
+      await win.waitForTimeout(600)
+
+      // 凭据表单：每个字段是一个 <label> 包着 <input>，第一个 <span> 就是字段名
+      // （第二个 span 是说明文字，不能算进去——说明里会提到「无需回调地址」）
+      const fieldLabels = async (): Promise<string[]> =>
+        win.evaluate(() =>
+          Array.from(document.querySelectorAll('label'))
+            .filter((label) => label.querySelector('input') !== null)
+            .map((label) => (label.querySelector('span')?.textContent ?? '').trim())
+            .filter(Boolean),
+        )
+
+      await win.click('text=企业微信')
+      await win.waitForTimeout(300)
+      const wecom = await fieldLabels()
+      expect(wecom).toHaveLength(2)
+      expect(wecom.join(' ')).toContain('机器人 ID')
+      expect(wecom.join(' ')).toContain('Secret')
+      // 回调那套配置（企业微信其他接入方式才需要）不该出现在这里
+      expect(wecom.join(' ')).not.toMatch(/CorpID|AgentId|EncodingAESKey|Token|端口|回调地址/)
+
+      await win.click('text=Telegram')
+      await win.waitForTimeout(300)
+      const tg = await fieldLabels()
+      expect(tg).toHaveLength(1)
+      expect(tg[0]).toContain('Bot Token')
+
+      await win.click('text=QQ')
+      await win.waitForTimeout(300)
+      const qq = await fieldLabels()
+      // 两个凭据 + 一个沙箱开关
+      expect(qq).toHaveLength(3)
+      expect(qq.join(' ')).not.toMatch(/回调|密钥|端口/)
+
+      // 连接方式必须在界面上写清楚（用户不该去翻文档才知道不用回调地址）
+      expect(await win.evaluate(() => document.body.innerText)).toContain('长连接')
+    } finally {
+      await app.close()
+    }
+  })
+
   test('渠道状态来自主进程：默认只有微信是启用态', async () => {
     const { app } = await launchApp()
     try {

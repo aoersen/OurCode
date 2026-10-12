@@ -31,10 +31,9 @@ export interface ClawChannelHostOptions {
   stateDir: string
 }
 
-/** 渠道配置（写到磁盘的那份：凭据 + 回调路径令牌 + 端口）。 */
+/** 渠道配置（写到磁盘的那份：只有凭据——长连接不需要回调地址）。 */
 export interface ClawChannelRuntimeConfig {
   values: Record<string, string>
-  webhookToken: string
 }
 
 /** 联合类型上的 Omit 必须分发到每个成员，否则只剩公共字段。 */
@@ -51,13 +50,12 @@ export class ClawChannelHost extends EventEmitter {
   private state: ClawChannelState = 'stopped'
   private accountId: string | undefined
   private lastError: string | undefined
-  private webhookUrl: string | null | undefined
   private readonly pendingSends = new Map<string, (ev: ClawSentEvent) => void>()
   private readonly pendingSendTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private restartAttempts = 0
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private stopping = false
-  private config: ClawChannelRuntimeConfig = { values: {}, webhookToken: '' }
+  private config: ClawChannelRuntimeConfig = { values: {} }
   private readonly configPath: string
 
   constructor(private readonly opts: ClawChannelHostOptions) {
@@ -69,18 +67,13 @@ export class ClawChannelHost extends EventEmitter {
     return this.opts.channel
   }
 
-  getStatus(): { state: ClawChannelState; accountId?: string; lastError?: string; webhookUrl: string | null } {
-    return {
-      state: this.state,
-      accountId: this.accountId,
-      lastError: this.lastError,
-      webhookUrl: this.webhookUrl ?? null,
-    }
+  getStatus(): { state: ClawChannelState; accountId?: string; lastError?: string } {
+    return { state: this.state, accountId: this.accountId, lastError: this.lastError }
   }
 
   /** 更新凭据配置：写盘；若进程在跑则重启（渠道连接必须重连才生效）。 */
   setConfig(config: ClawChannelRuntimeConfig): void {
-    this.config = { values: { ...config.values }, webhookToken: config.webhookToken }
+    this.config = { values: { ...config.values } }
     const wasRunning = this.isRunning()
     if (wasRunning) {
       void this.restart()
@@ -213,7 +206,6 @@ export class ClawChannelHost extends EventEmitter {
         this.lastError = undefined
       }
     }
-    if (tagged.event === 'webhook') this.webhookUrl = tagged.url
     if ((tagged.event === 'error' || tagged.event === 'loginFailed') && 'message' in tagged) {
       this.lastError = tagged.message
     }
@@ -256,11 +248,16 @@ export class ClawChannelHost extends EventEmitter {
     return this.send({ cmd: 'logout' })
   }
 
-  /** 向该渠道的联系人/群发文本，网关以 `sent` 事件回执，本方法以 Promise 返回回执。 */
-  sendText(to: string, text: string, clientMsgId?: string, contextToken?: string): Promise<ClawSentEvent> {
+  /**
+   * 向该渠道的联系人/群发文本，网关以 `sent` 事件回执，本方法以 Promise 返回回执。
+   *
+   * `final` 标记本轮输出的最后一片：企业微信这类支持**流式回复**的渠道用它收尾
+   * （把整段内容标成完成态），其余渠道忽略它。
+   */
+  sendText(to: string, text: string, clientMsgId?: string, contextToken?: string, final = false): Promise<ClawSentEvent> {
     const id = clientMsgId ?? `${this.opts.channel}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     return new Promise((resolve) => {
-      if (!this.send({ cmd: 'sendText', to, text, clientMsgId: id, contextToken })) {
+      if (!this.send({ cmd: 'sendText', to, text, clientMsgId: id, contextToken, final })) {
         resolve({ event: 'sent', channel: this.opts.channel, clientMsgId: id, ok: false, error: '网关未运行' })
         return
       }

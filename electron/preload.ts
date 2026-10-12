@@ -349,8 +349,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clawStartLogin: (id: ClawChannelId) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_START_LOGIN, id),
   clawSubmitVerifyCode: (id: ClawChannelId, code: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CLAW_SUBMIT_VERIFY_CODE, id, code),
-  clawSendText: (id: ClawChannelId, to: string, text: string, clientMsgId?: string, contextToken?: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.CLAW_SEND_TEXT, id, to, text, clientMsgId, contextToken),
+  clawSendText: (id: ClawChannelId, to: string, text: string, clientMsgId?: string, contextToken?: string, final?: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CLAW_SEND_TEXT, id, to, text, clientMsgId, contextToken, final),
   clawLogout: (id: ClawChannelId) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_LOGOUT, id),
   // Claw Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
   getClawAgentState: () => ipcRenderer.invoke(IPC_CHANNELS.CLAW_GET_AGENT_STATE),

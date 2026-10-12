@@ -143,11 +143,11 @@ export const zhCN = {
 
   // Claw 设置页
   'claw.settingsTitle': 'Claw 渠道接入',
-  'claw.settingsSubtitle': '一个数字员工，接入多个 IM 渠道。Agent 状态（工作区/模型/审批/记忆）全渠道共享，凭据与接入控制按渠道独立。',
+  'claw.settingsSubtitle': '一个数字员工，接入多个 IM 渠道。长连接接入，每个渠道最多两个凭据；Agent 状态（工作区/模型/审批/记忆）全渠道共享，凭据与接入控制按渠道独立。',
   'claw.masterSwitch': '总开关',
   'claw.saved': '已保存',
   'claw.channelEnable': '启用',
-  'claw.openDocs': '查看平台接入文档 ↗',
+  'claw.connectionMode': '连接方式：插件主动建立长连接（WebSocket / 长轮询），不需要公网地址、回调地址或加密密钥。',
   'claw.qrHint': '用对应 App 扫码，登录后此账号成为 Agent 的一个接入口',
   'claw.loggedInAs': '已登录账号：{account}',
   'claw.scanPrompt': '请扫码',
@@ -158,9 +158,6 @@ export const zhCN = {
   'claw.logout': '退出登录',
   'claw.copy': '复制',
   'claw.copied': '已复制',
-  'claw.webhookLabel': '回调地址（填入平台开发者后台）',
-  'claw.webhookPending': '启动渠道后生成',
-  'claw.webhookHelp': '网关在本机监听该地址。若本机没有公网入口，请用反向代理/内网穿透，并把公网前缀填到「对外地址前缀」。',
   'claw.accessControlTitle': '接入控制 · {name}',
   'claw.accessControlSubtitle': '在消息进入 Agent 之前由主进程判定：被拦截的消息不会触发任何工具调用，只会在面板「最近拦截」里留痕。',
   'claw.allowlist': '允许的联系人',

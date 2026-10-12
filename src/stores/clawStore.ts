@@ -30,8 +30,6 @@ export interface ClawChannelUiState {
   notice: string | null
   /** 主进程记录的最后一条错误（用于渠道卡片上的常驻提示）。 */
   lastError: string | null
-  /** 该渠道实际监听的本地回调地址（webhook 渠道）。 */
-  webhookUrl: string | null
 }
 
 /** 一条被接入控制拦截的入站消息（面板用来解释「为什么没回」）。 */
@@ -50,7 +48,6 @@ const EMPTY_CHANNEL_UI: ClawChannelUiState = {
   verifyBlocked: false,
   notice: null,
   lastError: null,
-  webhookUrl: null,
 }
 
 function emptyChannelMap(): Record<ClawChannelId, ClawChannelUiState> {
@@ -84,7 +81,7 @@ interface ClawStoreState {
   startLogin: (id: ClawChannelId) => Promise<void>
   submitVerifyCode: (id: ClawChannelId, code: string) => Promise<void>
   logout: (id: ClawChannelId) => Promise<void>
-  sendText: (id: ClawChannelId, to: string, text: string, contextToken?: string) => Promise<ClawSentEvent>
+  sendText: (id: ClawChannelId, to: string, text: string, contextToken?: string, final?: boolean) => Promise<ClawSentEvent>
   clearNotice: (id: ClawChannelId) => void
   clearDrops: () => void
 }
@@ -133,9 +130,6 @@ export const useClawStore = create<ClawStoreState>((set, get) => {
           case 'verifyBlocked':
             patchChannel(id, { needVerifyCode: false, verifyBlocked: true })
             break
-          case 'webhook':
-            patchChannel(id, { webhookUrl: ev.url })
-            break
           case 'loginFailed':
           case 'sessionExpired':
           case 'error':
@@ -170,7 +164,6 @@ export const useClawStore = create<ClawStoreState>((set, get) => {
             ...channels[status.id],
             state: status.state,
             lastError: status.lastError ?? channels[status.id].lastError,
-            webhookUrl: status.webhookUrl ?? channels[status.id].webhookUrl,
           }
         }
         return { hub, channels }
@@ -227,7 +220,8 @@ export const useClawStore = create<ClawStoreState>((set, get) => {
       patchChannel(id, { qrUrl: null, scanned: false, needVerifyCode: false, verifyBlocked: false, notice: null })
     },
 
-    sendText: (id, to, text, contextToken) => window.electronAPI.clawSendText(id, to, text, undefined, contextToken),
+    sendText: (id, to, text, contextToken, final) =>
+      window.electronAPI.clawSendText(id, to, text, undefined, contextToken, final),
 
     clearNotice: (id) => patchChannel(id, { notice: null }),
 

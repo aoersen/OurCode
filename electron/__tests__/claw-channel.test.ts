@@ -79,7 +79,7 @@ describe('ClawChannelHost', () => {
 
     writeFileSync(gatewayPath, '')
     const host = new ClawChannelHost({ channel: 'feishu', gatewayPath, stateDir })
-    host.setConfig({ values: { appId: 'cli_x' }, webhookToken: 'tok-1' })
+    host.setConfig({ values: { appId: 'cli_x', appSecret: 's' } })
     host.start()
 
     const [, , opts] = mocks.spawn.mock.calls[0] as [string, string[], { env: Record<string, string | undefined> }]
@@ -88,10 +88,11 @@ describe('ClawChannelHost', () => {
     // 配置落在磁盘上，进程列表里看不到凭据
     const written = JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8')) as {
       values: Record<string, string>
-      webhookToken: string
+      stateDir: string
     }
     expect(written.values.appId).toBe('cli_x')
-    expect(written.webhookToken).toBe('tok-1')
+    // 配置里只有凭据（长连接不需要回调地址/端口/密钥）
+    expect(Object.keys(written).sort()).toEqual(['stateDir', 'values'])
     expect(String(child.stdin.read())).toContain('"cmd":"start"')
   })
 
@@ -107,7 +108,7 @@ describe('ClawChannelHost', () => {
     host.start()
     expect(mocks.spawn).toHaveBeenCalledTimes(1)
 
-    host.setConfig({ values: { botToken: 'new' }, webhookToken: 'tok-2' })
+    host.setConfig({ values: { botToken: 'new' } })
     // 旧进程先收 shutdown（保存新配置后重连，而不是热改内存）
     await vi.waitFor(() => {
       const cmds = String(children[0].stdin.read() ?? '')

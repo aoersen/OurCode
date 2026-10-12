@@ -2881,11 +2881,11 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(
     IPC_CHANNELS.CLAW_SEND_TEXT,
-    (_event, id: ClawChannelId, to: string, text: string, clientMsgId?: string, contextToken?: string) => {
+    (_event, id: ClawChannelId, to: string, text: string, clientMsgId?: string, contextToken?: string, final?: boolean) => {
       if (!isClawChannelId(id) || typeof to !== 'string' || typeof text !== 'string' || !text) {
         return { event: 'sent', channel: isClawChannelId(id) ? id : undefined, clientMsgId, ok: false, error: '参数无效' }
       }
-      return clawService.sendText(id, to, text, clientMsgId, contextToken)
+      return clawService.sendText(id, to, text, clientMsgId, contextToken, Boolean(final))
     },
   )
   ipcMain.handle(IPC_CHANNELS.CLAW_LOGOUT, (_event, id: ClawChannelId) => {

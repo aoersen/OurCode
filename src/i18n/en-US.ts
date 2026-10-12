@@ -147,11 +147,11 @@ export const enUS: Record<TranslationKey, string> = {
   // Claw settings
   'claw.settingsTitle': 'Claw Channels',
   'claw.settingsSubtitle':
-    'One digital employee behind several IM channels. Agent state (workspace/model/approval/memory) is shared; credentials and access control are per channel.',
+    'One digital employee behind several IM channels. Long-connection only: at most two credentials per channel. Agent state (workspace/model/approval/memory) is shared; credentials and access control are per channel.',
   'claw.masterSwitch': 'Master switch',
   'claw.saved': 'Saved',
   'claw.channelEnable': 'Enable',
-  'claw.openDocs': 'Platform integration docs ↗',
+  'claw.connectionMode': 'Connection: the plugin dials out over a long connection (WebSocket / long polling) — no public URL, callback address or encryption key needed.',
   'claw.qrHint': 'Scan with the matching app; the account then becomes one entry point for the agent',
   'claw.loggedInAs': 'Signed in as {account}',
   'claw.scanPrompt': 'Scan the code',
@@ -162,10 +162,6 @@ export const enUS: Record<TranslationKey, string> = {
   'claw.logout': 'Sign out',
   'claw.copy': 'Copy',
   'claw.copied': 'Copied',
-  'claw.webhookLabel': 'Callback URL (paste into the platform console)',
-  'claw.webhookPending': 'Generated once the channel starts',
-  'claw.webhookHelp':
-    'The gateway listens on this address locally. Without a public endpoint, use a reverse proxy or tunnel and fill its public prefix into "Public base URL".',
   'claw.accessControlTitle': 'Access control · {name}',
   'claw.accessControlSubtitle':
     'Enforced by the main process before a message reaches the agent: blocked messages trigger no tool calls and only show up under "Recently blocked".',

@@ -9,11 +9,11 @@ const gatewayListeners: GatewayListener[] = []
 
 const HUB: ClawHubStatus = {
   channels: [
-    { id: 'wechat', state: 'idle', enabled: true, configured: true, webhookUrl: null },
-    { id: 'wecom', state: 'stopped', enabled: false, configured: false, webhookUrl: 'http://127.0.0.1:8790/claw/wecom/tok' },
-    { id: 'qq', state: 'stopped', enabled: false, configured: false, webhookUrl: 'http://127.0.0.1:8791/claw/qq/tok' },
-    { id: 'feishu', state: 'stopped', enabled: false, configured: false, webhookUrl: 'http://127.0.0.1:8792/claw/feishu/tok' },
-    { id: 'telegram', state: 'stopped', enabled: false, configured: false, webhookUrl: null },
+    { id: 'wechat', state: 'idle', enabled: true, configured: true },
+    { id: 'wecom', state: 'stopped', enabled: false, configured: false },
+    { id: 'qq', state: 'stopped', enabled: false, configured: false },
+    { id: 'feishu', state: 'stopped', enabled: false, configured: false },
+    { id: 'telegram', state: 'stopped', enabled: false, configured: false },
   ],
 }
 
@@ -54,7 +54,7 @@ describe('clawStore', () => {
     expect(useClawStore.getState().initialized).toBe(true)
     // 主进程给的连接状态落到对应渠道上，互不串台
     expect(useClawStore.getState().channels.wechat.state).toBe('idle')
-    expect(useClawStore.getState().channels.wecom.webhookUrl).toContain('/claw/wecom/')
+    expect(useClawStore.getState().channels.wecom.state).toBe('stopped')
     off()
     expect(useClawStore.getState().initialized).toBe(false)
   })
@@ -120,9 +120,11 @@ describe('clawStore', () => {
     expect(electronApi.clawLogout).toHaveBeenCalledWith('wechat')
   })
 
-  it('sendText 把渠道与回执令牌一起交给主进程', async () => {
+  it('sendText 把渠道、回执令牌与「最后一片」标记一起交给主进程', async () => {
     await useClawStore.getState().sendText('qq', 'group:g1', '你好', 'msg-1')
-    expect(electronApi.clawSendText).toHaveBeenCalledWith('qq', 'group:g1', '你好', undefined, 'msg-1')
+    expect(electronApi.clawSendText).toHaveBeenCalledWith('qq', 'group:g1', '你好', undefined, 'msg-1', undefined)
+    await useClawStore.getState().sendText('wecom', 'wr_chat', '收尾', 'req-1', true)
+    expect(electronApi.clawSendText).toHaveBeenLastCalledWith('wecom', 'wr_chat', '收尾', undefined, 'req-1', true)
   })
 
   it('setChannelEnabled 先更新本地配置再回主进程（开关手感即时）', async () => {
@@ -133,7 +135,6 @@ describe('clawStore', () => {
         enabled: c.enabled,
         values: {},
         policy: {} as never,
-        webhookToken: '',
         updatedAt: 0,
       })),
     )

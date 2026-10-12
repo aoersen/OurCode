@@ -849,7 +849,10 @@ async function flushFor(sessionId: string, force: boolean): Promise<void> {
     if ((runGen.get(sessionId) ?? 0) !== gen) return
     const chunk = nextSendChunk(acc, sent, force)
     if (!chunk) break
-    const res = await useClawStore.getState().sendText(target.channel, target.contactId, chunk, token)
+    // 这一片之后没有内容了 → 标记为本轮最后一片：支持流式回复的渠道（企业微信）
+    // 据此收尾，其余渠道忽略。
+    const last = force && nextSendChunk(acc, sent + chunk.length, force) === null
+    const res = await useClawStore.getState().sendText(target.channel, target.contactId, chunk, token, last)
     if (!res.ok) break // 发送失败：保留未发部分，下轮重试
     sent += chunk.length
   }

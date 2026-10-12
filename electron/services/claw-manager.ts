@@ -15,7 +15,6 @@
  * 让这台机器上的 agent 干活」是安全边界，必须由唯一持有凭据与进程控制权的一方
  * 判定。渲染层拿到的策略与主进程用的是同一份（同一张表的同一行）。
  */
-import { randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 
@@ -105,24 +104,14 @@ export class ClawManager extends EventEmitter {
     for (const id of CLAW_CHANNEL_IDS) {
       const existing = saved.get(id)
       const config: ClawChannelConfig = existing
-        ? {
-            ...existing,
-            id,
-            values: existing.values ?? {},
-            policy: normalizeAccessPolicy(existing.policy),
-            webhookToken: existing.webhookToken || this.newWebhookToken(),
-          }
+        ? { ...existing, id, values: existing.values ?? {}, policy: normalizeAccessPolicy(existing.policy) }
         : this.defaultConfig(id)
       this.configs.set(id, config)
-      // 补齐 webhookToken / 规范化策略后回写，保证磁盘与内存一致。
-      if (!existing || existing.webhookToken !== config.webhookToken || !samePolicy(existing.policy, config.policy)) {
+      // 规范化策略后回写，保证磁盘与内存一致。
+      if (!existing || !samePolicy(existing.policy, config.policy)) {
         this.persist(config)
       }
     }
-  }
-
-  private newWebhookToken(): string {
-    return randomBytes(16).toString('hex')
   }
 
   private defaultConfig(id: ClawChannelId): ClawChannelConfig {
@@ -133,7 +122,6 @@ export class ClawManager extends EventEmitter {
       enabled: id === 'wechat',
       values: {},
       policy: { ...DEFAULT_CLAW_POLICY, allowlist: [...DEFAULT_CLAW_POLICY.allowlist] },
-      webhookToken: this.newWebhookToken(),
       updatedAt: Date.now(),
     }
   }
@@ -161,8 +149,7 @@ export class ClawManager extends EventEmitter {
   getStatus(): ClawHubStatus {
     const channels: ClawChannelStatus[] = CLAW_CHANNEL_IDS.map((id) => {
       const cfg = this.getConfig(id)
-      const host = this.hosts.get(id)
-      const runtime = host?.getStatus()
+      const runtime = this.hosts.get(id)?.getStatus()
       return {
         id,
         state: runtime?.state ?? 'stopped',
@@ -170,25 +157,9 @@ export class ClawManager extends EventEmitter {
         configured: isChannelConfigured(id, cfg.values),
         accountId: runtime?.accountId,
         lastError: runtime?.lastError,
-        webhookUrl: clawChannelMeta(id).webhook ? this.webhookUrl(id) : null,
       }
     })
     return { channels }
-  }
-
-  /**
-   * 完整回调地址：优先用用户填的 `webhookPublicBase`（有反向代理/内网穿透时本机
-   * 地址不是公网地址），否则回退到网关实际监听的本地地址。
-   */
-  webhookUrl(id: ClawChannelId): string {
-    const cfg = this.getConfig(id)
-    const meta = clawChannelMeta(id)
-    if (!meta.webhook) return ''
-    const path = `/claw/${id}/${cfg.webhookToken}`
-    const base = String(cfg.values.webhookPublicBase ?? '').trim().replace(/\/+$/, '')
-    if (base) return `${base}${path}`
-    const local = this.hosts.get(id)?.getStatus().webhookUrl
-    return local ?? `http://<本机 IP>:${cfg.values.webhookPort || '（待启动）'}${path}`
   }
 
   /** 启动已启用且配置齐全的渠道（应用启动时调用；幂等）。 */
@@ -295,7 +266,6 @@ export class ClawManager extends EventEmitter {
       enabled: Boolean(input.enabled),
       values,
       policy: normalizeAccessPolicy(input.policy),
-      webhookToken: current.webhookToken || this.newWebhookToken(),
       updatedAt: Date.now(),
     }
     this.configs.set(input.id, next)
@@ -312,9 +282,8 @@ export class ClawManager extends EventEmitter {
     for (const field of meta.fields) {
       normalizedCurrent[field.key] = String(current.values?.[field.key] ?? '')
     }
-    const credsChanged =
-      JSON.stringify(normalizedCurrent) !== JSON.stringify(next.values) || current.webhookToken !== next.webhookToken
-    if (credsChanged) host.setConfig({ values: next.values, webhookToken: next.webhookToken })
+    const credsChanged = JSON.stringify(normalizedCurrent) !== JSON.stringify(next.values)
+    if (credsChanged) host.setConfig({ values: next.values })
     if (next.enabled && configured && this.opts.enabled()) {
       host.start()
     } else if (!next.enabled) {
@@ -367,11 +336,12 @@ export class ClawManager extends EventEmitter {
     text: string,
     clientMsgId?: string,
     contextToken?: string,
+    final = false,
   ): Promise<ClawSentEvent> {
     if (!isClawChannelId(id)) {
       return { event: 'sent', clientMsgId, ok: false, error: '未知渠道' }
     }
-    return this.host(id).sendText(to, text, clientMsgId, contextToken)
+    return this.host(id).sendText(to, text, clientMsgId, contextToken, final)
   }
 
   /** 应用退出兜底。 */

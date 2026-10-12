@@ -260,6 +260,7 @@ export interface ElectronAPI {
     text: string,
     clientMsgId?: string,
     contextToken?: string,
+    final?: boolean,
   ) => Promise<import('@shared/types').ClawSentEvent>
   clawLogout: (id: ClawChannelId) => Promise<{ ok: boolean }>
   // Claw Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册

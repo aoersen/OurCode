@@ -96,7 +96,6 @@ export default function ClawSettingsSection() {
         enabled: false,
         values: {},
         policy: { ...DEFAULT_CLAW_POLICY },
-        webhookToken: '',
         updatedAt: Date.now(),
       }
     const next: ClawChannelConfig = { ...base, ...patch, updatedAt: Date.now() }
@@ -270,17 +269,15 @@ export default function ClawSettingsSection() {
 
         <ClawConnectionPanel meta={activeMeta} status={activeStatus} config={activeConfig} />
 
-        {activeMeta.docsUrl && (
-          <a
-            href={activeMeta.docsUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[11px] self-start"
-            style={{ color: 'var(--accent)' }}
-          >
-            {t('claw.openDocs')}
-          </a>
-        )}
+        {/* 凭据去哪拿、连接方式是什么——直接写在界面上，用户不用翻文档 */}
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[11px] leading-4" style={{ color: 'var(--text-secondary)' }}>
+            {t('claw.connectionMode')}
+          </span>
+          <span className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+            {isZh ? activeMeta.credentialHint : activeMeta.credentialHintEn}
+          </span>
+        </div>
       </div>
 
       {/* 接入控制（每渠道一份） */}

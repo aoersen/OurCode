@@ -71,13 +71,12 @@ describe('ClawManager', () => {
       enabled: true,
       values: {},
       policy: { ...DEFAULT_CLAW_POLICY, allowlist: [], blocklist: [], ...patch },
-      webhookToken: 'tok-1',
       updatedAt: 0,
     }
     return cfg
   }
 
-  it('load：按目录补齐 5 个渠道，默认只开微信（升级前行为），并生成回调令牌', () => {
+  it('load：按目录补齐 5 个渠道，默认只开微信（升级前行为）', () => {
     const { manager, store } = makeManager()
     const status = manager.getStatus()
     expect(status.channels.map((c) => c.id)).toEqual(['wechat', 'wecom', 'qq', 'feishu', 'telegram'])
@@ -85,9 +84,10 @@ describe('ClawManager', () => {
     const wechat = manager.getConfig('wechat')
     expect(wechat.enabled).toBe(true)
     expect(manager.getConfig('telegram').enabled).toBe(false)
-    // 令牌持久化（固定后平台侧配置才不会每次重启失效）
-    expect(wechat.webhookToken).toMatch(/^[0-9a-f]{32}$/)
     expect(store.saved.some((c) => c.id === 'wechat')).toBe(true)
+    // 长连接模式：落盘的配置里不该有任何回调地址/端口/密钥字段
+    const keys = Object.keys(store.saved.find((c) => c.id === 'wechat') as object)
+    expect(keys.sort()).toEqual(['enabled', 'id', 'policy', 'updatedAt', 'values'])
   })
 
   it('getStatus：区分「未配置」与「已配置但没连上」', () => {
@@ -99,27 +99,17 @@ describe('ClawManager', () => {
     expect(byId.get('telegram')?.configured).toBe(true)
     expect(byId.get('wecom')?.configured).toBe(false)
     expect(byId.get('wechat')?.configured).toBe(true)
-    // 回调地址只在需要回调的渠道上有值
-    expect(byId.get('wecom')?.webhookUrl).toContain('/claw/wecom/tok-1')
-    expect(byId.get('wechat')?.webhookUrl).toBeNull()
-  })
-
-  it('webhookUrl：填了对外前缀就用它拼（本机地址不是公网地址）', () => {
-    const { manager } = makeManager([
-      { ...policyOf('feishu', {}), values: { webhookPublicBase: 'https://claw.example.com/' } },
-    ])
-    expect(manager.webhookUrl('feishu')).toBe('https://claw.example.com/claw/feishu/tok-1')
+    // 状态里没有回调地址这类东西（长连接：地址由 SDK 内置）
+    expect(Object.keys(byId.get('wecom') as object)).not.toContain('webhookUrl')
   })
 
   it('saveChannel：只接受目录里声明的字段，策略被规范化', () => {
     const { manager } = makeManager()
-    const tokenBefore = manager.getConfig('telegram').webhookToken
     const res = manager.saveChannel({
       id: 'telegram',
       enabled: false,
       values: { botToken: '  abc  ', 不该存在的字段: 'x' } as Record<string, string>,
       policy: { allowlist: ['a', ''], minuteLimit: 99_999 } as unknown as ClawAccessPolicy,
-      webhookToken: 'attacker-supplied',
       updatedAt: 0,
     })
     expect(res.ok).toBe(true)
@@ -128,8 +118,8 @@ describe('ClawManager', () => {
     expect(Object.keys(saved.values)).not.toContain('不该存在的字段')
     expect(saved.policy.minuteLimit).toBe(600)
     expect(saved.policy.allowlist).toEqual(['a'])
-    // 令牌不接受渲染层传入（它决定回调地址，不能被改写）
-    expect(saved.webhookToken).toBe(tokenBefore)
+    // 只保留目录里声明的凭据字段：即使渲染层塞了别的键也不会落库
+    expect(Object.keys(saved.values).sort()).toEqual(['botToken'])
   })
 
   it('saveChannel：改策略不重启渠道，改凭据才投递（避免拖开关就断线）', () => {

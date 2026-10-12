@@ -6,10 +6,10 @@ import {
   DEFAULT_CLAW_POLICY,
   checkSenderAccess,
   clawChannelMeta,
-  hasMention,
   inQuietHours,
   isChannelConfigured,
   isClawChannelId,
+  isFieldOn,
   isRateLimited,
   matchesRule,
   normalizeAccessPolicy,
@@ -48,16 +48,24 @@ describe('渠道目录', () => {
     expect(() => clawChannelMeta('nope' as never)).toThrow()
   })
 
-  it('凭据渠道都声明了必填字段，回调渠道都带回调配置字段', () => {
+  it('每个渠道最多两个必填凭据，且不含任何回调/加密类字段（长连接模式）', () => {
     for (const meta of CLAW_CHANNELS) {
-      if (meta.loginMode === 'credentials') {
-        expect(meta.fields.some((f) => f.required)).toBe(true)
+      const required = meta.fields.filter((f) => f.required)
+      if (meta.loginMode === 'credentials') expect(required.length).toBeGreaterThan(0)
+      expect(required.length).toBeLessThanOrEqual(2)
+      // 回调地址 / 端口 / 加密或签名密钥一律不该出现在长连接渠道的配置里
+      const keys = meta.fields.map((f) => f.key.toLowerCase())
+      for (const bad of ['webhookport', 'webhooktoken', 'webhookpublicbase', 'encodingaeskey', 'encryptkey', 'verificationtoken', 'callbacktoken', 'privatekeyseed', 'publickey']) {
+        expect(keys).not.toContain(bad)
       }
-      if (meta.webhook) {
-        const keys = meta.fields.map((f) => f.key)
-        expect(keys).toContain('webhookPort')
-        expect(keys).toContain('webhookPublicBase')
-      }
+    }
+  })
+
+  it('每个凭据渠道都写清了凭据去哪拿（credentialHint）', () => {
+    for (const meta of CLAW_CHANNELS) {
+      if (meta.loginMode === 'qr') continue
+      expect(meta.credentialHint.length).toBeGreaterThan(10)
+      expect(meta.credentialHintEn.length).toBeGreaterThan(10)
     }
   })
 
@@ -66,9 +74,11 @@ describe('渠道目录', () => {
     expect(isChannelConfigured('telegram', {})).toBe(false)
     expect(isChannelConfigured('telegram', { botToken: '  ' })).toBe(false)
     expect(isChannelConfigured('telegram', { botToken: '123:abc' })).toBe(true)
-    // 企业微信需要三项，缺一不可
-    expect(isChannelConfigured('wecom', { corpId: 'ww1', corpSecret: 's' })).toBe(false)
-    expect(isChannelConfigured('wecom', { corpId: 'ww1', corpSecret: 's', agentId: '1000002' })).toBe(true)
+    // 企业微信只需机器人 ID + Secret；QQ 的沙箱开关不算必填
+    expect(isChannelConfigured('wecom', { botId: 'bot1' })).toBe(false)
+    expect(isChannelConfigured('wecom', { botId: 'bot1', secret: 's' })).toBe(true)
+    expect(isChannelConfigured('qq', { appId: '1' })).toBe(false)
+    expect(isChannelConfigured('qq', { appId: '1', appSecret: 's' })).toBe(true)
   })
 })
 
@@ -207,13 +217,13 @@ describe('频率限制', () => {
   })
 })
 
-describe('@ 提及', () => {
-  it('识别 @名称 与任意 @token', () => {
-    expect(hasMention('@clawbot 帮我看看', ['clawbot'])).toBe(true)
-    expect(hasMention('hi @someone', [])).toBe(true)
-    expect(hasMention('没有提及', ['clawbot'])).toBe(false)
-    expect(hasMention('', ['clawbot'])).toBe(false)
-    // 空名字不该匹配一切
-    expect(hasMention('没有提及', [''])).toBe(false)
+describe('开关型字段', () => {
+  it('isFieldOn 认 1/true/on/yes（表单里存字符串）', () => {
+    expect(isFieldOn({ sandbox: '1' }, 'sandbox')).toBe(true)
+    expect(isFieldOn({ sandbox: 'true' }, 'sandbox')).toBe(true)
+    expect(isFieldOn({ sandbox: 'ON' }, 'sandbox')).toBe(true)
+    expect(isFieldOn({ sandbox: '0' }, 'sandbox')).toBe(false)
+    expect(isFieldOn({}, 'sandbox')).toBe(false)
+    expect(isFieldOn(undefined, 'sandbox')).toBe(false)
   })
 })
