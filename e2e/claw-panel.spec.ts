@@ -42,6 +42,9 @@ test.describe('Claw 渠道接入面板', () => {
       await expect(win.locator('text=/Claw 网关/').first()).toBeVisible()
       // 状态徽章来自主进程（默认只有微信启用 → 其余显示「已停用」）
       await expect(win.locator('text=已停用').first()).toBeVisible()
+      // 网关产物必须被找到（路径解析回归守卫：曾经拼成 dist-electron/out/...，
+      // 表现成微信卡片上一句「连接失败」）
+      await expect(win.locator('text=连接失败')).toHaveCount(0)
     } finally {
       await app.close()
     }
@@ -90,6 +93,33 @@ test.describe('Claw 渠道接入面板', () => {
 
       // 连接方式必须在界面上写清楚（用户不该去翻文档才知道不用回调地址）
       expect(await win.evaluate(() => document.body.innerText)).toContain('长连接')
+    } finally {
+      await app.close()
+    }
+  })
+
+  test('凭据不全时能从面板直接跳到该渠道的设置表单', async () => {
+    const { app } = await launchApp()
+    try {
+      const win = await app.firstWindow()
+      await dismissOnboarding(win)
+      await win.click('button[title="Claw 渠道接入"], button[aria-label="Claw 渠道接入"]')
+
+      // 启用企业微信（默认关闭，且没有凭据）→ 卡片上应出现提示 + 直达入口
+      const wecomToggle = win.locator('button[aria-label="启用/停用 企业微信"]').first()
+      await wecomToggle.click()
+      await expect(win.locator('text=凭据未配置完整').first()).toBeVisible({ timeout: 8000 })
+      const jump = win.locator('button:has-text("去设置")').first()
+      await expect(jump).toBeVisible()
+
+      // 点「去设置」→ 设置面板打开，且直接落在该渠道的表单上（而不是默认的 API 配置页）
+      await jump.click()
+      await expect(win.locator('text=Claw 渠道接入').first()).toBeVisible({ timeout: 8000 })
+      await expect(
+        win.locator('input[placeholder*="智能机器人"]').first(),
+      ).toBeVisible({ timeout: 8000 })
+      // 表单是这个渠道的（有机器人 ID 字段），不是别的渠道
+      await expect(win.locator('label:has-text("机器人 ID")').first()).toBeVisible()
     } finally {
       await app.close()
     }

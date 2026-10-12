@@ -45,7 +45,7 @@ export default function ErrorCard({ error, onRetry }: ErrorCardProps) {
         <div className="pt-1">
           {isAuth ? (
             <button
-              onClick={openSettings}
+              onClick={() => openSettings()}
               className="inline-flex items-center gap-2 bg-[#2563eb] hover:bg-[#3b82f6] text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+
+import type { ClawChannelId } from '@shared/types'
 import { IS_OFFICE, modeKey } from '@/utils/windowMode'
 
 const DEFAULT_THEME_COLOR = '#0058bc'
@@ -22,6 +24,15 @@ function applyThemeColor(color: string) {
   root.style.setProperty('--primary-color-30', hexToRgba(color, 0.3))
   root.style.setProperty('--accent', color)
   root.style.setProperty('--accent-purple', color)
+}
+
+/** 设置面板的 tab。与 SettingsModal 里的 tab 列表保持一致。 */
+export type SettingsTab = 'api' | 'appearance' | 'editor' | 'shortcuts' | 'features'
+
+/** 打开设置时的定位目标（channel 只对「功能」tab 里的 Claw 区有意义）。 */
+export interface SettingsTarget {
+  tab: SettingsTab
+  clawChannel?: ClawChannelId
 }
 
 /** Sidebar pages, keyed by the activity-bar icon. Owned as one type so the
@@ -71,6 +82,9 @@ interface UIState {
 
   // Settings
   isSettingsOpen: boolean
+  /** 设置面板的「打开目标」：从别处（如 Claw 接入面板）直接跳到某个 tab /
+   *  某个渠道的设置区，而不是把用户丢在默认 tab 上自己找。 */
+  settingsTarget: SettingsTarget | null
 
   // Command Palette
   isCommandPaletteOpen: boolean
@@ -164,7 +178,8 @@ interface UIState {
   toggleTerminal: () => void
   setTerminalHeight: (height: number) => void
 
-  openSettings: () => void
+  /** 打开设置。带 target 时直接定位（tab / 渠道）；不带则沿用当前 tab。 */
+  openSettings: (target?: SettingsTarget) => void
   closeSettings: () => void
 
   openCommandPalette: () => void
@@ -257,6 +272,7 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   // Settings
   isSettingsOpen: false,
+  settingsTarget: null,
 
   // Command Palette
   isCommandPaletteOpen: false,
@@ -428,7 +444,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleTerminal: () => set((s) => ({ isTerminalVisible: !s.isTerminalVisible })),
   setTerminalHeight: (height) => set({ terminalHeight: height }),
 
-  openSettings: () => set({ isSettingsOpen: true }),
+  openSettings: (target) => set({ isSettingsOpen: true, settingsTarget: target ?? null }),
   closeSettings: () => set({ isSettingsOpen: false }),
 
   openCommandPalette: () => set({ isCommandPaletteOpen: true }),

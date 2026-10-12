@@ -189,7 +189,7 @@ export default function ChatPanel() {
                     </span>
                   ) : (
                     <button
-                      onClick={openSettings}
+                      onClick={() => openSettings()}
                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] text-nova-text-muted bg-nova-hover hover:text-nova-text-primary border border-nova-border shrink-0 transition-colors"
                       title={t('chat.notConfigured')}
                     >
@@ -399,7 +399,7 @@ export default function ChatPanel() {
                 </Button>
                 {!activeConfigGroupId && (
                   <button
-                    onClick={openSettings}
+                    onClick={() => openSettings()}
                     className="block mx-auto mt-3 text-xs text-nova-accent hover:underline"
                   >
                     {t('chat.configureApiKey')}

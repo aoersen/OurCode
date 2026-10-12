@@ -2,6 +2,7 @@ import { useI18n } from '@/i18n/useI18n'
 import type { ClawChannelConfig, ClawChannelStatus } from '@/types'
 import type { ClawChannelMeta } from '@shared/claw'
 import { useClawStore } from '@/stores/clawStore'
+import { useChannelSettingsJump } from './useChannelSettingsJump'
 import ClawChannelIcon from './ClawChannelIcon'
 
 /**
@@ -22,14 +23,16 @@ export default function ClawChannelCard({
   onToggle: (enabled: boolean) => void
 }) {
   const t = useI18n()
-  const openSettings = useClawStore((s) => s.startLogin)
+  const startLogin = useClawStore((s) => s.startLogin)
   const uiState = useClawStore((s) => s.channels[meta.id])
+  const openChannelSettings = useChannelSettingsJump()
   const enabled = config?.enabled ?? status?.enabled ?? false
   const state = uiState?.state ?? status?.state ?? 'stopped'
   const configured = status?.configured ?? true
 
   const badge = statusBadge(t, state, enabled, configured)
   const notice = uiState?.notice
+  const lastError = uiState?.lastError ?? status?.lastError
 
   return (
     <div
@@ -63,17 +66,44 @@ export default function ClawChannelCard({
         <Toggle on={enabled} onClick={() => onToggle(!enabled)} label={t('claw.toggleChannel', { name: meta.label })} />
       </div>
 
+      {/* 凭据不全 / 连不上：给一行提示 + 直达设置页的入口。用户不该为了补一个
+          字段去猜设置在哪一层——点一下就是那个渠道的表单。 */}
       {enabled && !configured && (
-        <span className="text-[11px] leading-4" style={{ color: 'var(--warning)' }}>
-          {t('claw.channelNeedConfig')}
-        </span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] leading-4" style={{ color: 'var(--warning)' }}>
+            {t('claw.channelNeedConfig')}
+          </span>
+          <button
+            className="px-2 py-0.5 text-[11px] rounded-md shrink-0"
+            style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+            onClick={() => openChannelSettings(meta.id)}
+          >
+            {t('claw.goToSettings')}
+          </button>
+        </div>
+      )}
+
+      {/* 已配置却没能连上（凭据写错、平台侧未开启等）：同样给直达入口 */}
+      {enabled && configured && lastError && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] leading-4 truncate" style={{ color: 'var(--error)' }} title={lastError}>
+            {t('claw.connectFailed')}
+          </span>
+          <button
+            className="px-2 py-0.5 text-[11px] rounded-md shrink-0"
+            style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+            onClick={() => openChannelSettings(meta.id)}
+          >
+            {t('claw.checkSettings')}
+          </button>
+        </div>
       )}
 
       {enabled && configured && meta.loginMode === 'qr' && state !== 'connected' && (
         <button
           className="self-start px-2.5 py-1 text-[11px] rounded-md"
           style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
-          onClick={() => void openSettings(meta.id)}
+          onClick={() => void startLogin(meta.id)}
         >
           {state === 'loggingIn' ? t('claw.loggingIn') : t('claw.startLogin')}
         </button>

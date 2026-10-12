@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
+
+import { useUIStore } from '@/stores/uiStore'
 import { useConfigStore, ConnectionStep, ConnectionTestResult } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useChatStore } from '@/stores/chatStore'
-import { useUIStore } from '@/stores/uiStore'
 import { useShortcutStore, ShortcutPreset } from '@/stores/shortcutStore'
 import { useUpdateStore } from '@/stores/updateStore'
 import { ApiConfigGroup, ModelInfo } from '@/types'
@@ -44,6 +45,12 @@ export default function SettingsModal() {
   const currentProjectPath = useChatStore((s) => s.sessions.find((x) => x.id === s.activeSessionId)?.projectPath ?? null)
 
   const [activeTab, setActiveTab] = useState<'api' | 'appearance' | 'editor' | 'shortcuts' | 'features'>('api')
+  // 打开目标：Claw 面板点「去设置」时要直接落到「功能」tab 的对应渠道上，
+  // 而不是把用户丢在默认 tab 自己找。
+  const settingsTarget = useUIStore((s) => s.settingsTarget)
+  useEffect(() => {
+    if (settingsTarget) setActiveTab(settingsTarget.tab)
+  }, [settingsTarget])
   const [editingGroup, setEditingGroup] = useState<Partial<ApiConfigGroup> | null>(null)
   const [isCreating, setIsCreating] = useState(false)
 
@@ -80,13 +87,14 @@ export default function SettingsModal() {
       useShortcutStore.getState().loadShortcuts()
       setEditingGroup(null)
       setIsCreating(false)
-      setActiveTab('api')
+      // 带定位目标时（Claw 面板的「去设置」）落到目标 tab，否则回到默认的 API 配置
+      setActiveTab(settingsTarget?.tab ?? 'api')
       setShowEditKey(false)
       resetEditorState()
       setUpdateFeedUrl(useEditorStore.getState().preferences.updateFeedUrl ?? '')
       dialogRef.current?.focus()
     }
-  }, [isSettingsOpen, loadConfigGroups])
+  }, [isSettingsOpen, loadConfigGroups, settingsTarget])
 
   const handleSaveFeedUrl = async () => {
     const url = updateFeedUrl.trim()

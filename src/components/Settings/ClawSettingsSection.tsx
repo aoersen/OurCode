@@ -9,6 +9,7 @@ import ClawConnectionPanel from '@/components/Claw/ClawConnectionPanel'
 import { useClawStore } from '@/stores/clawStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
+import { useUIStore } from '@/stores/uiStore'
 import type { ClawAccessPolicy, ClawChannelConfig, ModelInfo } from '@/types'
 
 const inputCls = 'px-2.5 py-1.5 rounded-md text-xs outline-none transition-colors'
@@ -35,7 +36,9 @@ export default function ClawSettingsSection() {
   const agentState = useClawStore((s) => s.agentState)
   const saveAgentState = useClawStore((s) => s.saveAgentState)
 
-  const [activeId, setActiveId] = useState<ClawChannelId>('wechat')
+  // 打开设置时的目标渠道（Claw 面板「去设置」带过来的）；没有就停在微信。
+  const settingsTarget = useUIStore((s) => s.settingsTarget)
+  const [activeId, setActiveId] = useState<ClawChannelId>(settingsTarget?.clawChannel ?? 'wechat')
   const [groupModels, setGroupModels] = useState<ModelInfo[]>([])
   const [savedFlash, setSavedFlash] = useState(false)
   /** 凭据表单的本地草稿：输入过程中不落库（否则每敲一个字符都会重启渠道进程），
@@ -65,6 +68,11 @@ export default function ClawSettingsSection() {
   useEffect(() => {
     setDraft(null)
   }, [activeId])
+
+  // 面板上的「去设置」可能是对另一个渠道发起的：跟着切过去。
+  useEffect(() => {
+    if (settingsTarget?.clawChannel) setActiveId(settingsTarget.clawChannel)
+  }, [settingsTarget])
 
   // 组变化时拉取其模型列表；失败则回退到「默认模型」单选项。
   useEffect(() => {

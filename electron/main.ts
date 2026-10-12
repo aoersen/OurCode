@@ -835,6 +835,31 @@ function resolveRgBinary(): string | null {
   return 'rg'
 }
 
+/**
+ * Claw 渠道网关产物路径。
+ *
+ * 打包版从 extraResources 取；开发版必须**探测**：`app.getAppPath()` 在不同启动
+ * 方式下分别是仓库根（`electron .`）或 dist-electron（`electron dist-electron/main.js`），
+ * 单一拼接会拼出 `dist-electron/out/...` 这种不存在的路径，表现成「网关文件缺失」
+ * 而渠道永远连不上。与 resolveRgBinary 一样用 existsSync 逐个候选挑第一个存在的。
+ */
+function resolveClawGatewayPath(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'claw-gateway', 'claw-gateway.mjs')
+  }
+  const candidates = [
+    join(__dirname, '..', 'out', 'claw-gateway', 'claw-gateway.mjs'), // __dirname = <仓库>/dist-electron
+    join(app.getAppPath(), 'out', 'claw-gateway', 'claw-gateway.mjs'), // appPath = 仓库根
+    join(__dirname, 'out', 'claw-gateway', 'claw-gateway.mjs'),
+  ]
+  const found = candidates.find((p) => existsSync(p))
+  if (!found) {
+    console.error('[claw] 网关产物未找到，请先运行 npm run build:claw-gateway。候选路径：', candidates.join(' | '))
+    return candidates[0]
+  }
+  return found
+}
+
 /** ripgrep 内容搜索。返回 null 表示 rg 不可用（调用方回退 Node 遍历）。 */
 function rgSearchInFiles(
   dirPath: string,
@@ -2835,9 +2860,7 @@ function registerIpcHandlers(): void {
   // 这里只做进程管理、策略强制与事件中继。
   claw = new ClawManager({
     store,
-    gatewayPath: app.isPackaged
-      ? join(process.resourcesPath, 'claw-gateway', 'claw-gateway.mjs')
-      : join(app.getAppPath(), 'out', 'claw-gateway', 'claw-gateway.mjs'),
+    gatewayPath: resolveClawGatewayPath(),
     stateRoot: join(app.getPath('userData'), 'claw'),
     broadcast: (ev: ClawGatewayEvent) => broadcast(IPC_CHANNELS.CLAW_EVENT, ev),
     enabled: () => store.getPreferences().clawEnabled !== false,
@@ -3098,9 +3121,16 @@ app.whenReady().then(() => {
   // Bundled MCP servers (e.g. the git-server) ship inside the package via
   // extraResources → <resources>/mcp-servers (outside app.asar, so a plain
   // Node child can read them); in dev they live in the repo root.
+  // 开发版同样要**探测**：app.getAppPath() 在 `electron dist-electron/main.js` 下
+  // 是 dist-electron（不是仓库根），单向拼接会指向不存在的 dist-electron/mcp-servers，
+  // 表现成「内置 MCP 服务器全都加载不出来」。与 resolveClawGatewayPath 同一处理。
   const bundledMcpDir = app.isPackaged
     ? join(process.resourcesPath, 'mcp-servers')
-    : join(app.getAppPath(), 'mcp-servers')
+    : ([
+        join(__dirname, '..', 'mcp-servers'), // __dirname = <仓库>/dist-electron
+        join(app.getAppPath(), 'mcp-servers'),
+        join(__dirname, 'mcp-servers'),
+      ].find((p) => existsSync(p)) ?? join(app.getAppPath(), 'mcp-servers'))
   mcp = new MCPManager({ bundledNodeDir: bundledMcpDir, globalConfigPath: join(userDataPath, 'mcp_config.json') })
   // 全局 MCP 服务器在启动时即加载——它们不依赖任何已打开的项目。
   void mcp.loadGlobalConfig()
