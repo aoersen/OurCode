@@ -805,22 +805,22 @@ export interface ChatState {
   rebalanceDecisions: () => void
 
   // ── 微信 Agent 后台决策通道 ────────────────────────────────────────────
-  /** 微信会话（mode='wechat'）的待决决策：不进 UI 槽位、不抢占 activeSession，
+  /** Claw 接入会话（mode='claw'）的待决决策：不进 UI 槽位、不抢占 activeSession，
    *  由微信桥接读取并通过对话应答（批准/拒绝/编号）。槽位机制只服务 IDE 会话。 */
-  wechatDecisions: {
+  clawDecisions: {
     approval: NonNullable<ChatState['pendingApproval']> | null
     question: NonNullable<ChatState['pendingQuestion']> | null
     batch: NonNullable<ChatState['batchApproval']> | null
     scope: NonNullable<ChatState['pendingScope']> | null
   }
   /** 微信应答已批准/已拒绝工具审批；返回 false = 该会话当前没有待决审批。 */
-  wechatAnswerApproval: (sessionId: string, approve: boolean) => boolean
+  clawAnswerApproval: (sessionId: string, approve: boolean) => boolean
   /** 微信应答提问（原文或选项文本）；返回 false = 该会话当前没有待答提问。 */
-  wechatAnswerQuestion: (sessionId: string, answer: string) => boolean
+  clawAnswerQuestion: (sessionId: string, answer: string) => boolean
   /** 微信应答批量批准；返回 false = 该会话当前没有待决批量批准。 */
-  wechatAnswerBatch: (sessionId: string, decision: 'confirm' | 'all' | 'reject') => boolean
+  clawAnswerBatch: (sessionId: string, decision: 'confirm' | 'all' | 'reject') => boolean
   /** 微信应答计划外写入决策；返回 false = 该会话当前没有待决作用域决策。 */
-  wechatAnswerScope: (sessionId: string, decision: 'add_to_plan' | 'switch_mode' | 'reject') => boolean
+  clawAnswerScope: (sessionId: string, decision: 'add_to_plan' | 'switch_mode' | 'reject') => boolean
 
   // ── Inline decision dock (docked above the mode bar, replaces popups) ──
   /** Pending regenerate / revert-all confirmation rendered inline in the
@@ -903,13 +903,13 @@ export interface ChatState {
 
   // Session management
   loadSessions: () => Promise<void>
-  /** 微信桥接专用：把 mode='wechat' 的会话并入本窗口状态（不进主界面列表）。 */
-  loadWechatSessions: (sessions: ChatSession[]) => void
+  /** Claw 桥接专用：把 mode='claw' 的会话并入本窗口状态（不进主界面列表）。 */
+  loadClawSessions: (sessions: ChatSession[]) => void
   /** 微信桥接专用：本轮任务开始前把当前工作区快照进会话记录。 */
   updateSessionProjectPath: (sessionId: string, projectPath: string) => void
-  /** 微信桥接专用：历史会话迁移 mode（旧会话标记为 'wechat' 隔离出主界面）。 */
-  updateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => void
-  createSession: (configGroupId: string, projectPath?: string, opts?: { mode?: 'main' | 'office' | 'wechat' }) => string
+  /** Claw 桥接专用：历史会话迁移 mode（旧会话标记为 'claw' 隔离出主界面）。 */
+  updateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'claw') => void
+  createSession: (configGroupId: string, projectPath?: string, opts?: { mode?: 'main' | 'office' | 'claw' }) => string
   // 一人公司角色员工（M4）：员工会话对用户隐藏，由总监经 send_message 派活，
   // 完成后主动回报。ensureWorkers 幂等补齐项目的最低编制；addWorker/removeWorker
   // 支持研发/测试动态增员（各保留最少 1 名——调用方保证）。
@@ -1473,19 +1473,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   batchApproval: null,
   pendingScope: null,
   decisionBacklog: [],
-  wechatDecisions: { approval: null, question: null, batch: null, scope: null },
+  clawDecisions: { approval: null, question: null, batch: null, scope: null },
   inlineConfirm: null,
   targetModeStatus: null,
 
   offerDecision: (decision) => {
     const state = get()
     // 微信 Agent 会话的决策走后台队列：不进 UI 槽位、不碰 activeSession，
-    // 由微信桥接读取 wechatDecisions 并通过对话应答。
+    // 由 Claw 桥接读取 clawDecisions 并通过对话应答。
     const session = state.sessions.find((s) => s.id === decision.sessionId)
-    if (session?.mode === 'wechat') {
+    if (session?.mode === 'claw') {
       // 队列键名与 ParkedDecision.kind 一致（approval/question/batch/scope），
       // 与槽位字段名（pendingApproval 等）不同——不要用 DECISION_SLOT 映射。
-      set((s) => ({ wechatDecisions: { ...s.wechatDecisions, [decision.kind]: decision.value } }))
+      set((s) => ({ clawDecisions: { ...s.clawDecisions, [decision.kind]: decision.value } }))
       return
     }
     const current = readSlot(state, decision.kind)
@@ -1498,17 +1498,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ decisionBacklog: [...s.decisionBacklog, decision] }))
   },
 
-  wechatAnswerApproval: (sessionId, approve) => {
-    const d = get().wechatDecisions.approval
+  clawAnswerApproval: (sessionId, approve) => {
+    const d = get().clawDecisions.approval
     if (!d || d.sessionId !== sessionId) return false
     _approvalResolves.get(sessionId)?.(approve)
     _approvalResolves.delete(sessionId)
-    set((s) => ({ wechatDecisions: { ...s.wechatDecisions, approval: null } }))
+    set((s) => ({ clawDecisions: { ...s.clawDecisions, approval: null } }))
     return true
   },
 
-  wechatAnswerQuestion: (sessionId, answer) => {
-    const d = get().wechatDecisions.question
+  clawAnswerQuestion: (sessionId, answer) => {
+    const d = get().clawDecisions.question
     if (!d || d.sessionId !== sessionId) return false
     const timer = _questionTimers.get(sessionId)
     if (timer) clearTimeout(timer)
@@ -1518,22 +1518,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => {
       const questionGate = { ...s.questionGate }
       delete questionGate[sessionId]
-      return { wechatDecisions: { ...s.wechatDecisions, question: null }, questionGate }
+      return { clawDecisions: { ...s.clawDecisions, question: null }, questionGate }
     })
     return true
   },
 
-  wechatAnswerBatch: (sessionId, decision) => {
-    const d = get().wechatDecisions.batch
+  clawAnswerBatch: (sessionId, decision) => {
+    const d = get().clawDecisions.batch
     if (!d || d.sessionId !== sessionId) return false
     _batchResolves.get(sessionId)?.(decision)
     _batchResolves.delete(sessionId)
-    set((s) => ({ wechatDecisions: { ...s.wechatDecisions, batch: null } }))
+    set((s) => ({ clawDecisions: { ...s.clawDecisions, batch: null } }))
     return true
   },
 
-  wechatAnswerScope: (sessionId, decision) => {
-    const d = get().wechatDecisions.scope
+  clawAnswerScope: (sessionId, decision) => {
+    const d = get().clawDecisions.scope
     if (!d || d.sessionId !== sessionId) return false
     _scopeResolves.get(sessionId)?.(decision !== 'reject')
     _scopeResolves.delete(sessionId)
@@ -1554,7 +1554,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 微信侧切换模式不算 IDE 用户的选择，不写全局「最后编辑模式」记忆。
       get().setProjectEditMode(sessionId, 'auto_edit', false)
     }
-    set((s) => ({ wechatDecisions: { ...s.wechatDecisions, scope: null } }))
+    set((s) => ({ clawDecisions: { ...s.clawDecisions, scope: null } }))
     return true
   },
 
@@ -1572,12 +1572,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const patch: Partial<ChatState> = kept.length === s.decisionBacklog.length ? {} : { decisionBacklog: kept }
       if (s.pendingScope?.sessionId === sessionId) patch.pendingScope = null
       // 微信后台队列同样清理（其 run 已结束/停止）。
-      const wd = { ...s.wechatDecisions }
+      const wd = { ...s.clawDecisions }
       if (wd.approval?.sessionId === sessionId) wd.approval = null
       if (wd.question?.sessionId === sessionId) wd.question = null
       if (wd.batch?.sessionId === sessionId) wd.batch = null
       if (wd.scope?.sessionId === sessionId) wd.scope = null
-      patch.wechatDecisions = wd
+      patch.clawDecisions = wd
       return patch
     })
   },
@@ -2281,14 +2281,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  loadWechatSessions: (list) => {
+  loadClawSessions: (list) => {
     if (!list || list.length === 0) return
-    // 微信会话不进主界面列表，但必须存在于本窗口状态里：桥接靠
+    // Claw 接入会话不进主界面列表，但必须存在于本窗口状态里：桥接靠
     // sessions.find 取会话、runAgentLoop 也要能定位到它。
     set((s) => {
       const known = new Set(s.sessions.map((x) => x.id))
       const incoming = list
-        .map((x) => ({ ...reconcileInterruptedRuns(x), agentMode: 'agent' as const, mode: 'wechat' as const }))
+        .map((x) => ({ ...reconcileInterruptedRuns(x), agentMode: 'agent' as const, mode: 'claw' as const }))
         .filter((x) => !known.has(x.id))
       for (const x of incoming) _persistedSessionIds.add(x.id)
       if (incoming.length === 0) return s
@@ -2311,11 +2311,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((sess) => (sess.id === sessionId ? { ...sess, mode } : sess)),
     }))
-    void window.electronAPI.wechatUpdateSessionMode(sessionId, mode)
+    void window.electronAPI.clawUpdateSessionMode(sessionId, mode)
     void get().saveSession(sessionId)
   },
 
-  createSession: (configGroupId, projectPath, opts?: { mode?: 'main' | 'office' | 'wechat' }) => {
+  createSession: (configGroupId, projectPath, opts?: { mode?: 'main' | 'office' | 'claw' }) => {
     // The project binding is captured at creation so the session shows up under
     // its project in the left sidebar. Callers may pass an explicit project
     // (e.g. the "新建对话" button on a project list item) — otherwise fall back
@@ -2323,14 +2323,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // project follows the conversation), then the folder being browsed.
     const rootPath = projectPath || getCurrentProjectPath() || document.getElementById('file-tree-root')?.getAttribute('data-root-path') || useUIStore.getState().rootPath || ''
     const sessionMode = opts?.mode ?? WINDOW_MODE
-    const isWechat = sessionMode === 'wechat'
+    const isClaw = sessionMode === 'claw'
     // 一人公司排他：办公室建会话走 targetMode 直置（见下），绕过了 setTargetMode
     // 的「同项目仅一个目标模式会话」门禁。这里只拦「正在运行」的公司——同项目
     // 有目标模式会话在运行时，直接激活既有会话而不是再开一家，防止两个监管对
     // 同一项目双跑（状态文件互相覆盖、预算分别记账）。**未在运行的既有会话不
     // 占位**：新建任务 = 新会话（干净上下文），旧会话保留在历史区回看；否则会
     // 出现「我没在跑任务，却提示已有公司在运营」的误导（会话存在 ≠ 在运营）。
-    if (IS_OFFICE && !isWechat && rootPath) {
+    if (IS_OFFICE && !isClaw && rootPath) {
       const running = get().sessions.find(
         (s) =>
           s.targetMode === true &&
@@ -2362,27 +2362,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       agentMode: 'agent',
       // 微信会话不继承 IDE 用户的最后编辑模式：审批行为由 AgentState 决定，
       // 桥接层创建会话后按 approvalMode 显式设置（approve → confirm_before_change）。
-      projectEditMode: isWechat ? undefined : getLastProjectEditMode() ?? undefined,
+      projectEditMode: isClaw ? undefined : getLastProjectEditMode() ?? undefined,
       todos: [],
       planStatus: 'none',
       projectPath: rootPath || undefined,
       // 会话所属窗口模式：一人公司窗口的会话与对话窗口完全隔离（SQLite mode 过滤）。
-      // 微信 Agent 会话 mode='wechat'：不进主界面列表，由桥接单独加载。
+      // Claw 接入会话 mode='claw'：不进主界面列表，由桥接单独加载。
       mode: sessionMode,
       // 一人公司窗口的会话一律默认进入目标模式：办公室的对话就是「派活给公司」，
       // 而非普通 agent 对话。此前只有 App 启动兜底会话被置位 targetMode，其余
       // 入口（双击项目/打开文件夹/新建任务对话）建出的会话都是普通 agent 模式——
       // 在办公室右下对话区看起来就是一条普通对话（无目标条/无监管调度）。
       // 主窗口会话保持默认关闭。
-      targetMode: !isWechat && IS_OFFICE ? true : undefined,
+      targetMode: !isClaw && IS_OFFICE ? true : undefined,
     }
 
     set((s) => ({
       sessions: [session, ...s.sessions],
       // 微信 Agent 会话不抢占 IDE 当前会话（后台 agent，不打断用户）。
-      activeSessionId: isWechat ? s.activeSessionId : id,
+      activeSessionId: isClaw ? s.activeSessionId : id,
     }))
-    if (!isWechat) localStorage.setItem(LAST_SESSION_KEY, id)
+    if (!isClaw) localStorage.setItem(LAST_SESSION_KEY, id)
 
     // 新会话先不落盘：创建即保存会让"新建对话"在磁盘上堆积一堆没有消息的
     // 空白会话（重启后全部加载回来）。首条消息发出后才会持久化——发送流程
@@ -3503,7 +3503,7 @@ async function runAgentLoop(
   // this only fires when the user removed it without opening another folder.
   // 微信 Agent 会话例外：其工作区由 AgentState 快照（沙盒或已信任目录），
   // 不依赖 IDE 当前打开的项目——IDE 一个项目都没开也能在沙盒里干活。
-  if (agentMode === 'agent' && session.mode !== 'wechat') {
+  if (agentMode === 'agent' && session.mode !== 'claw') {
     const hasProject = Boolean(
       document.getElementById('file-tree-root')?.getAttribute('data-root-path')
       || useUIStore.getState().rootPath

@@ -140,22 +140,28 @@ export const IPC_CHANNELS = {
   UPDATE_STATUS: 'update:status',
   UPDATE_PROGRESS: 'update:progress',
   UPDATE_SET_FEED_URL: 'update:setFeedUrl',
-  WECHAT_GET_STATUS: 'wechat:getStatus',
-  WECHAT_START_LOGIN: 'wechat:startLogin',
-  WECHAT_SUBMIT_VERIFY_CODE: 'wechat:submitVerifyCode',
-  WECHAT_SEND_TEXT: 'wechat:sendText',
-  WECHAT_LOGOUT: 'wechat:logout',
-  WECHAT_SET_ENABLED: 'wechat:setEnabled',
-  WECHAT_EVENT: 'wechat:event',
-  WECHAT_GET_AGENT_STATE: 'wechat:getAgentState',
-  WECHAT_SAVE_AGENT_STATE: 'wechat:saveAgentState',
-  WECHAT_GRANT_WORKSPACE: 'wechat:grantWorkspace',
-  WECHAT_UPDATE_SESSION_MODE: 'wechat:updateSessionMode',
-  WECHAT_GET_OFFICE_SNAPSHOT: 'wechat:getOfficeSnapshot',
-  WECHAT_SEND_OFFICE_INSTRUCTION: 'wechat:sendOfficeInstruction',
+  // ── Claw 渠道接入 ───────────────────────────────────────────────────────
+  // 每个渠道一个网关子进程，事件统一带 channel 字段；下面这组 IPC 与渠道无关
+  // （channel 作为参数/字段传递），新增渠道不需要加 IPC。
+  CLAW_GET_STATUS: 'claw:getStatus',
+  CLAW_GET_CHANNELS: 'claw:getChannels',
+  CLAW_SAVE_CHANNEL: 'claw:saveChannel',
+  CLAW_SET_CHANNEL_ENABLED: 'claw:setChannelEnabled',
+  CLAW_SET_ENABLED: 'claw:setEnabled',
+  CLAW_START_LOGIN: 'claw:startLogin',
+  CLAW_SUBMIT_VERIFY_CODE: 'claw:submitVerifyCode',
+  CLAW_SEND_TEXT: 'claw:sendText',
+  CLAW_LOGOUT: 'claw:logout',
+  CLAW_EVENT: 'claw:event',
+  CLAW_GET_AGENT_STATE: 'claw:getAgentState',
+  CLAW_SAVE_AGENT_STATE: 'claw:saveAgentState',
+  CLAW_GRANT_WORKSPACE: 'claw:grantWorkspace',
+  CLAW_UPDATE_SESSION_MODE: 'claw:updateSessionMode',
+  CLAW_GET_OFFICE_SNAPSHOT: 'claw:getOfficeSnapshot',
+  CLAW_SEND_OFFICE_INSTRUCTION: 'claw:sendOfficeInstruction',
   OFFICE_PUSH_STATUS: 'office:pushStatus',
-  OFFICE_WECHAT_INSTRUCTION: 'office:wechatInstruction',
-  OFFICE_WECHAT_INSTRUCTION_RESULT: 'office:wechatInstructionResult',
+  OFFICE_CLAW_INSTRUCTION: 'office:clawInstruction',
+  OFFICE_CLAW_INSTRUCTION_RESULT: 'office:clawInstructionResult',
 } as const
 
 // Default Model Parameters
@@ -201,16 +207,16 @@ export const DEFAULT_PREFERENCES = {
   autoUpdateDownload: false,
   /** 自定义更新源 base URL（留空 = 打包内置默认源 GitHub Releases）。 */
   updateFeedUrl: '',
-  /** 微信通道总开关（默认开：启动即拉起网关，已登录则自动恢复收发）。 */
-  wechatEnabled: true,
-  /** 微信会话审批模式（默认逐条审批，可切 full_access 免审批）。 */
-  wechatApprovalMode: 'approve' as const,
-  /** 微信工作区根目录（留空 = 使用最近打开的项目）。 */
-  wechatWorkspaceDir: '',
-  /** 微信会话使用的 API 配置组（留空 = 跟随 IDE 当前组）。 */
-  wechatConfigGroupId: '',
-  /** 微信会话使用的模型（留空 = 组的默认模型）。 */
-  wechatModelId: '',
+  /** Claw 渠道接入总开关（默认开：启动即按渠道配置拉起已启用的网关）。 */
+  clawEnabled: true,
+  /** Claw 会话审批模式（默认逐条审批，可切 full_access 免审批）。 */
+  clawApprovalMode: 'approve' as const,
+  /** Claw 工作区根目录（留空 = 使用最近打开的项目）。 */
+  clawWorkspaceDir: '',
+  /** Claw 会话使用的 API 配置组（留空 = 跟随 IDE 当前组）。 */
+  clawConfigGroupId: '',
+  /** Claw 会话使用的模型（留空 = 组的默认模型）。 */
+  clawModelId: '',
 }
 
 // Free model keywords

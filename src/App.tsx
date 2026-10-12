@@ -17,9 +17,8 @@ import { useShortcutStore } from './stores/shortcutStore'
 import { ensureProblemsSubscription, useProblemsStore } from './stores/problemsStore'
 import { ensureLspDiagnosticsSubscription } from './services/lsp/lspClient'
 import { ensureDebugEventSubscription } from './stores/debugStore'
-import { ensureBrowserSubscription } from './stores/browserStore'
-import { initWechatBridge } from './services/wechat/wechatBridge'
-import { initOfficeWechatRelay } from './services/office/wechatRelay'
+import { initClawBridge } from './services/claw/clawBridge'
+import { initOfficeClawRelay } from './services/office/clawRelay'
 import { registerCoreCommands } from './services/commands/coreCommands'
 import { setLocale, resolveLocale, getSystemLocale, type LanguagePreference } from './i18n'
 import { IS_OFFICE } from './utils/windowMode'
@@ -56,10 +55,10 @@ export default function App() {
     registerCoreCommands()
     // 微信通道桥接：尽早订阅网关事件与聊天流（store 在事件到达时才惰性读取，
     // 无需等待配置加载完成），微信消息驱动同一个 agent 管道。
-    initWechatBridge()
+    initClawBridge()
     // 一人公司窗口：把公司运行状态推给主进程（微信 Agent 观察用），并接收
     // 微信侧经确认后路由来的总监指令。
-    if (IS_OFFICE) initOfficeWechatRelay()
+    if (IS_OFFICE) initOfficeClawRelay()
     loadConfigGroups().then(async () => {
       await loadSessions()
       await loadPreferences()
@@ -112,8 +111,6 @@ export default function App() {
       ensureLspDiagnosticsSubscription()
       // Debug Adapter Protocol events (single session)
       ensureDebugEventSubscription()
-      // Agent browser session mirror (console + page state) for the Browser panel
-      ensureBrowserSubscription()
       setReady(true)
       if (!hasCompleted) {
         setShowOnboarding(true)

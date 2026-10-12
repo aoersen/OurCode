@@ -1,11 +1,11 @@
 /**
- * 一人公司窗口 × 微信 Agent：观察与干预的中继（office 渲染层）。
+ * 一人公司窗口 × Claw Agent：观察与干预的中继（office 渲染层）。
  *
  * 观察：把公司运行状态（公司列表/运行相位、员工工位、近期子智能体活动）
- * 打成紧凑快照，节流推给主进程缓存（微信侧经 wechat:getOfficeSnapshot 读取）。
- * 干预：接收主进程路由来的微信指令（OfficeInstructionRequest），校验目标
+ * 打成紧凑快照，节流推给主进程缓存（对话侧经 claw:getOfficeSnapshot 读取）。
+ * 干预：接收主进程路由来的渠道指令（OfficeInstructionRequest），校验目标
  * 公司（总监会话）后以 sendMessage 注入——等同用户在办公室右下角发消息，
- * 公司自身的排队/审批/派发语义完全不变；结果经回执原路返回微信侧。
+ * 公司自身的排队/审批/派发语义完全不变；结果经回执原路返回对话侧。
  *
  * 只在 office 窗口初始化（App.tsx 按 IS_OFFICE 调用）。
  */
@@ -74,7 +74,7 @@ function handleInstruction(req: OfficeInstructionRequest): void {
   if (!target) {
     result.status = 'failed'
     result.message = '办公室没有可用的公司会话'
-    window.electronAPI.replyOfficeWechatInstruction(result)
+    window.electronAPI.replyOfficeClawInstruction(result)
     return
   }
   const wasRunning = st.runningSessionIds.includes(target.id)
@@ -91,7 +91,7 @@ function handleInstruction(req: OfficeInstructionRequest): void {
     result.status = 'failed'
     result.message = '总监未启动处理（请检查办公室的 API 配置组）'
   }
-  window.electronAPI.replyOfficeWechatInstruction(result)
+  window.electronAPI.replyOfficeClawInstruction(result)
 }
 
 let initialized = false
@@ -128,14 +128,14 @@ function handleStoreChange(): void {
 }
 
 /** office 窗口启动时调用一次（App.tsx）。返回清理函数。 */
-export function initOfficeWechatRelay(): () => void {
+export function initOfficeClawRelay(): () => void {
   if (initialized) return () => {}
   initialized = true
 
   unsubscribe = useChatStore.subscribe(handleStoreChange)
   // 初始推送：窗口刚打开时主进程缓存是空的，先立即可用。
   handleStoreChange()
-  offInstruction = window.electronAPI.onOfficeWechatInstruction(handleInstruction)
+  offInstruction = window.electronAPI.onOfficeClawInstruction(handleInstruction)
 
   return () => {
     if (unsubscribe) {

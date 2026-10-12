@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 vi.mock('@/editor/monacoSetup', () => ({ monaco: {} }))
 
-import { buildOfficeSnapshot } from '@/services/office/wechatRelay'
+import { buildOfficeSnapshot } from '@/services/office/clawRelay'
 import { useChatStore } from '@/stores/chatStore'
 
 vi.stubGlobal('window', {

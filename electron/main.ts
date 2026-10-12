@@ -8,8 +8,9 @@ import type { ExecFileOptions, ChildProcess } from 'child_process'
 import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { AppUpdater } from './services/app-updater'
-import { WechatChannel } from './services/wechat-channel'
-import type { WechatGatewayEvent, WechatAgentState, OfficeSnapshot, OfficeInstructionRequest, OfficeInstructionResult } from '../shared/types'
+import { ClawManager } from './services/claw-manager'
+import type { ClawChannelConfig, ClawChannelId, ClawGatewayEvent, ClawAgentState, OfficeSnapshot, OfficeInstructionRequest, OfficeInstructionResult } from '../shared/types'
+import { isClawChannelId, CLAW_CHANNEL_IDS } from '../shared/claw'
 import { FileSystemService } from './services/file-system'
 import { FileIndexService } from './services/file-index'
 import { SQLiteStore } from './services/sqlite-store'
@@ -446,7 +447,7 @@ let store: SQLiteStore
 let backup: BackupService
 let mcp: MCPManager
 let appUpdater: AppUpdater | null = null
-let wechat: WechatChannel | null = null
+let claw: ClawManager | null = null
 let spillStore: SpillStore
 let wireLog: WireLogService
 
@@ -1649,7 +1650,7 @@ function registerIpcHandlers(): void {
     return store.getCrypto().decryptForImport(encryptedData, password)
   })
 
-  ipcMain.handle('store:getSessions', async (_event, mode?: 'main' | 'office' | 'wechat') => {
+  ipcMain.handle('store:getSessions', async (_event, mode?: 'main' | 'office' | 'claw') => {
     return store.getSessions(mode)
   })
 
@@ -2826,53 +2827,70 @@ function registerIpcHandlers(): void {
     return app.getVersion()
   })
 
-  // ── 微信通道 ─────────────────────────────────────────────────────────────
-  // 网关进程（bundled wechat-gateway.mjs）在应用启动时拉起；其 stdio 事件经
-  // 'gatewayEvent' 原样广播给所有窗口（IPC_CHANNELS.WECHAT_EVENT）。微信协议、
-  // 凭据与同步缓冲都在网关内部，这里只做进程管理与事件中继。
-  wechat = new WechatChannel({
+  // ── Claw 渠道接入 ────────────────────────────────────────────────────────
+  // 每个启用渠道一个网关子进程（bundled claw-gateway.mjs）；其 stdio 事件经
+  // 'gatewayEvent' 交给 ClawManager——**接入控制（白名单/黑名单、群聊 @、
+  // 频率、免打扰）在这一层强制执行**，放行的事件才广播给所有窗口
+  // （IPC_CHANNELS.CLAW_EVENT）。渠道协议、凭据与同步缓冲都在网关内部，
+  // 这里只做进程管理、策略强制与事件中继。
+  claw = new ClawManager({
+    store,
     gatewayPath: app.isPackaged
-      ? join(process.resourcesPath, 'wechat-gateway', 'wechat-gateway.mjs')
-      : join(app.getAppPath(), 'out', 'wechat-gateway', 'wechat-gateway.mjs'),
-    stateDir: join(app.getPath('userData'), 'wechat-channel'),
+      ? join(process.resourcesPath, 'claw-gateway', 'claw-gateway.mjs')
+      : join(app.getAppPath(), 'out', 'claw-gateway', 'claw-gateway.mjs'),
+    stateRoot: join(app.getPath('userData'), 'claw'),
+    broadcast: (ev: ClawGatewayEvent) => broadcast(IPC_CHANNELS.CLAW_EVENT, ev),
+    enabled: () => store.getPreferences().clawEnabled !== false,
+    log: (line: string) => {
+      if (is.dev) console.log(`[claw-gw] ${line}`)
+    },
   })
-  wechat.on('gatewayEvent', (ev: WechatGatewayEvent) => {
-    broadcast(IPC_CHANNELS.WECHAT_EVENT, ev)
-  })
-  wechat.on('gatewayLog', (line: string) => {
-    if (is.dev) console.log(`[wechat-gw] ${line}`)
-  })
-  const wechatService = wechat
-  if (store.getPreferences().wechatEnabled !== false) {
-    wechatService.start()
-  }
+  claw.load()
+  const clawService = claw
+  clawService.startEnabled()
 
-  ipcMain.handle(IPC_CHANNELS.WECHAT_GET_STATUS, () => {
-    return wechatService.getStatus()
+  ipcMain.handle(IPC_CHANNELS.CLAW_GET_STATUS, () => {
+    return clawService.getStatus()
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_START_LOGIN, () => {
-    wechatService.start()
-    return { ok: wechatService.startLogin() }
+  ipcMain.handle(IPC_CHANNELS.CLAW_GET_CHANNELS, () => {
+    // 设置页要编辑完整配置（含凭据）：与 API 配置组同样的处理方式——解密后交给
+    // 渲染层；持久化在 SQLite 里是加密的。
+    return CLAW_CHANNEL_IDS.map((id: ClawChannelId) => clawService.getConfig(id))
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_SUBMIT_VERIFY_CODE, (_event, code: string) => {
-    return { ok: wechatService.submitVerifyCode(code) }
+  ipcMain.handle(IPC_CHANNELS.CLAW_SAVE_CHANNEL, (_event, config: ClawChannelConfig) => {
+    if (!config || !isClawChannelId(config.id)) return { ok: false, error: '参数无效' }
+    return clawService.saveChannel(config)
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_SEND_TEXT, (_event, to: string, text: string, clientMsgId?: string) => {
-    if (typeof to !== 'string' || typeof text !== 'string' || !text) {
-      return { event: 'sent', clientMsgId, ok: false, error: '参数无效' }
-    }
-    return wechatService.sendText(to, text, clientMsgId)
+  ipcMain.handle(IPC_CHANNELS.CLAW_SET_CHANNEL_ENABLED, (_event, id: ClawChannelId, enabled: boolean) => {
+    if (!isClawChannelId(id)) return { ok: false }
+    return clawService.setChannelEnabled(id, Boolean(enabled))
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_LOGOUT, () => {
-    return { ok: wechatService.logout() }
-  })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_SET_ENABLED, (_event, enabled: boolean) => {
-    if (enabled) {
-      wechatService.start()
-    } else {
-      void wechatService.stop()
-    }
+  // 总开关：只启停进程，**不动**各渠道自己的开关状态——关掉再打开时按各渠道
+  // 原设置恢复，而不是把所有渠道重置为关闭。
+  ipcMain.handle(IPC_CHANNELS.CLAW_SET_ENABLED, (_event, enabled: boolean) => {
+    void clawService.setMasterEnabled(Boolean(enabled))
     return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.CLAW_START_LOGIN, (_event, id: ClawChannelId) => {
+    if (!isClawChannelId(id)) return { ok: false, error: '参数无效' }
+    return clawService.startLogin(id)
+  })
+  ipcMain.handle(IPC_CHANNELS.CLAW_SUBMIT_VERIFY_CODE, (_event, id: ClawChannelId, code: string) => {
+    if (!isClawChannelId(id)) return { ok: false }
+    return clawService.submitVerifyCode(id, code)
+  })
+  ipcMain.handle(
+    IPC_CHANNELS.CLAW_SEND_TEXT,
+    (_event, id: ClawChannelId, to: string, text: string, clientMsgId?: string, contextToken?: string) => {
+      if (!isClawChannelId(id) || typeof to !== 'string' || typeof text !== 'string' || !text) {
+        return { event: 'sent', channel: isClawChannelId(id) ? id : undefined, clientMsgId, ok: false, error: '参数无效' }
+      }
+      return clawService.sendText(id, to, text, clientMsgId, contextToken)
+    },
+  )
+  ipcMain.handle(IPC_CHANNELS.CLAW_LOGOUT, (_event, id: ClawChannelId) => {
+    if (!isClawChannelId(id)) return { ok: false }
+    return clawService.logout(id)
   })
 }
 
@@ -2943,8 +2961,8 @@ app.whenReady().then(() => {
   // 开发版 = 项目根目录），不可写时回退 userData；选定后写入 AgentState 固定，
   // 下次启动沿用（避免路径漂移）。沙盒是应用自建目录，注册为 app-owned 免信任。
   const installDir = app.isPackaged ? dirname(app.getPath('exe')) : app.getAppPath()
-  const userDataSandbox = join(userDataPath, 'wechat-agent', 'sandbox')
-  const installSandbox = join(installDir, 'wechat-agent', 'sandbox')
+  const userDataSandbox = join(userDataPath, 'claw', 'sandbox')
+  const installSandbox = join(installDir, 'claw', 'sandbox')
 
   const probeWritableDir = (dir: string): boolean => {
     try {
@@ -2960,70 +2978,70 @@ app.whenReady().then(() => {
 
   const pickSandboxPath = (): string => {
     // 上次选定的沙盒仍在且可写 → 沿用（安装目录更换后也不漂移）。
-    const saved = store.getWechatAgentState()
+    const saved = store.getClawAgentState()
     if (saved?.sandboxPath && probeWritableDir(saved.sandboxPath)) return saved.sandboxPath
     if (probeWritableDir(installSandbox)) return installSandbox
     return userDataSandbox
   }
 
-  // 微信通道关闭时不建沙盒、不初始化状态（避免给不用的用户留下空目录）。
-  const wechatAgentEnabled = store.getPreferences().wechatEnabled !== false
+  // Claw 接入总开关关闭时不建沙盒、不初始化状态（避免给不用的用户留下空目录）。
+  const clawAgentEnabled = store.getPreferences().clawEnabled !== false
 
-  const sandboxPath = wechatAgentEnabled ? pickSandboxPath() : userDataSandbox
-  if (wechatAgentEnabled) {
+  const sandboxPath = clawAgentEnabled ? pickSandboxPath() : userDataSandbox
+  if (clawAgentEnabled) {
     mkdirSync(sandboxPath, { recursive: true })
     trust.addAppOwned(sandboxPath)
     registerRoot(sandboxPath)
   }
 
-  const ensureWechatAgentState = (): WechatAgentState | null => {
-    if (!wechatAgentEnabled) return null
-    const saved = store.getWechatAgentState()
+  const ensureClawAgentState = (): ClawAgentState | null => {
+    if (!clawAgentEnabled) return null
+    const saved = store.getClawAgentState()
     if (saved) {
       if (saved.sandboxPath !== sandboxPath) {
-        const merged: WechatAgentState = { ...saved, sandboxPath, updatedAt: Date.now() }
-        store.saveWechatAgentState(merged)
+        const merged: ClawAgentState = { ...saved, sandboxPath, updatedAt: Date.now() }
+        store.saveClawAgentState(merged)
         return merged
       }
       return saved
     }
     const prefs = store.getPreferences()
-    const state: WechatAgentState = {
+    const state: ClawAgentState = {
       sandboxPath,
       currentWorkspace: null,
-      approvalMode: prefs.wechatApprovalMode === 'full_access' ? 'full_access' : 'approve',
-      configGroupId: prefs.wechatConfigGroupId ?? '',
-      modelId: prefs.wechatModelId ?? null,
+      approvalMode: prefs.clawApprovalMode === 'full_access' ? 'full_access' : 'approve',
+      configGroupId: prefs.clawConfigGroupId ?? '',
+      modelId: prefs.clawModelId ?? null,
       memory: [],
       updatedAt: Date.now(),
     }
-    store.saveWechatAgentState(state)
+    store.saveClawAgentState(state)
     return state
   }
-  ensureWechatAgentState()
+  ensureClawAgentState()
 
-  // 微信 Agent 状态 IPC：状态读写 / 工作区信任注册 / 会话 mode 迁移。
-  ipcMain.handle(IPC_CHANNELS.WECHAT_GET_AGENT_STATE, () => {
-    return store.getWechatAgentState()
+  // Claw Agent 状态 IPC：状态读写 / 工作区信任注册 / 会话 mode 迁移。
+  ipcMain.handle(IPC_CHANNELS.CLAW_GET_AGENT_STATE, () => {
+    return store.getClawAgentState()
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_SAVE_AGENT_STATE, (_event, state: WechatAgentState) => {
+  ipcMain.handle(IPC_CHANNELS.CLAW_SAVE_AGENT_STATE, (_event, state: ClawAgentState) => {
     if (!state || typeof state !== 'object' || typeof state.sandboxPath !== 'string') return { ok: false }
-    store.saveWechatAgentState({ ...state, updatedAt: Date.now() })
+    store.saveClawAgentState({ ...state, updatedAt: Date.now() })
     return { ok: true }
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_GRANT_WORKSPACE, (_event, path: string) => {
-    // 微信侧「批准」确认后由桥接调用；与 fs:openProject 走同一条信任注册路径
+  ipcMain.handle(IPC_CHANNELS.CLAW_GRANT_WORKSPACE, (_event, path: string) => {
+    // Claw 侧「批准」确认后由桥接调用；与 fs:openProject 走同一条信任注册路径
     // （存在性校验 + 持久化 grant + 注册根目录）。
     return { ok: grantRendererProject(String(path ?? '')) }
   })
-  ipcMain.handle(IPC_CHANNELS.WECHAT_UPDATE_SESSION_MODE, (_event, sessionId: string, mode: 'main' | 'office' | 'wechat') => {
-    if (typeof sessionId !== 'string' || !['main', 'office', 'wechat'].includes(mode)) return { ok: false }
+  ipcMain.handle(IPC_CHANNELS.CLAW_UPDATE_SESSION_MODE, (_event, sessionId: string, mode: 'main' | 'office' | 'claw') => {
+    if (typeof sessionId !== 'string' || !['main', 'office', 'claw'].includes(mode)) return { ok: false }
     store.updateSessionMode(sessionId, mode)
     return { ok: true }
   })
 
-  // ── 微信 Agent × 一人公司：观察与干预的中继 ────────────────────────────
-  // 一人公司窗口把运行状态快照节流推上来缓存；微信侧读快照（观察）或经确认后
+  // ── Claw Agent × 一人公司：观察与干预的中继 ────────────────────────────
+  // 一人公司窗口把运行状态快照节流推上来缓存；Claw 侧读快照（观察）或经确认后
   // 向总监会话注入指令（干预），指令结果由 office 窗口回执后原路返回。
   const pendingOfficeInstructions = new Map<string, (result: OfficeInstructionResult) => void>()
 
@@ -3033,7 +3051,7 @@ app.whenReady().then(() => {
     officeSnapshot = snapshot
   })
 
-  ipcMain.on(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION_RESULT, (event, result: OfficeInstructionResult) => {
+  ipcMain.on(IPC_CHANNELS.OFFICE_CLAW_INSTRUCTION_RESULT, (event, result: OfficeInstructionResult) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win || !officeWindows.has(win)) return
     const resolve = pendingOfficeInstructions.get(result?.instructionId ?? '')
@@ -3043,11 +3061,11 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.WECHAT_GET_OFFICE_SNAPSHOT, () => {
+  ipcMain.handle(IPC_CHANNELS.CLAW_GET_OFFICE_SNAPSHOT, () => {
     return officeSnapshot
   })
 
-  ipcMain.handle(IPC_CHANNELS.WECHAT_SEND_OFFICE_INSTRUCTION, async (_event, req: OfficeInstructionRequest) => {
+  ipcMain.handle(IPC_CHANNELS.CLAW_SEND_OFFICE_INSTRUCTION, async (_event, req: OfficeInstructionRequest) => {
     if (!req || typeof req.instructionId !== 'string' || typeof req.text !== 'string' || !req.text.trim()) {
       return { instructionId: req?.instructionId ?? '', ok: false, status: 'failed', message: '参数无效' }
     }
@@ -3064,7 +3082,7 @@ app.whenReady().then(() => {
         clearTimeout(timer)
         resolve(result)
       })
-      target.webContents.send(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION, req)
+      target.webContents.send(IPC_CHANNELS.OFFICE_CLAW_INSTRUCTION, req)
     })
   })
   backup = new BackupService(join(userDataPath, 'backups'))
@@ -3151,6 +3169,6 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   browserClose()
-  wechat?.shutdownNow()
+  claw?.shutdownNow()
   store.close()
 })

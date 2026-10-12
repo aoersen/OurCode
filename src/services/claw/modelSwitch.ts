@@ -1,12 +1,15 @@
 /**
- * 微信 Agent 模型切换（跨组全局解析）。
+ * Claw Agent 模型切换（跨组全局解析）。
  *
  * 用户说「切换到 XXX」时，模型可能在任何配置组里——切换逻辑在所有组中查找：
  * 当前组优先，否则切到第一个包含该模型的组（同时更新 configGroupId + modelId，
- * 避免旧组模型绑新组密钥 401 的问题）。工具（wechat_models）与 /model 命令共用。
+ * 避免旧组模型绑新组密钥 401 的问题）。工具（claw_models）与 /model 命令共用。
+ *
+ * 注意：AgentState 是**跨渠道共享**的，因此这里切换模型会同时影响所有已接入渠道
+ * （同一个数字员工，同一个大脑）。
  */
+import { useClawStore } from '@/stores/clawStore'
 import { useConfigStore } from '@/stores/configStore'
-import { useWechatStore } from '@/stores/wechatStore'
 import type { ApiConfigGroup } from '@/types'
 
 /** 拉取某组可用模型 id 列表（含默认模型；拉取失败时退化为默认模型）。 */
@@ -21,7 +24,7 @@ export async function listGroupModelIds(group: ApiConfigGroup): Promise<string[]
 
 /** 当前组 id（AgentState → IDE 当前组 → 第一个组）。 */
 export function currentGroupId(): string {
-  const st = useWechatStore.getState().agentState
+  const st = useClawStore.getState().agentState
   const cfg = useConfigStore.getState()
   const groups = cfg.configGroups ?? []
   return st?.configGroupId?.trim() || cfg.activeConfigGroupId || groups[0]?.id || ''
@@ -30,7 +33,7 @@ export function currentGroupId(): string {
 /**
  * 跨组切换模型：返回给用户的结果文本。未找到时列出全部组的可用模型。
  */
-export async function switchWechatModel(modelId: string): Promise<string> {
+export async function switchClawModel(modelId: string): Promise<string> {
   const cfg = useConfigStore.getState()
   const groups = cfg.configGroups ?? []
   if (groups.length === 0) return '没有可用的 API 配置组，无法切换模型'
@@ -49,7 +52,7 @@ export async function switchWechatModel(modelId: string): Promise<string> {
     return `模型 ${modelId} 不在任何配置组中。可用：\n${all.join('\n')}`
   }
   const hit = hits.find((h) => h.group.id === activeGroup) ?? hits[0]
-  await useWechatStore.getState().saveAgentState({ configGroupId: hit.group.id, modelId })
+  await useClawStore.getState().saveAgentState({ configGroupId: hit.group.id, modelId })
   return hit.group.id === activeGroup
     ? `已切换模型：${modelId}（${hit.group.name}）`
     : `已切换到「${hit.group.name}」组的模型：${modelId}`

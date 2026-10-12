@@ -104,14 +104,25 @@ export default function ActivityBar() {
         </svg>
       ),
     },
+    // Claw 渠道接入：多渠道（微信/企业微信/QQ/飞书/Telegram）统一入口，
+    // 取代原先的「浏览器」面板（网页浏览能力仍由 agent 的 browser_* 工具提供，
+    // 不再占用活动栏图标）。图标语义：一个中枢节点连出多个接入口。
     {
-      key: 'browser',
-      titleKey: 'activityBar.browser' as TranslationKey,
+      key: 'claw',
+      titleKey: 'activityBar.claw' as TranslationKey,
       icon: (
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="9" />
-          <path d="M3 12h18" />
-          <path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z" />
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 9V4" />
+          <path d="M9.6 10.2 5.8 7.4" />
+          <path d="M14.4 10.2 18.2 7.4" />
+          <path d="M9.6 13.8 5.8 16.6" />
+          <path d="M14.4 13.8 18.2 16.6" />
+          <circle cx="12" cy="3.2" r="1.4" />
+          <circle cx="4.9" cy="6.9" r="1.4" />
+          <circle cx="19.1" cy="6.9" r="1.4" />
+          <circle cx="4.9" cy="17.1" r="1.4" />
+          <circle cx="19.1" cy="17.1" r="1.4" />
         </svg>
       ),
     },
@@ -154,7 +165,7 @@ export default function ActivityBar() {
 
   const handleClick = (key: string) => {
     // Sidebar panels (file change history / agent tasks / usage / skills / MCP /
-    // 办公室视图切换 / 浏览器): switch tab, revealing the sidebar if hidden.
+    // 办公室视图切换 / Claw 渠道接入): switch tab, revealing the sidebar if hidden.
     const ui = useUIStore.getState()
     if (!ui.isSidebarVisible) ui.toggleSidebar()
     ui.setActiveSidebarTab(key as SidebarTab)

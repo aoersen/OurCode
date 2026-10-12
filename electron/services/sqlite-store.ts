@@ -3,7 +3,8 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { CryptoService } from './crypto'
-import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow, WechatAgentState } from '../../shared/types'
+import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow, ClawAgentState, ClawChannelConfig } from '../../shared/types'
+import { isClawChannelId } from '../../shared/claw'
 import { DEFAULT_PREFERENCES } from '../../shared/constants'
 
 /** 每个会话保留的子任务记录条数上限（一人公司任务流的回看深度）。 */
@@ -227,6 +228,22 @@ export class SQLiteStore {
     // guaranteed present (old DBs lack it, and CREATE INDEX would otherwise
     // throw "no such column" before this migration ever runs).
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_cache_last_accessed ON llm_response_cache(last_accessed_at)")
+
+    // ── 微信接入 → Claw 多渠道接入（0.5.0）────────────────────────────────
+    // 单渠道（微信）升级为多渠道（微信/企业微信/QQ/飞书/Telegram）：状态表与
+    // 会话 mode 值一起改名。老库照常可用——先建新表再把旧行搬过去，旧的空表
+    // 保留不动（删表没有必要，且万一用户回退版本还能读回旧数据）。
+    const legacyTables = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wechat_agent_state'")
+      .all() as Array<{ name: string }>
+    if (legacyTables.length > 0) {
+      this.db.exec(`
+        INSERT INTO claw_agent_state (id, state, updated_at)
+          SELECT id, state, updated_at FROM wechat_agent_state WHERE id = 1
+          ON CONFLICT(id) DO NOTHING
+      `)
+    }
+    this.db.exec("UPDATE chat_sessions SET mode = 'claw' WHERE mode = 'wechat'")
   }
 
   private initTables(): void {
@@ -373,9 +390,15 @@ export class SQLiteStore {
         trusted_at INTEGER NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS wechat_agent_state (
+      CREATE TABLE IF NOT EXISTS claw_agent_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         state TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS claw_channels (
+        id TEXT PRIMARY KEY,
+        config BLOB NOT NULL,
         updated_at INTEGER NOT NULL
       );
 
@@ -475,11 +498,11 @@ export class SQLiteStore {
   }
 
   // Chat Sessions
-  getSessions(mode?: 'main' | 'office' | 'wechat'): ChatSession[] {
+  getSessions(mode?: 'main' | 'office' | 'claw'): ChatSession[] {
     // 一人公司与对话模式完全隔离:office 窗口只看到 mode='office' 的会话,
     // main 窗口只看到 mode='main' / 无模式(升级前的旧会话)的会话。
-    // 微信 Agent 会话（mode='wechat'）不进主界面：由微信桥接单独按
-    // mode='wechat' 拉取。
+    // Claw 渠道会话（mode='claw'，来自微信/企业微信/QQ/飞书/Telegram）不进主
+    // 界面：由 Claw 桥接单独按 mode='claw' 拉取。
     // 开公司不会把普通 agent 模式的对话带过来;反之 main 窗口也看不到公司会话。
     const sessions = !mode
       ? (this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC').all() as any[])
@@ -489,10 +512,10 @@ export class SQLiteStore {
                WHERE mode = 'office'
                ORDER BY updated_at DESC`
           ).all() as any[])
-        : mode === 'wechat'
+        : mode === 'claw'
           ? (this.db.prepare(
               `SELECT * FROM chat_sessions
-                 WHERE mode = 'wechat'
+                 WHERE mode = 'claw'
                  ORDER BY updated_at DESC`
             ).all() as any[])
           : (this.db.prepare(
@@ -843,30 +866,57 @@ export class SQLiteStore {
     saveMany(Object.entries(prefs))
   }
 
-  // ── 微信 Agent 状态（WechatAgentState）──────────────────────────────────
-  // 与用户偏好分离：微信 agent 的运行期状态（当前工作区/审批模式/模型/记忆）
-  // 由对话命令调整，经 wechat:saveAgentState IPC 写回；偏好只作初始值。
-  getWechatAgentState(): WechatAgentState | null {
-    const row = this.db.prepare('SELECT state FROM wechat_agent_state WHERE id = 1').get() as
+  // ── Claw Agent 状态（ClawAgentState）────────────────────────────────────
+  // 与用户偏好分离：Claw agent 的运行期状态（当前工作区/审批模式/模型/记忆）
+  // 由对话命令调整，经 claw:saveAgentState IPC 写回；偏好只作初始值。
+  // 微信 agent 的表名（wechat_agent_state）在迁移里改名过来，老库无损升级。
+  getClawAgentState(): ClawAgentState | null {
+    const row = this.db.prepare('SELECT state FROM claw_agent_state WHERE id = 1').get() as
       | { state: string }
       | undefined
     if (!row) return null
     try {
-      return JSON.parse(row.state) as WechatAgentState
+      return JSON.parse(row.state) as ClawAgentState
     } catch {
       return null
     }
   }
 
-  saveWechatAgentState(state: WechatAgentState): void {
+  saveClawAgentState(state: ClawAgentState): void {
     this.db.prepare(`
-      INSERT INTO wechat_agent_state (id, state, updated_at) VALUES (1, ?, ?)
+      INSERT INTO claw_agent_state (id, state, updated_at) VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at
     `).run(JSON.stringify(state), state.updatedAt ?? Date.now())
   }
 
-  /** 会话 mode 迁移/调整（微信桥接把历史会话标记为 'wechat' 隔离出主界面）。 */
-  updateSessionMode(sessionId: string, mode: 'main' | 'office' | 'wechat'): void {
+  // ── Claw 渠道配置（每渠道一行：凭据 + 启停 + 接入策略）─────────────────
+  // 凭据（AppSecret / Bot Token / EncodingAESKey …）按 API key 同等标准加密落盘
+  // （CryptoService，机器绑定密钥）：数据库文件被拷走也读不出渠道凭据。
+  getClawChannels(): ClawChannelConfig[] {
+    const rows = this.db
+      .prepare('SELECT config FROM claw_channels ORDER BY id ASC')
+      .all() as Array<{ config: Buffer }>
+    const out: ClawChannelConfig[] = []
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(this.crypto.decrypt(row.config)) as ClawChannelConfig
+        if (parsed && typeof parsed === 'object' && isClawChannelId(parsed.id)) out.push(parsed)
+      } catch {
+        // 坏行跳过：主进程会按渠道目录补默认配置
+      }
+    }
+    return out
+  }
+
+  saveClawChannel(config: ClawChannelConfig): void {
+    this.db.prepare(`
+      INSERT INTO claw_channels (id, config, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at
+    `).run(config.id, this.crypto.encrypt(JSON.stringify(config)), config.updatedAt ?? Date.now())
+  }
+
+  /** 会话 mode 迁移/调整（Claw 桥接把历史会话标记为 'claw' 隔离出主界面）。 */
+  updateSessionMode(sessionId: string, mode: 'main' | 'office' | 'claw'): void {
     this.db.prepare('UPDATE chat_sessions SET mode = ? WHERE id = ?').run(mode, sessionId)
   }
 

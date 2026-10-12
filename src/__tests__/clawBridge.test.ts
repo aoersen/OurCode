@@ -5,18 +5,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // pattern as chatStore.test.ts). The bridge never touches monaco directly.
 vi.mock('@/editor/monacoSetup', () => ({ monaco: {} }))
 
-import { answerPendingDecision, nextSendChunk, ensureSession, resolveWechatConfig, formatOfficeSnapshotText, repairSession } from '@/services/wechat/wechatBridge'
+import { answerPendingDecision, nextSendChunk, ensureSession, resolveClawConfig, formatOfficeSnapshotText, repairSession } from '@/services/claw/clawBridge'
 import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useEditorStore } from '@/stores/editorStore'
-import { useWechatStore } from '@/stores/wechatStore'
-import type { ApiConfigGroup, WechatAgentState, WechatGatewayEvent } from '@/types'
+import { useClawStore } from '@/stores/clawStore'
+import type { ApiConfigGroup, ClawAgentState, ClawGatewayEvent } from '@/types'
 
-type GatewayListener = (ev: WechatGatewayEvent) => void
+type GatewayListener = (ev: ClawGatewayEvent) => void
 
-const sentTexts: Array<{ to: string; text: string }> = []
+const sentTexts: Array<{ channel: string; to: string; text: string }> = []
 
-const AGENT_STATE: WechatAgentState = {
+const AGENT_STATE: ClawAgentState = {
   sandboxPath: 'C:\\sandbox',
   currentWorkspace: null,
   approvalMode: 'approve',
@@ -27,18 +27,19 @@ const AGENT_STATE: WechatAgentState = {
 }
 
 const electronApi = {
-  wechatSendText: vi.fn(async (to: string, text: string) => {
-    sentTexts.push({ to, text })
-    return { event: 'sent' as const, ok: true }
+  // 出站签名带渠道：同一个 Agent 用不同渠道回发给不同的人，渠道不能串
+  clawSendText: vi.fn(async (channel: string, to: string, text: string) => {
+    sentTexts.push({ channel, to, text })
+    return { event: 'sent' as const, channel, ok: true }
   }),
   saveSession: vi.fn(async () => true),
-  onWechatEvent: vi.fn((_cb: GatewayListener) => () => {}),
-  getWechatStatus: vi.fn(async () => ({ state: 'idle' as const })),
+  onClawEvent: vi.fn((_cb: GatewayListener) => () => {}),
+  getClawStatus: vi.fn(async () => ({ state: 'idle' as const })),
   openProject: vi.fn(async () => {}),
-  getWechatAgentState: vi.fn(async () => AGENT_STATE),
-  saveWechatAgentState: vi.fn(async () => ({ ok: true })),
-  wechatGrantWorkspace: vi.fn(async () => ({ ok: true })),
-  wechatUpdateSessionMode: vi.fn(async () => ({ ok: true })),
+  getClawAgentState: vi.fn(async () => AGENT_STATE),
+  saveClawAgentState: vi.fn(async () => ({ ok: true })),
+  clawGrantWorkspace: vi.fn(async () => ({ ok: true })),
+  clawUpdateSessionMode: vi.fn(async () => ({ ok: true })),
   authorize: vi.fn(async () => true),
   getSessions: vi.fn(async () => []),
   getOfficeSnapshot: vi.fn(async () => null),
@@ -51,14 +52,14 @@ const initialState = useChatStore.getState()
 
 beforeEach(() => {
   useChatStore.setState(initialState)
-  useWechatStore.setState({ agentState: AGENT_STATE })
+  useClawStore.setState({ agentState: AGENT_STATE })
   sentTexts.length = 0
   vi.clearAllMocks()
 })
 
 /** 建一个微信会话（mode='wechat'），决策走后台队列而非 UI 槽位。 */
-function makeWechatSession(): string {
-  return useChatStore.getState().createSession('g-test', 'C:\\sandbox', { mode: 'wechat' })
+function makeClawSession(): string {
+  return useChatStore.getState().createSession('g-test', 'C:\\sandbox', { mode: 'claw' })
 }
 
 function offer(kind: 'approval' | 'question' | 'batch' | 'scope', sessionId: string): void {
@@ -76,80 +77,81 @@ function offer(kind: 'approval' | 'question' | 'batch' | 'scope', sessionId: str
   useChatStore.getState().offerDecision({ kind, sessionId, value } as never)
 }
 
-describe('wechatBridge 决策应答（后台队列）', () => {
-  it('批准/拒绝单个工具审批（微信决策不进入 UI 槽位）', () => {
-    const sessionId = makeWechatSession()
+describe('clawBridge 决策应答（后台队列）', () => {
+  it('批准/拒绝单个工具审批（渠道决策不进入 UI 槽位）', () => {
+    const sessionId = makeClawSession()
     offer('approval', sessionId)
 
-    expect(useChatStore.getState().wechatDecisions.approval?.sessionId).toBe(sessionId)
+    expect(useChatStore.getState().clawDecisions.approval?.sessionId).toBe(sessionId)
     expect(useChatStore.getState().pendingApproval).toBeNull() // 不占 IDE 槽位
 
-    expect(answerPendingDecision(sessionId, 'contact-1', '批准')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.approval).toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '批准')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.approval).toBeNull()
     expect(sentTexts.at(-1)?.text).toBe('已批准 ✅')
     expect(sentTexts.at(-1)?.to).toBe('contact-1')
+    expect(sentTexts.at(-1)?.channel).toBe('wechat')
 
     offer('approval', sessionId)
-    expect(answerPendingDecision(sessionId, 'contact-1', '拒绝')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.approval).toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '拒绝')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.approval).toBeNull()
     expect(sentTexts.at(-1)?.text).toBe('已拒绝')
   })
 
   it('审批等待期间的非答案消息被消费并给出指引，不清空队列', () => {
-    const sessionId = makeWechatSession()
+    const sessionId = makeClawSession()
     offer('approval', sessionId)
-    expect(answerPendingDecision(sessionId, 'contact-1', '随便说点什么')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.approval).not.toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '随便说点什么')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.approval).not.toBeNull()
     expect(sentTexts.at(-1)?.text).toContain('批准')
   })
 
   it('提问按编号映射到选项', () => {
-    const sessionId = makeWechatSession()
+    const sessionId = makeClawSession()
     offer('question', sessionId)
-    expect(answerPendingDecision(sessionId, 'contact-1', '2')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.question).toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '2')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.question).toBeNull()
     expect(sentTexts.at(-1)?.text).toContain('方案乙')
   })
 
   it('批量审批：全部 / 批准 / 拒绝', () => {
-    const sessionId = makeWechatSession()
+    const sessionId = makeClawSession()
     offer('batch', sessionId)
-    expect(answerPendingDecision(sessionId, 'contact-1', '全部')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.batch).toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '全部')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.batch).toBeNull()
 
     offer('batch', sessionId)
-    expect(answerPendingDecision(sessionId, 'contact-1', '拒绝')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.batch).toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '拒绝')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.batch).toBeNull()
   })
 
   it('作用域决策：加入计划', () => {
-    const sessionId = makeWechatSession()
+    const sessionId = makeClawSession()
     offer('scope', sessionId)
-    expect(answerPendingDecision(sessionId, 'contact-1', '加入计划')).toBe(true)
-    expect(useChatStore.getState().wechatDecisions.scope).toBeNull()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '加入计划')).toBe(true)
+    expect(useChatStore.getState().clawDecisions.scope).toBeNull()
     expect(sentTexts.at(-1)?.text).toBe('已加入计划 ✅')
   })
 
   it('计划待批准时非答案消息被消费并给出指引（不触发执行）', () => {
-    const sessionId = makeWechatSession()
+    const sessionId = makeClawSession()
     useChatStore.setState((s) => ({
       sessions: s.sessions.map((x) =>
         x.id === sessionId ? { ...x, planStatus: 'pending_approval' as const, planContent: '做一个项目' } : x,
       ),
     }))
-    expect(answerPendingDecision(sessionId, 'contact-1', '先等等')).toBe(true)
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '先等等')).toBe(true)
     expect(useChatStore.getState().sessions.find((x) => x.id === sessionId)?.planStatus).toBe('pending_approval')
     expect(sentTexts.at(-1)?.text).toContain('批准计划')
   })
 
   it('无待决决策时返回 false（消息继续作为新消息处理）', () => {
-    const sessionId = makeWechatSession()
-    expect(answerPendingDecision(sessionId, 'contact-1', '你好')).toBe(false)
+    const sessionId = makeClawSession()
+    expect(answerPendingDecision(sessionId, 'wechat', 'contact-1', '你好')).toBe(false)
     expect(sentTexts).toHaveLength(0)
   })
 })
 
-describe('wechatBridge 会话映射', () => {
+describe('clawBridge 会话映射', () => {
   function makeGroup(id: string, defaultModel: string): ApiConfigGroup {
     return {
       id,
@@ -167,9 +169,9 @@ describe('wechatBridge 会话映射', () => {
 
   it('ensureSession 创建 mode=wechat 的会话，工作区取自 AgentState（沙盒）', () => {
     useConfigStore.setState({ configGroups: [makeGroup('g1', 'model-a')], activeConfigGroupId: 'g1' })
-    const sessionId = ensureSession('contact-map-1')
+    const sessionId = ensureSession('wechat', 'contact-map-1')
     const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
-    expect(session?.mode).toBe('wechat')
+    expect(session?.mode).toBe('claw')
     expect(session?.projectPath).toBe('C:\\sandbox')
     expect(session?.projectEditMode).toBe('confirm_before_change') // approve 模式
   })
@@ -179,9 +181,9 @@ describe('wechatBridge 会话映射', () => {
       configGroups: [makeGroup('g1', 'model-a'), makeGroup('g2', 'model-b')],
       activeConfigGroupId: 'g2',
     })
-    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g1', modelId: 'model-x' } })
+    useClawStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g1', modelId: 'model-x' } })
 
-    const sessionId = ensureSession('contact-map-2')
+    const sessionId = ensureSession('wechat', 'contact-map-2')
     const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     expect(session?.configGroupId).toBe('g1')
     expect(session?.model).toBe('model-x')
@@ -190,29 +192,29 @@ describe('wechatBridge 会话映射', () => {
     useChatStore.setState((prev) => ({
       sessions: prev.sessions.map((x) => (x.id === sessionId ? { ...x, configGroupId: '' } : x)),
     }))
-    expect(ensureSession('contact-map-2')).toBe(sessionId)
+    expect(ensureSession('wechat', 'contact-map-2')).toBe(sessionId)
     expect(useChatStore.getState().sessions.find((s) => s.id === sessionId)?.configGroupId).toBe('g1')
   })
 
-  it('resolveWechatConfig 未显式选择时回退到当前组，再到第一个组', () => {
+  it('resolveClawConfig 未显式选择时回退到当前组，再到第一个组', () => {
     useConfigStore.setState({
       configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
       activeConfigGroupId: 'g2',
     })
-    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: '', wechatModelId: '' })
-    expect(resolveWechatConfig().configGroupId).toBe('g2')
+    useEditorStore.getState().updatePreferences({ clawConfigGroupId: '', clawModelId: '' })
+    expect(resolveClawConfig().configGroupId).toBe('g2')
 
     useConfigStore.setState({ activeConfigGroupId: null })
-    expect(resolveWechatConfig().configGroupId).toBe('g1')
+    expect(resolveClawConfig().configGroupId).toBe('g1')
   })
 
-  it('resolveWechatConfig AgentState 显式选择的组优先于偏好与当前组', () => {
+  it('resolveClawConfig AgentState 显式选择的组优先于偏好与当前组', () => {
     useConfigStore.setState({
       configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
       activeConfigGroupId: 'g2',
     })
-    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g1', modelId: 'm1' } })
-    const resolved = resolveWechatConfig()
+    useClawStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g1', modelId: 'm1' } })
+    const resolved = resolveClawConfig()
     expect(resolved.configGroupId).toBe('g1')
     expect(resolved.modelId).toBe('m1')
   })
@@ -222,32 +224,32 @@ describe('wechatBridge 会话映射', () => {
       configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
       activeConfigGroupId: 'g1',
     })
-    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: '', modelId: null } })
-    const sessionId = ensureSession('contact-rebind')
+    useClawStore.setState({ agentState: { ...AGENT_STATE, configGroupId: '', modelId: null } })
+    const sessionId = ensureSession('wechat', 'contact-rebind')
     const before = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     expect(before?.configGroupId).toBe('g1')
 
     // 对话里切到 g2 组的模型：repairSession 必须连带换组，不能只换模型
-    useWechatStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g2', modelId: 'm2' } })
+    useClawStore.setState({ agentState: { ...AGENT_STATE, configGroupId: 'g2', modelId: 'm2' } })
     repairSession(sessionId)
     const after = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     expect(after?.configGroupId).toBe('g2')
     expect(after?.model).toBe('m2')
   })
 
-  it('resolveWechatConfig 显式组被删除时回退当前组并忽略旧模型偏好', () => {
+  it('resolveClawConfig 显式组被删除时回退当前组并忽略旧模型偏好', () => {
     useConfigStore.setState({
       configGroups: [makeGroup('g1', 'm1'), makeGroup('g2', 'm2')],
       activeConfigGroupId: 'g2',
     })
-    useEditorStore.getState().updatePreferences({ wechatConfigGroupId: 'g-deleted', wechatModelId: 'stale-model' })
-    const resolved = resolveWechatConfig()
+    useEditorStore.getState().updatePreferences({ clawConfigGroupId: 'g-deleted', clawModelId: 'stale-model' })
+    const resolved = resolveClawConfig()
     expect(resolved.configGroupId).toBe('g2')
     expect(resolved.modelId).toBeNull()
   })
 })
 
-describe('wechatBridge 办公室快照格式化', () => {
+describe('clawBridge 办公室快照格式化', () => {
   it('办公室未启动时给出明确提示', () => {
     expect(formatOfficeSnapshotText(null)).toContain('办公室未启动')
   })
@@ -267,7 +269,7 @@ describe('wechatBridge 办公室快照格式化', () => {
   })
 })
 
-describe('wechatBridge 分片发送', () => {
+describe('clawBridge 分片发送', () => {
   it('流式节流：剩余不足 400 不发；达到后按 1700 分片', () => {
     const acc = 'x'.repeat(2000)
     expect(nextSendChunk(acc, 1601, false)).toBeNull() // 剩 399

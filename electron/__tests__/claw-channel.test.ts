@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { EventEmitter } from 'events'
 import { PassThrough } from 'stream'
 
-import { WechatChannel } from '../services/wechat-channel'
+import { ClawChannelHost } from '../services/claw-channel'
 
 const mocks = vi.hoisted(() => {
   return { spawn: vi.fn() }
@@ -31,7 +31,7 @@ function makeFakeChild() {
   return child
 }
 
-describe('WechatChannel', () => {
+describe('ClawChannelHost', () => {
   let stateDir: string
   let gatewayPath: string
 
@@ -46,13 +46,14 @@ describe('WechatChannel', () => {
   })
 
   it('start：网关文件缺失时上报 error 事件且不 spawn', () => {
-    const channel = new WechatChannel({ gatewayPath, stateDir })
+    const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
     const events: unknown[] = []
     channel.on('gatewayEvent', (ev: unknown) => events.push(ev))
     channel.start()
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(events).toHaveLength(1)
     expect((events[0] as { event: string }).event).toBe('error')
+    expect((events[0] as { channel: string }).channel).toBe('wechat')
     expect(channel.getStatus().state).toBe('stopped')
   })
 
@@ -61,7 +62,7 @@ describe('WechatChannel', () => {
     mocks.spawn.mockReturnValue(child)
 
     writeFileSync(gatewayPath, '')
-    const channel = new WechatChannel({ gatewayPath, stateDir })
+    const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
     channel.start()
 
     expect(mocks.spawn).toHaveBeenCalledTimes(1)
@@ -72,12 +73,60 @@ describe('WechatChannel', () => {
     expect(opts.env.OPENCLAW_STATE_DIR).toBe(stateDir)
   })
 
+  it('start：写入渠道配置并发送 start 命令（凭据不经命令行传递）', () => {
+    const child = makeFakeChild()
+    mocks.spawn.mockReturnValue(child)
+
+    writeFileSync(gatewayPath, '')
+    const host = new ClawChannelHost({ channel: 'feishu', gatewayPath, stateDir })
+    host.setConfig({ values: { appId: 'cli_x' }, webhookToken: 'tok-1' })
+    host.start()
+
+    const [, , opts] = mocks.spawn.mock.calls[0] as [string, string[], { env: Record<string, string | undefined> }]
+    expect(opts.env.CLAW_CHANNEL).toBe('feishu')
+    expect(opts.env.CLAW_CONFIG).toBe(join(stateDir, 'config.json'))
+    // 配置落在磁盘上，进程列表里看不到凭据
+    const written = JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8')) as {
+      values: Record<string, string>
+      webhookToken: string
+    }
+    expect(written.values.appId).toBe('cli_x')
+    expect(written.webhookToken).toBe('tok-1')
+    expect(String(child.stdin.read())).toContain('"cmd":"start"')
+  })
+
+  it('setConfig：运行中改配置会重启进程（渠道连接必须重连才生效）', async () => {
+    const children: Array<ReturnType<typeof makeFakeChild>> = []
+    mocks.spawn.mockImplementation(() => {
+      const c = makeFakeChild()
+      children.push(c)
+      return c
+    })
+    writeFileSync(gatewayPath, '')
+    const host = new ClawChannelHost({ channel: 'telegram', gatewayPath, stateDir })
+    host.start()
+    expect(mocks.spawn).toHaveBeenCalledTimes(1)
+
+    host.setConfig({ values: { botToken: 'new' }, webhookToken: 'tok-2' })
+    // 旧进程先收 shutdown（保存新配置后重连，而不是热改内存）
+    await vi.waitFor(() => {
+      const cmds = String(children[0].stdin.read() ?? '')
+      expect(cmds).toContain('"cmd":"shutdown"')
+    })
+    // 假网关“退出”，宿主随即用新配置拉起新进程
+    children[0].emit('exit', 0)
+    await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalledTimes(2))
+    const written = JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8')) as { values: Record<string, string> }
+    expect(written.values.botToken).toBe('new')
+    await host.stop()
+  })
+
   it('gatewayEvent：子进程 stdout 的 NDJSON 行被解析并原样转发', async () => {
     const child = makeFakeChild()
     mocks.spawn.mockReturnValue(child)
 
     writeFileSync(gatewayPath, '')
-    const channel = new WechatChannel({ gatewayPath, stateDir })
+    const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
     const events: unknown[] = []
     channel.on('gatewayEvent', (ev: unknown) => events.push(ev))
     channel.start()
@@ -87,8 +136,9 @@ describe('WechatChannel', () => {
     child.stdout.write('not-json\n')
 
     await vi.waitFor(() => expect(events).toHaveLength(2))
-    expect(events[0]).toEqual({ event: 'status', state: 'idle' })
-    expect(events[1]).toEqual({ event: 'qr', qrcodeUrl: 'https://example.com/qr' })
+    // 宿主在事件上补 channel 字段（处理器按渠道实例化，网关自己写不写都不影响）
+    expect(events[0]).toEqual({ event: 'status', channel: 'wechat', state: 'idle' })
+    expect(events[1]).toEqual({ event: 'qr', channel: 'wechat', qrcodeUrl: 'https://example.com/qr' })
     expect(channel.getStatus().state).toBe('idle')
   })
 
@@ -97,15 +147,18 @@ describe('WechatChannel', () => {
     mocks.spawn.mockReturnValue(child)
 
     writeFileSync(gatewayPath, '')
-    const channel = new WechatChannel({ gatewayPath, stateDir })
+    const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
     channel.start()
 
-    const pending = channel.sendText('wx-user-1', '你好')
-    // 网关应收到命令
+    const pending = channel.sendText('wx-user-1', '你好', undefined, 'ctx-1')
+    // 网关应收到命令（首行是 start，末行才是这次 sendText）
     await vi.waitFor(() => expect(child.stdin.readableLength).toBeGreaterThan(0))
-    const sent = JSON.parse(String(child.stdin.read()) as string)
+    const lines = String(child.stdin.read()).split('\n').filter(Boolean)
+    const sent = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>
     expect(sent.cmd).toBe('sendText')
     expect(sent.to).toBe('wx-user-1')
+    // 回执令牌随发送带上（QQ 的被动回复依赖它）
+    expect(sent.contextToken).toBe('ctx-1')
     expect(sent.clientMsgId).toBeTypeOf('string')
 
     child.stdout.write(JSON.stringify({ event: 'sent', clientMsgId: sent.clientMsgId, ok: true, messageId: 'm-1' }) + '\n')
@@ -115,7 +168,7 @@ describe('WechatChannel', () => {
   })
 
   it('sendText：网关未运行时立即以失败回执 resolve', async () => {
-    const channel = new WechatChannel({ gatewayPath, stateDir })
+    const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
     const res = await channel.sendText('wx-user-1', '你好')
     expect(res.ok).toBe(false)
     expect(res.error).toContain('未运行')
@@ -126,7 +179,7 @@ describe('WechatChannel', () => {
     mocks.spawn.mockReturnValue(child)
 
     writeFileSync(gatewayPath, '')
-    const channel = new WechatChannel({ gatewayPath, stateDir })
+    const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
     const exits: unknown[] = []
     channel.on('exit', (code: unknown) => exits.push(code))
     channel.start()
@@ -151,7 +204,7 @@ describe('WechatChannel', () => {
         return lastChild
       })
 
-      const channel = new WechatChannel({ gatewayPath, stateDir })
+      const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
       const events: unknown[] = []
       channel.on('gatewayEvent', (ev: unknown) => events.push(ev))
       channel.start()
@@ -183,7 +236,7 @@ describe('WechatChannel', () => {
       mocks.spawn.mockReturnValue(child)
 
       writeFileSync(gatewayPath, '')
-      const channel = new WechatChannel({ gatewayPath, stateDir })
+      const channel = new ClawChannelHost({ channel: 'wechat', gatewayPath, stateDir })
       channel.start()
       const stopPromise = channel.stop()
       // 网关对 shutdown 无响应（不退出）→ 走 3 秒超时强杀路径

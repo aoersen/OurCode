@@ -1,3 +1,4 @@
+import ClawPanel from '@/components/Claw/ClawPanel'
 import { useMemo } from 'react'
 import ProjectListPanel from './ProjectListPanel'
 import FileChangesPanel from './FileChangesPanel'
@@ -6,7 +7,6 @@ import UsagePanel from './UsagePanel'
 import SkillPanel from '../Skills/SkillPanel'
 import McpPanel from '../Mcp/McpPanel'
 import GitPanel from '../Git/GitPanel'
-import BrowserPanel from '../Browser/BrowserPanel'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 
@@ -111,7 +111,7 @@ export default function Sidebar() {
     <div className="h-full flex flex-col bg-transparent">
       {/* Sidebar Header — files / skills / mcp 页的标题都在面板内部（各自带 header），
           头栏不渲染以免顶部留大片空白 */}
-      {activeSidebarTab !== 'files' && activeSidebarTab !== 'skills' && activeSidebarTab !== 'mcp' && (
+      {activeSidebarTab !== 'files' && activeSidebarTab !== 'skills' && activeSidebarTab !== 'mcp' && activeSidebarTab !== 'claw' && (
         <div
           className="flex items-center justify-between shrink-0"
           style={{ padding: '0 12px', height: 36 }}
@@ -169,8 +169,8 @@ export default function Sidebar() {
           <SkillPanel />
         ) : activeSidebarTab === 'mcp' ? (
           <McpPanel />
-        ) : activeSidebarTab === 'browser' ? (
-          <BrowserPanel />
+        ) : activeSidebarTab === 'claw' ? (
+          <ClawPanel />
         ) : null}
       </div>
     </div>

@@ -35,7 +35,7 @@ export type SidebarTab =
   | 'skills'
   | 'mcp'
   | 'office'
-  | 'browser'
+  | 'claw'
 
 interface UIState {
   // Sidebar

@@ -4,6 +4,7 @@
 import { Tool, ToolDefinition } from './types'
 import type { SubAgentOptions } from '@/services/subagents/subagentRunner'
 import { shellEnvironmentNote } from '@/utils/platform'
+import { clawChannelMeta } from '@shared/claw'
 
 export function createToolRegistry(): Tool[] {
   return [
@@ -1059,21 +1060,22 @@ export function createToolRegistry(): Tool[] {
       timeoutMs: 120_000,
     },
     {
-      // WeChat Agent 自身状态工具：agent 任务执行中可以查看/调整自身状态。
-      // 工作区切换的安全门（信任确认）由微信侧 /workspace 命令承担——本工具
-      // 只允许切到已信任目录，未信任路径引导用户到微信里执行。
-      name: 'wechat_state',
+      // Claw Agent 自身状态工具：agent 任务执行中可以查看/调整自身状态与渠道接入。
+      // 工作区切换的安全门（信任确认）由对话侧 /workspace 命令承担——本工具
+      // 只允许切到已信任目录，未信任路径引导用户到对话渠道里执行。
+      name: 'claw_state',
       description:
-        'Manage your own WeChat Agent state: view or adjust the current workspace, approval mode and long-term memory. ' +
+        'Manage your own Claw Agent state (IM channels + workspace + approval mode + memory). ' +
+        'Use channels to list which IM channels are connected and enabled. ' +
         'Use get to inspect current state. set_workspace switches future tasks to another ALREADY-TRUSTED directory ' +
-        '(for untrusted directories, tell the user to run /workspace in WeChat, which asks them for approval). ' +
+        '(for untrusted directories, tell the user to run /workspace in the channel chat, which asks them for approval). ' +
         'set_mode changes approval mode (approve / full_access). memory_add / memory_list / memory_clear manage long-term memory.',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['get', 'set_workspace', 'set_mode', 'memory_add', 'memory_list', 'memory_clear'],
+            enum: ['get', 'channels', 'set_workspace', 'set_mode', 'memory_add', 'memory_list', 'memory_clear'],
             description: 'Which state operation to perform',
           },
           value: {
@@ -1084,10 +1086,10 @@ export function createToolRegistry(): Tool[] {
         required: ['action'],
       },
       execute: async (args: Record<string, any>) => {
-        const { useWechatStore } = await import('@/stores/wechatStore')
-        const store = useWechatStore.getState()
+        const { useClawStore } = await import('@/stores/clawStore')
+        const store = useClawStore.getState()
         const cur = store.agentState
-        if (!cur) return '微信 Agent 状态未初始化（稍后重试）'
+        if (!cur) return 'Claw Agent 状态未初始化（稍后重试）'
         const workspace = cur.currentWorkspace || cur.sandboxPath
         switch (args.action) {
           case 'get':
@@ -1097,6 +1099,20 @@ export function createToolRegistry(): Tool[] {
               `模型：${cur.modelId || '跟随组默认'}`,
               `记忆：${cur.memory?.length ?? 0} 条`,
             ].join('\n')
+          case 'channels': {
+            // 渠道状态由主进程维护（真实连接状态），这里只做展示；配置与接入控制
+            // 的修改入口在 IDE 左侧「Claw 接入」面板，不在对话里。
+            await store.refreshStatus()
+            const hub = useClawStore.getState().hub
+            if (!hub || hub.channels.length === 0) return '渠道状态未就绪（稍后重试）'
+            return hub.channels
+              .map((c) => {
+                const state =
+                  c.state === 'connected' ? '已连接' : c.state === 'loggingIn' ? '登录中' : c.enabled ? '未连接' : '已停用'
+                return `${clawChannelMeta(c.id).label}：${state}${c.configured ? '' : '（凭据未配置完）'}`
+              })
+              .join('\n')
+          }
           case 'set_workspace': {
             const value = String(args.value ?? '').trim()
             if (!value || value === 'sandbox') {
@@ -1113,10 +1129,10 @@ export function createToolRegistry(): Tool[] {
               trusted = false
             }
             if (!trusted) {
-              return `目录 ${value} 尚未获得本机信任。请让用户在微信里发 /workspace ${value} 完成信任确认。`
+              return `目录 ${value} 尚未获得本机信任。请让用户在对话渠道里发 /workspace ${value} 完成信任确认。`
             }
             await store.saveAgentState({ currentWorkspace: value })
-            return `已切换工作区：${value}（本轮任务仍继续在 ${workspace}，下一条微信消息起生效）`
+            return `已切换工作区：${value}（本轮任务仍继续在 ${workspace}，下一条渠道消息起生效）`
           }
           case 'set_mode': {
             const value = String(args.value ?? '').trim()
@@ -1148,7 +1164,7 @@ export function createToolRegistry(): Tool[] {
       },
     },
     {
-      // 微信 Agent 观察一人公司：读公司列表/运行相位/员工工位/近期活动。
+      // Claw Agent 观察一人公司：读公司列表/运行相位/员工工位/近期活动。
       // 办公室窗口未打开时返回明确提示（快照为 null）。
       name: 'office_status',
       description:
@@ -1158,17 +1174,17 @@ export function createToolRegistry(): Tool[] {
       parameters: { type: 'object', properties: {}, required: [] },
       execute: async () => {
         const snap = await window.electronAPI.getOfficeSnapshot()
-        const { formatOfficeSnapshotText } = await import('@/services/wechat/wechatBridge')
+        const { formatOfficeSnapshotText } = await import('@/services/claw/clawBridge')
         return formatOfficeSnapshotText(snap)
       },
     },
     {
-      // 微信 Agent 干预一人公司：向总监下指令。指令先提交给微信用户确认，
+      // Claw Agent 干预一人公司：向总监下指令。指令先提交给渠道用户确认，
       // 用户批准后才真正注入总监会话——本工具返回后不立即生效。
       name: 'office_instruct',
       description:
         'Give an instruction to the one-person company director (总监). The instruction is first shown to the ' +
-        'WeChat user for approval and only injected into the director session after they reply 批准 (approve). ' +
+        'IM user for approval and only injected into the director session after they reply 批准 (approve). ' +
         'Use this when the user asks you to make the office company do something (e.g. deploy, review, build).',
       parameters: {
         type: 'object',
@@ -1182,7 +1198,7 @@ export function createToolRegistry(): Tool[] {
         required: ['instruction'],
       },
       execute: async (args: Record<string, any>, context?: { sessionId?: string }) => {
-        const { proposeOfficeInstruction } = await import('@/services/wechat/wechatBridge')
+        const { proposeOfficeInstruction } = await import('@/services/claw/clawBridge')
         return proposeOfficeInstruction(
           context?.sessionId ?? '',
           String(args.instruction ?? ''),
@@ -1191,9 +1207,9 @@ export function createToolRegistry(): Tool[] {
       },
     },
     {
-      // 微信 Agent 查询/切换真实模型：数据来自用户配置的 API 组（fetchModelsForGroup），
+      // Claw Agent 查询/切换真实模型：数据来自用户配置的 API 组（fetchModelsForGroup），
       // 绝不编造提供商——回答「我有哪些可用模型」必须用本工具而不是凭训练知识猜。
-      name: 'wechat_models',
+      name: 'claw_models',
       description:
         "List the user's REAL configured API model groups and their available models (fetched from the configured " +
         'API endpoints), and switch the WeChat Agent\'s model. Use list to answer questions like "which models can I use" ' +
@@ -1205,7 +1221,7 @@ export function createToolRegistry(): Tool[] {
           action: {
             type: 'string',
             enum: ['list', 'set_model'],
-            description: 'list = show configured groups and models; set_model = switch the WeChat Agent model',
+            description: 'list = show configured groups and models; set_model = switch the Claw Agent model',
           },
           modelId: { type: 'string', description: 'For set_model: the model id from the list output' },
         },
@@ -1213,17 +1229,17 @@ export function createToolRegistry(): Tool[] {
       },
       execute: async (args: Record<string, any>) => {
         const { useConfigStore } = await import('@/stores/configStore')
-        const { useWechatStore } = await import('@/stores/wechatStore')
-        const { switchWechatModel, listGroupModelIds, currentGroupId } = await import('@/services/wechat/modelSwitch')
+        const { useClawStore } = await import('@/stores/clawStore')
+        const { switchClawModel, listGroupModelIds, currentGroupId } = await import('@/services/claw/modelSwitch')
         const cfg = useConfigStore.getState()
         const groups = cfg.configGroups ?? []
-        const st = useWechatStore.getState().agentState
+        const st = useClawStore.getState().agentState
 
         if (args.action === 'set_model') {
           const modelId = String(args.modelId ?? '').trim()
           if (!modelId) return '需要 modelId（先用 action=list 查看可用模型）'
           // 跨组解析：模型在任何组里都能切过去（当前组优先）。
-          return switchWechatModel(modelId)
+          return switchClawModel(modelId)
         }
 
         if (groups.length === 0) return '没有配置任何 API 模型组（用户需在 IDE 设置→API 配置里添加）'

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
-import type { AgentTerminalRun, TerminalRunSnapshot } from '../shared/types'
+import type { AgentTerminalRun, ClawChannelConfig, ClawChannelId, TerminalRunSnapshot } from '../shared/types'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -337,31 +337,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_PROGRESS, listener) }
   },
 
-  // WeChat channel — 主进程只管进程与事件中继，微信协议在网关子进程内
-  getWechatStatus: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GET_STATUS),
-  wechatStartLogin: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_START_LOGIN),
-  wechatSubmitVerifyCode: (code: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SUBMIT_VERIFY_CODE, code),
-  wechatSendText: (to: string, text: string, clientMsgId?: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SEND_TEXT, to, text, clientMsgId),
-  wechatLogout: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_LOGOUT),
-  wechatSetEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SET_ENABLED, enabled),
-  // WeChat Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
-  getWechatAgentState: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GET_AGENT_STATE),
-  saveWechatAgentState: (state: unknown) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SAVE_AGENT_STATE, state),
-  wechatGrantWorkspace: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GRANT_WORKSPACE, path),
-  wechatUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_UPDATE_SESSION_MODE, sessionId, mode),
-  onWechatEvent: (callback: (event: unknown) => void) => {
+  // ── Claw 渠道接入 ────────────────────────────────────────────────────────
+  // 主进程只管进程、接入控制与事件中继；渠道协议（含各平台的签名/加密）在
+  // 每渠道一个的网关子进程内。
+  getClawStatus: () => ipcRenderer.invoke(IPC_CHANNELS.CLAW_GET_STATUS),
+  getClawChannels: () => ipcRenderer.invoke(IPC_CHANNELS.CLAW_GET_CHANNELS),
+  saveClawChannel: (config: ClawChannelConfig) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_SAVE_CHANNEL, config),
+  setClawChannelEnabled: (id: ClawChannelId, enabled: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CLAW_SET_CHANNEL_ENABLED, id, enabled),
+  setClawMasterEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_SET_ENABLED, enabled),
+  clawStartLogin: (id: ClawChannelId) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_START_LOGIN, id),
+  clawSubmitVerifyCode: (id: ClawChannelId, code: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CLAW_SUBMIT_VERIFY_CODE, id, code),
+  clawSendText: (id: ClawChannelId, to: string, text: string, clientMsgId?: string, contextToken?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CLAW_SEND_TEXT, id, to, text, clientMsgId, contextToken),
+  clawLogout: (id: ClawChannelId) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_LOGOUT, id),
+  // Claw Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
+  getClawAgentState: () => ipcRenderer.invoke(IPC_CHANNELS.CLAW_GET_AGENT_STATE),
+  saveClawAgentState: (state: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_SAVE_AGENT_STATE, state),
+  clawGrantWorkspace: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_GRANT_WORKSPACE, path),
+  clawUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'claw') =>
+    ipcRenderer.invoke(IPC_CHANNELS.CLAW_UPDATE_SESSION_MODE, sessionId, mode),
+  onClawEvent: (callback: (event: unknown) => void) => {
     const listener = (_event: any, payload: any) => callback(payload)
-    ipcRenderer.on(IPC_CHANNELS.WECHAT_EVENT, listener)
-    return () => { ipcRenderer.removeListener(IPC_CHANNELS.WECHAT_EVENT, listener) }
+    ipcRenderer.on(IPC_CHANNELS.CLAW_EVENT, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.CLAW_EVENT, listener) }
   },
-  // 微信 Agent × 一人公司：观察（快照）与干预（指令）的中继
-  getOfficeSnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_GET_OFFICE_SNAPSHOT),
-  sendOfficeInstruction: (req: unknown) => ipcRenderer.invoke(IPC_CHANNELS.WECHAT_SEND_OFFICE_INSTRUCTION, req),
+  // Claw Agent × 一人公司：观察（快照）与干预（指令）的中继
+  getOfficeSnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.CLAW_GET_OFFICE_SNAPSHOT),
+  sendOfficeInstruction: (req: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CLAW_SEND_OFFICE_INSTRUCTION, req),
   pushOfficeStatus: (snapshot: unknown) => ipcRenderer.send(IPC_CHANNELS.OFFICE_PUSH_STATUS, snapshot),
-  onOfficeWechatInstruction: (callback: (req: unknown) => void) => {
+  onOfficeClawInstruction: (callback: (req: unknown) => void) => {
     const listener = (_event: any, payload: any) => callback(payload)
-    ipcRenderer.on(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION, listener)
-    return () => { ipcRenderer.removeListener(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION, listener) }
+    ipcRenderer.on(IPC_CHANNELS.OFFICE_CLAW_INSTRUCTION, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.OFFICE_CLAW_INSTRUCTION, listener) }
   },
-  replyOfficeWechatInstruction: (result: unknown) => ipcRenderer.send(IPC_CHANNELS.OFFICE_WECHAT_INSTRUCTION_RESULT, result),
+  replyOfficeClawInstruction: (result: unknown) => ipcRenderer.send(IPC_CHANNELS.OFFICE_CLAW_INSTRUCTION_RESULT, result),
 })

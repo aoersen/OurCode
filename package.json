@@ -10,9 +10,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:wechat-gateway": "node electron/wechat-gateway/bundle.mjs",
-    "predev": "npm run build:wechat-gateway",
-    "prebuild": "npm run build:wechat-gateway",
+    "build:claw-gateway": "node electron/claw-gateway/bundle.mjs",
+    "predev": "npm run build:claw-gateway",
+    "prebuild": "npm run build:claw-gateway",
     "preview": "electron-vite preview",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
@@ -75,7 +75,7 @@
     "marked": "^12.0.2",
     "marked-highlight": "^2.1.0",
     "monaco-editor": "^0.50.0",
-    "openclaw": "file:./electron/wechat-gateway/sdk-stubs/openclaw-stub",
+    "openclaw": "file:./electron/claw-gateway/sdk-stubs/openclaw-stub",
     "postcss": "^8.4.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -100,8 +100,8 @@
         "to": "mcp-servers"
       },
       {
-        "from": "out/wechat-gateway",
-        "to": "wechat-gateway"
+        "from": "out/claw-gateway",
+        "to": "claw-gateway"
       },
       {
         "from": "tools/ripgrep/${os}/${arch}",

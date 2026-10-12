@@ -2,6 +2,8 @@
 export * from '@shared/types'
 export * from '@shared/constants'
 
+import type { ClawChannelId } from '@shared/types'
+
 // Electron API type
 export interface ElectronAPI {
   // File System
@@ -69,7 +71,7 @@ export interface ElectronAPI {
   getConfigGroups: () => Promise<import('@shared/types').ApiConfigGroup[]>
   saveConfigGroup: (group: any) => Promise<import('@shared/types').ApiConfigGroup>
   deleteConfigGroup: (id: string) => Promise<void>
-  getSessions: (mode?: 'main' | 'office' | 'wechat') => Promise<import('@shared/types').ChatSession[]>
+  getSessions: (mode?: 'main' | 'office' | 'claw') => Promise<import('@shared/types').ChatSession[]>
   saveSession: (session: any) => Promise<import('@shared/types').ChatSession>
   deleteSession: (id: string) => Promise<void>
   /** Durable sub-agent run records (office 任务流 / 代码变更 / 终端 回看) */
@@ -243,24 +245,35 @@ export interface ElectronAPI {
   onUpdateProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
 
   // WeChat channel
-  getWechatStatus: () => Promise<{ state: import('@shared/types').WechatChannelState }>
-  wechatStartLogin: () => Promise<{ ok: boolean }>
-  wechatSubmitVerifyCode: (code: string) => Promise<{ ok: boolean }>
-  wechatSendText: (to: string, text: string, clientMsgId?: string) => Promise<import('@shared/types').WechatSentEvent>
-  wechatLogout: () => Promise<{ ok: boolean }>
-  wechatSetEnabled: (enabled: boolean) => Promise<{ ok: boolean }>
-  // WeChat Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
-  getWechatAgentState: () => Promise<import('@shared/types').WechatAgentState | null>
-  saveWechatAgentState: (state: import('@shared/types').WechatAgentState) => Promise<{ ok: boolean }>
-  wechatGrantWorkspace: (path: string) => Promise<{ ok: boolean }>
-  wechatUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'wechat') => Promise<{ ok: boolean }>
-  // 微信 Agent × 一人公司：观察（快照）与干预（指令）的中继
+  // ── Claw 渠道接入 ────────────────────────────────────────────────────────
+  // 渠道协议在每渠道一个的网关子进程内；主进程负责进程、接入控制与事件中继。
+  getClawStatus: () => Promise<import('@shared/types').ClawHubStatus>
+  getClawChannels: () => Promise<import('@shared/types').ClawChannelConfig[]>
+  saveClawChannel: (config: import('@shared/types').ClawChannelConfig) => Promise<{ ok: boolean; error?: string }>
+  setClawChannelEnabled: (id: ClawChannelId, enabled: boolean) => Promise<{ ok: boolean }>
+  setClawMasterEnabled: (enabled: boolean) => Promise<{ ok: boolean }>
+  clawStartLogin: (id: ClawChannelId) => Promise<{ ok: boolean; error?: string }>
+  clawSubmitVerifyCode: (id: ClawChannelId, code: string) => Promise<{ ok: boolean }>
+  clawSendText: (
+    id: ClawChannelId,
+    to: string,
+    text: string,
+    clientMsgId?: string,
+    contextToken?: string,
+  ) => Promise<import('@shared/types').ClawSentEvent>
+  clawLogout: (id: ClawChannelId) => Promise<{ ok: boolean }>
+  // Claw Agent 状态（沙盒/工作区/审批模式/模型/记忆）与工作区信任注册
+  getClawAgentState: () => Promise<import('@shared/types').ClawAgentState | null>
+  saveClawAgentState: (state: import('@shared/types').ClawAgentState) => Promise<{ ok: boolean }>
+  clawGrantWorkspace: (path: string) => Promise<{ ok: boolean }>
+  clawUpdateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'claw') => Promise<{ ok: boolean }>
+  // Claw Agent × 一人公司：观察（快照）与干预（指令）的中继
   getOfficeSnapshot: () => Promise<import('@shared/types').OfficeSnapshot | null>
   sendOfficeInstruction: (req: import('@shared/types').OfficeInstructionRequest) => Promise<import('@shared/types').OfficeInstructionResult>
   pushOfficeStatus: (snapshot: import('@shared/types').OfficeSnapshot) => void
-  onOfficeWechatInstruction: (callback: (req: import('@shared/types').OfficeInstructionRequest) => void) => () => void
-  replyOfficeWechatInstruction: (result: import('@shared/types').OfficeInstructionResult) => void
-  onWechatEvent: (callback: (event: import('@shared/types').WechatGatewayEvent) => void) => () => void
+  onOfficeClawInstruction: (callback: (req: import('@shared/types').OfficeInstructionRequest) => void) => () => void
+  replyOfficeClawInstruction: (result: import('@shared/types').OfficeInstructionResult) => void
+  onClawEvent: (callback: (event: import('@shared/types').ClawGatewayEvent) => void) => () => void
 }
 
 declare global {

@@ -1,4 +1,7 @@
 // Shared types between main and renderer processes
+import type { ClawAccessPolicy, ClawChannelId } from './claw'
+
+export type { ClawAccessPolicy, ClawChannelId }
 
 // API Configuration Group
 export interface ApiConfigGroup {
@@ -125,9 +128,10 @@ export interface ChatSession {
    *  the next load (the pre-crash summary stays valid). Not user-visible. */
   compactionInProgress?: boolean
   /** 会话所属窗口模式：'main' = 对话窗口（默认），'office' = 一人公司独立
-   *  窗口，'wechat' = 微信 Agent 专用会话（不显示在主界面会话列表）。三个
-   *  模式的会话完全隔离（SQLite 按 mode 过滤），互不显示。 */
-  mode?: 'main' | 'office' | 'wechat'
+   *  窗口，'claw' = Claw 渠道接入专用会话（微信/企业微信/QQ/飞书/Telegram 的
+   *  消息都在这里，不显示在主界面会话列表）。三个模式的会话完全隔离
+   *  （SQLite 按 mode 过滤），互不显示。 */
+  mode?: 'main' | 'office' | 'claw'
   /** 一人公司角色员工（M4）：本会话是某个工位的员工。workerRole = 角色类型
    *  （tm-developer / tm-ui-developer / tm-requirement-analyst / tm-tester），
    *  workerSlot = 1~8 工位号。此类会话对用户隐藏（hidden），只在 list_agents /
@@ -487,16 +491,16 @@ export interface UserPreferences {
   /** 自定义更新源：generic provider 的 base URL（目录下需放 latest.yml 与安装包）。
    *  留空则使用打包内置的默认源（GitHub Releases）。 */
   updateFeedUrl?: string
-  /** 微信通道总开关（关闭时网关不启动、微信消息不处理）。 */
-  wechatEnabled?: boolean
-  /** 微信会话审批模式：'approve' 逐条审批（默认）| 'full_access' 免审批。 */
-  wechatApprovalMode?: 'approve' | 'full_access'
-  /** 微信工作区根目录：微信任务都在此目录下进行；留空 = 使用最近打开的项目。 */
-  wechatWorkspaceDir?: string
-  /** 微信会话使用的 API 配置组 id（留空 = 跟随 IDE 当前组）。 */
-  wechatConfigGroupId?: string
-  /** 微信会话使用的模型 id（留空 = 组的默认模型）。 */
-  wechatModelId?: string
+  /** Claw 渠道接入总开关（关闭时所有渠道网关不启动、渠道消息不处理）。 */
+  clawEnabled?: boolean
+  /** Claw 会话审批模式：'approve' 逐条审批（默认）| 'full_access' 免审批。 */
+  clawApprovalMode?: 'approve' | 'full_access'
+  /** Claw 工作区根目录：Claw 任务都在此目录下进行；留空 = 使用最近打开的项目。 */
+  clawWorkspaceDir?: string
+  /** Claw 会话使用的 API 配置组 id（留空 = 跟随 IDE 当前组）。 */
+  clawConfigGroupId?: string
+  /** Claw 会话使用的模型 id（留空 = 组的默认模型）。 */
+  clawModelId?: string
 }
 
 // Model Info
@@ -815,80 +819,129 @@ export type BrowserEvent =
   | { type: 'state'; state: BrowserSessionState }
   | { type: 'console'; entry: BrowserConsoleEntry }
 
-// ── 微信通道 ──────────────────────────────────────────────────────────────
-// 网关事件协议，与 electron/wechat-gateway/gateway.mjs 的 stdout 事件对齐。
-// 主进程原样转发（IPC_CHANNELS.WECHAT_EVENT），渲染层按 event 字段分发。
+// ── Claw 渠道接入：网关事件协议 ────────────────────────────────────────────
+// 与 electron/claw-gateway/gateway.mjs 的 stdout 事件对齐。每个渠道一个网关
+// 子进程；事件统一带 `channel` 字段，主进程经 IPC_CHANNELS.CLAW_EVENT 广播，
+// 渲染层按 channel + event 分发。渠道目录与接入策略见 shared/claw.ts。
 
-export type WechatChannelState = 'idle' | 'loggingIn' | 'connected' | 'disconnected' | 'stopped'
+export type ClawChannelState = 'idle' | 'loggingIn' | 'connected' | 'disconnected' | 'stopped'
 
-export interface WechatStatusEvent {
+export interface ClawStatusEvent {
   event: 'status'
-  state: WechatChannelState
+  channel: ClawChannelId
+  state: ClawChannelState
   accountId?: string
 }
 
-export interface WechatQrEvent {
+export interface ClawQrEvent {
   event: 'qr'
+  channel: ClawChannelId
   qrcodeUrl: string
 }
 
-export interface WechatInboundEvent {
+export interface ClawInboundEvent {
   event: 'inbound'
+  channel: ClawChannelId
   msgId?: string
   from?: string
+  /** 发件人显示名（渠道能给就给，面板与日志用）。 */
+  fromName?: string
   /** 回复目标：群消息为群 id，否则为发送者本人。 */
   replyTo?: string
   isGroup: boolean
+  /** 适配器已归一化：群消息里 @机器人 的前缀已被剥离。 */
   text: string
   ts?: number
+  /** 渠道侧的回执令牌（微信 context_token、QQ msg_id 等），回复时原样带回。 */
   contextToken?: string
+  /** 该消息是否 @ 了机器人（群聊接入控制的判定依据）。 */
+  mentioned?: boolean
 }
 
-export interface WechatSentEvent {
+export interface ClawSentEvent {
   event: 'sent'
+  channel?: ClawChannelId
   clientMsgId?: string
   ok: boolean
   messageId?: string
   error?: string
 }
 
-export type WechatGatewayEvent =
-  | WechatStatusEvent
-  | WechatQrEvent
-  | { event: 'scanned' }
-  | { event: 'needVerifyCode' }
-  | { event: 'verifyBlocked' }
-  | { event: 'loginFailed'; message: string }
-  | { event: 'sessionExpired'; message: string }
-  | WechatInboundEvent
-  | WechatSentEvent
-  | { event: 'error'; message: string }
+export type ClawGatewayEvent =
+  | ClawStatusEvent
+  | ClawQrEvent
+  | { event: 'scanned'; channel: ClawChannelId }
+  | { event: 'needVerifyCode'; channel: ClawChannelId }
+  | { event: 'verifyBlocked'; channel: ClawChannelId }
+  | { event: 'loginFailed'; channel: ClawChannelId; message: string }
+  | { event: 'sessionExpired'; channel: ClawChannelId; message: string }
+  | { event: 'webhook'; channel: ClawChannelId; url: string | null }
+  | { event: 'policyDrop'; channel: ClawChannelId; reason: string; from: string }
+  | ClawInboundEvent
+  | ClawSentEvent
+  | { event: 'error'; channel: ClawChannelId; message: string }
 
-// ── 微信 Agent 状态（WechatAgentState）─────────────────────────────────────
-// 微信接入是一个独立的常驻 agent：状态与用户偏好（user_preferences）分离，
+// ── Claw Agent 状态（ClawAgentState）───────────────────────────────────────
+// Claw 接入是一个独立的常驻 agent：状态与用户偏好（user_preferences）分离，
 // 运行期一切以这里的 AgentState 为准；偏好只作初始值。持久化在
-// SQLite wechat_agent_state 表（单行），经主进程 IPC 读写。
+// SQLite claw_agent_state 表（单行），经主进程 IPC 读写。**所有渠道共享这一份
+// 状态**（同一个数字员工），渠道差异只体现在连接配置与接入控制策略上。
 
-export interface WechatAgentMemoryItem {
+export interface ClawAgentMemoryItem {
   id: string
   text: string
   createdAt: number
 }
 
-export interface WechatAgentState {
+export interface ClawAgentState {
   /** 沙盒根目录（安装目录优先，不可写回退 userData；由主进程探测并固定）。 */
   sandboxPath: string
   /** 当前工作区；null = 沙盒模式。切换工作区即修改此字段。 */
   currentWorkspace: string | null
   /** 审批模式：approve = 逐条审批（默认），full_access = 免审批。 */
   approvalMode: 'approve' | 'full_access'
-  /** 微信 Agent 使用的 API 配置组 id（空 = 回退 IDE 当前组/第一个组）。 */
+  /** Claw Agent 使用的 API 配置组 id（空 = 回退 IDE 当前组/第一个组）。 */
   configGroupId: string
   /** 模型偏好；null = 跟随配置组默认模型。 */
   modelId: string | null
   /** agent 自己的记忆条目（注入系统提示）。 */
-  memory: WechatAgentMemoryItem[]
+  memory: ClawAgentMemoryItem[]
   updatedAt: number
+}
+
+// ── Claw 渠道配置与接入控制 ────────────────────────────────────────────────
+// 每个渠道一行：连接凭据 + 启停 + 接入策略。凭据在主进程 SQLite 里按 API key
+// 同等标准加密落盘（CryptoService），启动时解密写入 <userData>/claw/<渠道>/
+// config.json（0600）供网关子进程读取；不进命令行、不进日志。
+// 接入控制策略由主进程在**入站事件进入 agent 之前**强制执行。
+
+export interface ClawChannelConfig {
+  id: ClawChannelId
+  enabled: boolean
+  /** 渠道凭据（字段定义见 shared/claw.ts 的 CLAW_CHANNELS[].fields）。 */
+  values: Record<string, string>
+  /** 接入控制策略；主进程在入站事件进入 agent 之前强制执行。 */
+  policy: ClawAccessPolicy
+  /** 回调地址的路径令牌（webhook 渠道用；生成一次后固定，便于平台侧配置）。 */
+  webhookToken: string
+  updatedAt: number
+}
+
+/** 单个渠道的运行状态（面板与设置页共用）。 */
+export interface ClawChannelStatus {
+  id: ClawChannelId
+  state: ClawChannelState
+  enabled: boolean
+  /** 必填凭据是否齐全（qr 渠道恒为 true）。 */
+  configured: boolean
+  accountId?: string
+  lastError?: string
+  /** webhook 渠道完整回调地址；null = 该渠道不需要回调地址。 */
+  webhookUrl: string | null
+}
+
+export interface ClawHubStatus {
+  channels: ClawChannelStatus[]
 }
 
 // ── 微信 Agent × 一人公司：观察与干预 ────────────────────────────────────
