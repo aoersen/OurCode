@@ -41,7 +41,7 @@ const EVAL_TIMEOUT_MS = 10_000
 const BROWSER_PARTITION = 'persist:ourcode-browser'
 
 export interface BrowserSessionHooks {
-  /** Push a state/console change to the renderer (BrowserPanel). */
+  /** Push a state/console change to the renderer. */
   broadcast: (payload: { type: 'state'; state: BrowserSessionState } | { type: 'console'; entry: BrowserConsoleEntry }) => void
 }
 
