@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useChatStore, QueuedMessage } from '@/stores/chatStore'
+import { isCompanySession } from '@/services/permissions/companyGuard'
 import { MessageAttachment } from '@/types'
 import { useConfigStore } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -622,9 +623,17 @@ export default function ChatInput({
     }
 
     // Shift+Tab cycles the permission mode (ZCode-style). Only when no slash
-    // menu / file search is consuming Tab (those take precedence).
+    // menu / file search is consuming Tab (those take precedence). Company
+    // sessions have no permission modes — default allow + checkpoints.
     if (e.key === 'Tab' && e.shiftKey && !showSlashMenu && !showFileSearch) {
       e.preventDefault()
+      const session = activeSessionId
+        ? useChatStore.getState().sessions.find((s) => s.id === activeSessionId)
+        : undefined
+      if (isCompanySession(session)) {
+        useUIStore.getState().showNotification(t('chat.companyModeNoSwitch'), 'info')
+        return
+      }
       if (activeSessionId) void cycleEditMode(activeSessionId)
       return
     }

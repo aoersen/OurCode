@@ -25,11 +25,18 @@ const mockApi = {
   getConfigGroups: vi.fn(async () => []),
   getSubagentRuns: vi.fn(async () => []),
   saveSubagentRun: vi.fn(async () => true),
+  // Target-mode bootstrap (ensureInitialized) touches these when a director
+  // run starts in the inbound-batching test.
+  readFile: vi.fn(async () => ({ content: '', encoding: 'utf-8' })),
+  writeFile: vi.fn(async () => {}),
+  createDir: vi.fn(async () => {}),
+  listDir: vi.fn(async () => []),
+  delete: vi.fn(async () => {}),
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, normalizeAskQuestionArgs, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
-import type { MessageAttachment } from '@/types'
+import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, compactToolCallArgs, buildWorkerHandoff, workerDispatchCapReached, WORKER_DISPATCH_TOKEN_CAP, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateRequestMessageTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, OFFICE_TOOL_RESULT_COMPACT, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, normalizeAskQuestionArgs, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
+import type { ChatMessage, MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { createToolRegistry } from '@/services/tools/ToolRegistry'
@@ -531,6 +538,149 @@ describe('chatStore estimateContextTokens', () => {
   })
 })
 
+describe('chatStore office context compaction', () => {
+  const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
+    id, type: 'function' as const, function: { name, arguments: JSON.stringify(args) },
+  })
+
+  it('compactToolCallArgs compresses consumed write bodies but keeps path + recent rounds', () => {
+    const longBody = 'x'.repeat(4_000)
+    const rounds = Array.from({ length: 10 }, (_, i) => ({
+      role: 'assistant' as const,
+      content: `round ${i}`,
+      toolCalls: [toolCall(`t${i}`, 'write_file', { path: `C:/p/f${i}.ts`, content: longBody })],
+    }))
+    const result = compactToolCallArgs([{ role: 'system' as const, content: 'sys' }, ...rounds])
+    // 10 rounds - 8 kept verbatim = the 2 oldest are compacted.
+    const first = JSON.parse(result[1].toolCalls![0].function.arguments)
+    expect(first.path).toBe('C:/p/f0.ts')
+    expect(first.content).toContain('已省略')
+    expect(first.content.length).toBeLessThan(longBody.length)
+    // The newest 8 rounds are byte-identical.
+    expect(result[3].toolCalls![0].function.arguments).toBe(rounds[2].toolCalls[0].function.arguments)
+    expect(result[result.length - 1].toolCalls![0].function.arguments).toBe(rounds[9].toolCalls[0].function.arguments)
+  })
+
+  it('compactToolCallArgs leaves read calls and malformed arguments alone', () => {
+    const longArgs = JSON.stringify({ path: 'C:/p/a.ts', content: 'x'.repeat(4_000) })
+    const messages = [
+      ...Array.from({ length: 9 }, () => ({
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [toolCall('w', 'write_file', { path: 'C:/p/x.ts', content: 'y' })],
+      })),
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [
+          toolCall('r', 'read_file', { path: 'C:/p/a.ts' }),
+          { id: 'bad', type: 'function' as const, function: { name: 'write_file', arguments: '{not json' } },
+          { id: 'w2', type: 'function' as const, function: { name: 'write_file', arguments: longArgs } },
+        ],
+      },
+    ]
+    // The newest round is inside the keep window → untouched.
+    const result = compactToolCallArgs(messages)
+    expect(result[result.length - 1].toolCalls!.map((tc) => tc.function.arguments))
+      .toEqual(['{"path":"C:/p/a.ts"}', '{not json', longArgs])
+  })
+
+  it('estimateSessionHistoryTokens counts assistant tool-call arguments', () => {
+    const contentOnly = [{ role: 'assistant' as const, content: 'done' }]
+    const withArgs = [{
+      role: 'assistant' as const,
+      content: 'done',
+      toolCalls: [toolCall('w', 'write_file', { path: 'C:/p/a.ts', content: 'x'.repeat(8_000) })],
+    }]
+    expect(estimateRequestMessageTokens(withArgs[0])).toBeGreaterThan(1_000)
+    expect(estimateSessionHistoryTokens(withArgs)).toBeGreaterThan(estimateSessionHistoryTokens(contentOnly) + 1_000)
+  })
+
+  it('office profile compacts older medium results that the default profile keeps', () => {
+    const tools = Array.from({ length: 12 }, (_, i) => ({
+      role: 'tool' as const,
+      content: 'x'.repeat(5_000),
+      toolCallId: `t${i}`,
+    }))
+    // Default: 5KB is below the 12KB threshold → nothing compacted.
+    expect(compactToolResults(tools).every((m) => m.content.length === 5_000)).toBe(true)
+    // Office: keep the newest 8; the first 4 (5KB > 4KB) become previews.
+    const office = compactToolResults(tools, OFFICE_TOOL_RESULT_COMPACT)
+    expect(office[3].content).toContain('已压缩')
+    expect(office[4].content).toBe('x'.repeat(5_000))
+    expect(office[3].toolCallId).toBe('t3')
+  })
+})
+
+describe('chatStore worker dispatch handoff', () => {
+  const msg = (partial: Partial<ChatMessage> & Pick<ChatMessage, 'role' | 'content'>): ChatMessage => ({
+    id: 'm', sortOrder: 0, contextFiles: [], tokenCount: 0, createdAt: 1, ...partial,
+  })
+
+  it('returns null while the history is small enough to keep verbatim', () => {
+    expect(buildWorkerHandoff([
+      msg({ role: 'user', content: '派发任务' }),
+      msg({ role: 'assistant', content: '状态: 完成' }),
+    ])).toBeNull()
+  })
+
+  it('produces a deterministic handoff with the last report and touched files', () => {
+    const messages: ChatMessage[] = [
+      msg({ role: 'user', content: '把登录页改成深色主题' }),
+      msg({
+        role: 'assistant',
+        content: '状态: 完成\n改了 Login.tsx，typecheck 通过',
+        toolCalls: [{ id: 't1', name: 'write_file', arguments: { path: 'C:/p/src/Login.tsx', content: 'x' } }],
+      }),
+      msg({ role: 'tool', content: 'x'.repeat(40_000), toolCallId: 't1' }),
+    ]
+    const handoff = buildWorkerHandoff(messages)
+    expect(handoff).not.toBeNull()
+    expect(handoff!.messageCount).toBe(3)
+    expect(handoff!.summary).toContain('C:/p/src/Login.tsx')
+    expect(handoff!.summary).toContain('状态: 完成')
+    expect(handoff!.summary).toContain('implementationStatus.md')
+  })
+
+  it('carries a previous compaction summary into the handoff', () => {
+    const messages: ChatMessage[] = [
+      msg({ role: 'user', content: '任务' }),
+      msg({ role: 'tool', content: 'x'.repeat(40_000), toolCallId: 't1' }),
+    ]
+    const handoff = buildWorkerHandoff(messages, '## 目标\n实现深色主题，已完成 token 抽取')
+    expect(handoff!.summary).toContain('实现深色主题')
+  })
+
+  it('caps a single dispatch only for role workers', () => {
+    expect(workerDispatchCapReached(undefined, WORKER_DISPATCH_TOKEN_CAP)).toBe(false)
+    expect(workerDispatchCapReached('tm-developer', WORKER_DISPATCH_TOKEN_CAP - 1)).toBe(false)
+    expect(workerDispatchCapReached('tm-developer', WORKER_DISPATCH_TOKEN_CAP)).toBe(true)
+  })
+})
+
+describe('chatStore director inbound batching', () => {
+  it('delivers director reports immediately but merges the auto-run trigger', () => {
+    vi.useFakeTimers()
+    try {
+      makeSession('dir-1')
+      useChatStore.setState((st) => ({
+        sessions: st.sessions.map((s) => (s.id === 'dir-1' ? { ...s, targetMode: true, projectPath: 'C:/proj' } : s)),
+      }))
+      const status = useChatStore.getState().receiveInboundMessage('测试-1', 'dir-1', '状态: 完成')
+      expect(status).toContain('合并窗口')
+      expect(useChatStore.getState().sessions.find((s) => s.id === 'dir-1')!.messages).toHaveLength(1)
+      expect(useChatStore.getState().inboundQueue).toHaveLength(0)
+      // A second report inside the window joins the same wake-up (no extra run).
+      useChatStore.getState().receiveInboundMessage('业务研发-1', 'dir-1', '状态: 完成')
+      expect(useChatStore.getState().sessions.find((s) => s.id === 'dir-1')!.messages).toHaveLength(2)
+      vi.advanceTimersByTime(2_100)
+      expect(useChatStore.getState().inboundQueue).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('chatStore sanitizeToolPairing', () => {
   const asst = (content: string, callIds: string[] = []) => ({
     role: 'assistant' as const,
@@ -971,6 +1121,44 @@ describe('chatStore cross-session messaging', () => {
     expect(target.messages).toHaveLength(1)
     expect(useChatStore.getState().inboundQueue).toHaveLength(0)
     expect(mockApi.saveSession).toHaveBeenCalled()
+  })
+
+  it('replaces a long worker history with the deterministic handoff at the next dispatch', () => {
+    makeSession('w1')
+    useChatStore.setState((st) => ({
+      sessions: st.sessions.map((s) => (s.id === 'w1'
+        ? {
+            ...s,
+            workerRole: 'tm-developer',
+            workerSlot: 4,
+            projectPath: 'C:/proj',
+            messages: [
+              { id: 'm1', role: 'user' as const, content: '旧任务', sortOrder: 0, contextFiles: [], tokenCount: 0, createdAt: 1 },
+              {
+                id: 'm2',
+                role: 'assistant' as const,
+                content: '状态: 完成\n改了 App.tsx',
+                sortOrder: 1,
+                contextFiles: [],
+                tokenCount: 0,
+                createdAt: 2,
+                toolCalls: [{ id: 't1', name: 'write_file', arguments: { path: 'C:/proj/src/App.tsx', content: 'x' } }],
+              },
+              { id: 'm3', role: 'tool' as const, content: 'x'.repeat(40_000), sortOrder: 2, contextFiles: [], tokenCount: 0, createdAt: 3, toolCallId: 't1' },
+            ],
+          }
+        : s)),
+    }))
+    useChatStore.getState().receiveInboundMessage('总监', 'w1', '新任务：修登录页')
+    const w = useChatStore.getState().sessions.find((s) => s.id === 'w1')!
+    expect(w.messages).toHaveLength(4)
+    expect(w.messages[3].content).toContain('新任务')
+    // The request view becomes [handoff summary, new dispatch] — the raw
+    // history stays in w.messages for the UI/SQLite.
+    expect(w.summary).toContain('状态: 完成')
+    expect(w.summary).toContain('C:/proj/src/App.tsx')
+    expect(w.summaryMessageCount).toBe(3)
+    expect(w.lastContextTokens).toBeUndefined()
   })
 
   it('send_message tool rejects self-messaging and unknown targets', async () => {

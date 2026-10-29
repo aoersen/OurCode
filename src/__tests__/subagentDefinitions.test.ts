@@ -6,7 +6,43 @@ import {
   CONTROL_TOOLS,
   isPathWithin,
   resolveAllowedRoot,
+  failClosedDefinition,
+  isGenericAgentDefinition,
+  READONLY_AGENT_TOOLS,
 } from '@/services/subagents/subagentDefinitions'
+import type { SubAgentDefinition } from '@/services/subagents/subagentDefinitions'
+
+describe('fail-closed role definitions', () => {
+  it('turns a missing role into a read-only, project-scoped guard', () => {
+    const generic = {
+      name: 'tm-developer',
+      description: 'fallback',
+      systemPrompt: 'fallback',
+      source: 'builtin',
+    } as SubAgentDefinition
+    expect(isGenericAgentDefinition(generic)).toBe(true)
+
+    const fixed = failClosedDefinition(generic)
+    expect(fixed.tools).toEqual(READONLY_AGENT_TOOLS)
+    expect(fixed.allowedReadPaths).toEqual(['.'])
+    expect(fixed.allowedWritePaths).toEqual([])
+
+    const guard = new SubagentGuard(fixed, 'C:/workspace', { workerMode: true })
+    expect(guard.toolAllowed('read_file')).toBe(true)
+    expect(guard.toolAllowed('restore_changes')).toBe(true)
+    expect(guard.toolAllowed('send_message')).toBe(true)
+    expect(guard.toolAllowed('write_file')).toBe(false)
+    expect(guard.toolAllowed('run_command')).toBe(false)
+    expect(guard.checkCall('write_file', { path: 'C:/workspace/a.ts' })).toContain('不在')
+  })
+
+  it('leaves real builtin definitions untouched', () => {
+    const builtin = { name: 'code-reviewer', description: 'x', systemPrompt: 'x', source: 'builtin' } as SubAgentDefinition
+    expect(isGenericAgentDefinition(builtin)).toBe(false)
+    expect(failClosedDefinition(builtin)).toBe(builtin)
+  })
+})
+
 
 describe('parseAgentFrontmatter', () => {
   it('parses scalar and array fields from frontmatter', () => {
@@ -345,5 +381,34 @@ describe('SubagentGuard — worker mode (M4 员工会话)', () => {
     const sub = new SubagentGuard(workerDef, 'C:/workspace')
     expect(sub.toolAllowed('send_message')).toBe(false)
     expect(sub.toolAllowed('run_subagent')).toBe(false)
+  })
+})
+
+describe('SubagentGuard — worker MCP opt-in (节省每轮工具定义 token)', () => {
+  const workerDef = {
+    name: 'tm-developer',
+    description: '',
+    systemPrompt: 'x',
+    tools: undefined,
+    source: 'builtin' as const,
+  }
+
+  it('denies every MCP tool by default for a role without a tools list', () => {
+    const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true, denyMcpByDefault: true })
+    expect(g.toolAllowed('mcp__aioli__generate_component')).toBe(false)
+    expect(g.checkCall('mcp__aioli__generate_component', {})).toContain('显式列出')
+    // Built-in tools are unaffected.
+    expect(g.toolAllowed('read_file')).toBe(true)
+  })
+
+  it('allows an MCP tool the role definition explicitly lists', () => {
+    const g = new SubagentGuard(
+      { ...workerDef, tools: ['read_file', 'mcp__aioli__generate_component'] },
+      'C:/workspace',
+      { workerMode: true, denyMcpByDefault: true },
+    )
+    expect(g.toolAllowed('mcp__aioli__generate_component')).toBe(true)
+    expect(g.checkCall('mcp__aioli__generate_component', {})).toBeNull()
+    expect(g.toolAllowed('mcp__playwright__navigate')).toBe(false)
   })
 })

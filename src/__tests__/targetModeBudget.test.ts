@@ -6,12 +6,14 @@ type Budget = typeof import('@/services/targetMode/budget')
 describe('targetMode budget fuse', () => {
   let handler: ((ev: Event) => void) | undefined
   const mockReadFile = vi.fn(async () => ({ content: '总消耗上限（tokens）：1000', encoding: 'utf-8' }))
+  const mockWriteFile = vi.fn(async () => {})
 
   beforeEach(() => {
     handler = undefined
     mockReadFile.mockClear()
+    mockWriteFile.mockClear()
     vi.stubGlobal('window', {
-      electronAPI: { readFile: mockReadFile },
+      electronAPI: { readFile: mockReadFile, writeFile: mockWriteFile },
       addEventListener: vi.fn((type: string, fn: any) => { if (type === 'ourcode:usage-recorded') handler = fn }),
     })
     vi.resetModules()
@@ -83,5 +85,55 @@ describe('targetMode budget fuse', () => {
     mockReadFile.mockImplementationOnce(async () => ({ content: '总消耗上限（tokens）：100', encoding: 'utf-8' }))
     await budget.refreshBudgetLimit('s1')
     expect(budget.budgetExceeded('s1')).toBe(true)
+  })
+
+  it('persists the running total back to budget.md', async () => {
+    vi.useFakeTimers()
+    try {
+      const budget: Budget = await import('@/services/targetMode/budget')
+      budget.installBudgetFuse()
+      fire({ s1: { tokens: 600, projectPath: 'C:/w' } })
+      await vi.advanceTimersByTimeAsync(0) // let the limit read settle
+      fire({ s1: { tokens: 500, projectPath: 'C:/w' } })
+      await vi.advanceTimersByTimeAsync(5_100) // debounce window
+      expect(mockWriteFile).toHaveBeenCalled()
+      const [path, content] = mockWriteFile.mock.calls.at(-1) as unknown as [string, string]
+      expect(path).toContain('.ourcode/targemode/budget.md')
+      expect(content).toContain('当前累计：1100')
+      expect(content).toContain('总消耗上限（tokens）：1000')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resumes from the persisted total on a fresh module load (restart)', async () => {
+    mockReadFile.mockImplementationOnce(async () => ({
+      content: '- 总消耗上限（tokens）：1000\n- 当前累计：900',
+      encoding: 'utf-8',
+    }))
+    const budget: Budget = await import('@/services/targetMode/budget')
+    budget.installBudgetFuse()
+    fire({ s1: { tokens: 200, projectPath: 'C:/w' } })
+    await new Promise((r) => setTimeout(r, 0))
+    // persisted 900 + 200 accumulated before the read resolved = 1100
+    expect(budget.getBudgetUsage('s1').used).toBe(1100)
+    expect(budget.budgetExceeded('s1')).toBe(true)
+  })
+
+  it('resetProjectBudget zeroes a new task and keeps the cap', async () => {
+    const budget: Budget = await import('@/services/targetMode/budget')
+    budget.installBudgetFuse()
+    fire({ s1: { tokens: 1200, projectPath: 'C:/w' } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(budget.budgetExceeded('s1')).toBe(true)
+
+    budget.resetProjectBudget('C:/w')
+    expect(budget.getBudgetUsage('s1').used).toBe(0)
+    expect(budget.getBudgetUsage('s1').limit).toBe(1000)
+    expect(budget.budgetExceeded('s1')).toBe(false)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockWriteFile).toHaveBeenCalled()
+    const [, content] = mockWriteFile.mock.calls.at(-1) as unknown as [string, string]
+    expect(content).toContain('当前累计：0')
   })
 })

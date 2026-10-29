@@ -480,6 +480,45 @@ export function createToolRegistry(): Tool[] {
       execute: async (args) => `Todo list updated (${Array.isArray(args.todos) ? args.todos.length : 0} items)`,
     },
     {
+      name: 'restore_changes',
+      description:
+        'Restore workspace changes from a checkpoint. Use this when you edited the wrong file, a test failed ' +
+        'after your change, or you deleted something by mistake — restore first instead of rewriting the file. ' +
+        'A safety checkpoint is created before restoring, so the restore itself can be undone. ' +
+        'scope=last restores the most recent change in this session; file/path restores a specific path; ' +
+        'checkpoint restores a specific checkpoint id; task restores an entire one-person-company task ' +
+        '(director/user only). Set dryRun=true to preview without writing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            enum: ['last', 'file', 'path', 'checkpoint', 'task'],
+            description: 'What to restore. Default: last (most recent change in this session).',
+          },
+          path: { type: 'string', description: 'File or directory path for scope=file/path.' },
+          checkpointId: { type: 'string', description: 'Checkpoint id for scope=checkpoint.' },
+          taskId: { type: 'string', description: 'Task id (director session id) for scope=task.' },
+          dryRun: { type: 'boolean', description: 'Preview the paths that would be restored without writing.' },
+        },
+        required: ['scope'],
+      },
+      execute: async (args, context) => {
+        const { useChatStore } = await import('@/stores/chatStore')
+        const scope = ['last', 'file', 'path', 'checkpoint', 'task'].includes(String(args.scope))
+          ? (String(args.scope) as 'last' | 'file' | 'path' | 'checkpoint' | 'task')
+          : 'last'
+        return useChatStore.getState().restoreChanges({
+          scope,
+          sessionId: context?.sessionId,
+          path: args.path ? String(args.path) : undefined,
+          checkpointId: args.checkpointId ? String(args.checkpointId) : undefined,
+          taskId: args.taskId ? String(args.taskId) : undefined,
+          dryRun: args.dryRun === true,
+        })
+      },
+    },
+    {
       name: 'submit_plan',
       description:
         'In plan mode: submit a step-by-step plan for the user to approve before any file changes are made. ' +

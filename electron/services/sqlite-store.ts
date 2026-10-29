@@ -3,7 +3,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { CryptoService } from './crypto'
-import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow, ClawAgentState, ClawChannelConfig } from '../../shared/types'
+import { ApiConfigGroup, ChatSession, ChatMessage, ChatBranch, UserPreferences, Memory, Checkpoint, RevertedFileRecord, TodoItem, Workflow, AgentRun, SubAgentProgress, UsageEvent, UsageSummary, UsageRankRow, ClawAgentState, ClawChannelConfig, WorkspaceCheckpoint } from '../../shared/types'
 import { isClawChannelId } from '../../shared/claw'
 import { DEFAULT_PREFERENCES } from '../../shared/constants'
 
@@ -333,6 +333,26 @@ export class SQLiteStore {
         PRIMARY KEY (session_id, file_path)
       );
 
+      -- Whole-tree snapshots backed by the shadow git repo under userData.
+      -- Per-file checkpoints above handle write tools; these cover directory
+      -- deletes, run_command side effects, MCP/plugin writes and non-git
+      -- projects (see electron/services/checkpoint-repo.ts).
+      CREATE TABLE IF NOT EXISTS workspace_checkpoints (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project_path TEXT NOT NULL,
+        task_id TEXT DEFAULT '',
+        tool_call_id TEXT DEFAULT '',
+        message_id TEXT DEFAULT '',
+        label TEXT DEFAULT '',
+        created_at INTEGER NOT NULL,
+        commit_hash TEXT NOT NULL,
+        paths TEXT DEFAULT '[]',
+        empty_dirs TEXT DEFAULT '[]',
+        created_dirs TEXT DEFAULT '[]',
+        kind TEXT NOT NULL DEFAULT 'files'
+      );
+
       -- Terminal record of one run_subagent dispatch, keyed by the PARENT tool
       -- call id (the same key the live chatStore.subagentProgress table uses).
       -- The live table is renderer-only and dies with the window, so without
@@ -405,6 +425,8 @@ export class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id, sort_order);
       CREATE INDEX IF NOT EXISTS idx_sessions_config ON chat_sessions(config_group_id);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_workspace_checkpoints_session ON workspace_checkpoints(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_workspace_checkpoints_task ON workspace_checkpoints(task_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_reverted_files_session ON reverted_files(session_id, reverted_at);
       CREATE INDEX IF NOT EXISTS idx_subagent_runs_session ON subagent_runs(session_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_usage_category_time ON usage_events(category, started_at);
@@ -1002,6 +1024,111 @@ export class SQLiteStore {
   deleteCheckpoint(id: string): void {
     this.db.prepare('DELETE FROM checkpoints WHERE id = ?').run(id)
   }
+
+  // ─────────────── Workspace checkpoints (whole-tree snapshots) ─────────────
+  private workspaceCheckpointFromRow(row: any): WorkspaceCheckpoint {
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      projectPath: row.project_path,
+      taskId: row.task_id || undefined,
+      toolCallId: row.tool_call_id || undefined,
+      messageId: row.message_id || undefined,
+      label: row.label || '',
+      createdAt: row.created_at,
+      commit: row.commit_hash,
+      paths: parseJsonField<string[]>(row.paths, []),
+      emptyDirs: parseJsonField<string[]>(row.empty_dirs, []),
+      createdDirs: parseJsonField<string[]>(row.created_dirs, []),
+      kind: row.kind || 'files',
+    }
+  }
+
+  getWorkspaceCheckpoints(sessionId: string): WorkspaceCheckpoint[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM workspace_checkpoints WHERE session_id = ? ORDER BY created_at ASC'
+    ).all(sessionId) as any[]
+    return rows.map((row) => this.workspaceCheckpointFromRow(row))
+  }
+
+  getWorkspaceCheckpoint(id: string): WorkspaceCheckpoint | null {
+    const row = this.db.prepare('SELECT * FROM workspace_checkpoints WHERE id = ?').get(id) as any
+    return row ? this.workspaceCheckpointFromRow(row) : null
+  }
+
+  getWorkspaceCheckpointsByTask(taskId: string): WorkspaceCheckpoint[] {
+    if (!taskId) return []
+    const rows = this.db.prepare(
+      'SELECT * FROM workspace_checkpoints WHERE task_id = ? ORDER BY created_at ASC'
+    ).all(taskId) as any[]
+    return rows.map((row) => this.workspaceCheckpointFromRow(row))
+  }
+
+  getWorkspaceCheckpointByToolCall(sessionId: string, toolCallId: string): WorkspaceCheckpoint | null {
+    if (!toolCallId) return null
+    const row = this.db.prepare(
+      'SELECT * FROM workspace_checkpoints WHERE session_id = ? AND tool_call_id = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(sessionId, toolCallId) as any
+    return row ? this.workspaceCheckpointFromRow(row) : null
+  }
+
+  addWorkspaceCheckpoint(
+    checkpoint: Omit<WorkspaceCheckpoint, 'createdAt'> & { createdAt?: number },
+  ): WorkspaceCheckpoint {
+    const now = checkpoint.createdAt || Date.now()
+    this.db.prepare(`
+      INSERT INTO workspace_checkpoints
+        (id, session_id, project_path, task_id, tool_call_id, message_id, label, created_at,
+         commit_hash, paths, empty_dirs, created_dirs, kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      checkpoint.id,
+      checkpoint.sessionId,
+      checkpoint.projectPath,
+      checkpoint.taskId || '',
+      checkpoint.toolCallId || '',
+      checkpoint.messageId || '',
+      checkpoint.label || '',
+      now,
+      checkpoint.commit,
+      JSON.stringify(checkpoint.paths || []),
+      JSON.stringify(checkpoint.emptyDirs || []),
+      JSON.stringify(checkpoint.createdDirs || []),
+      checkpoint.kind || 'files',
+    )
+    return { ...checkpoint, createdAt: now }
+  }
+
+  updateWorkspaceCheckpoint(
+    id: string,
+    patch: Partial<Pick<WorkspaceCheckpoint, 'paths' | 'emptyDirs' | 'createdDirs' | 'label' | 'taskId' | 'messageId'>>,
+  ): void {
+    const current = this.getWorkspaceCheckpoint(id)
+    if (!current) return
+    const next = { ...current, ...patch }
+    this.db.prepare(`
+      UPDATE workspace_checkpoints
+         SET task_id = ?, message_id = ?, label = ?, paths = ?, empty_dirs = ?, created_dirs = ?
+       WHERE id = ?
+    `).run(
+      next.taskId || '',
+      next.messageId || '',
+      next.label || '',
+      JSON.stringify(next.paths || []),
+      JSON.stringify(next.emptyDirs || []),
+      JSON.stringify(next.createdDirs || []),
+      id,
+    )
+  }
+
+  deleteWorkspaceCheckpoints(sessionId: string): void {
+    this.db.prepare('DELETE FROM workspace_checkpoints WHERE session_id = ?').run(sessionId)
+  }
+
+  deleteWorkspaceCheckpoint(id: string): void {
+    this.db.prepare('DELETE FROM workspace_checkpoints WHERE id = ?').run(id)
+  }
+
 
   // ─────────────── Reverted files (display-only, survives checkpoint delete) ─
   getRevertedFiles(sessionId: string): string[] {

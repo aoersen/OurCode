@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
-import { getBudgetUsage, initBudgetTracking } from '@/services/targetMode/budget'
+import { getProjectBudgetUsage, initBudgetTracking } from '@/services/targetMode/budget'
 
 interface PendingItem {
   key: string
@@ -68,13 +68,9 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
       const next: PendingItem[] = []
       for (const [projectPath, members] of byProject) {
         const director = members.find((s) => s.targetMode === true && !s.workerRole) ?? members[0]
-        let used = 0
-        let limit = 0
-        for (const m of members) {
-          const u = getBudgetUsage(m.id)
-          used += u.used
-          limit = Math.max(limit, u.limit)
-        }
+        // 预算状态按项目共享（总监 + 全体员工同一份账），直接读项目合计——
+        // 再按会话求和会把同一个总额重复叠加 N 次。
+        const { used, limit } = getProjectBudgetUsage(projectPath)
         const exceeded = limit > 0 && used >= limit
         if (exceeded) {
           if (!budgetDismissed.current.has(projectPath)) {

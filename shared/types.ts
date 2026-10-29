@@ -268,6 +268,54 @@ export interface RevertedFileRecord {
   hasSnapshot: boolean
 }
 
+// ── Workspace checkpoints (whole-tree snapshots) ───────────────────────────
+// The per-file checkpoints above are fast and cover write tools. Workspace
+// checkpoints cover the cases the per-file snapshot cannot: directory deletes,
+// run_command side effects, MCP/plugin writes and non-git projects. They are
+// backed by a shadow git repository under userData (never the project's .git).
+
+export type WorkspaceCheckpointKind = 'files' | 'command' | 'restore-safety' | 'mkdir' | 'dir-delete'
+
+export interface WorkspaceCheckpoint {
+  id: string
+  sessionId: string
+  /** Absolute project root this snapshot belongs to. */
+  projectPath: string
+  /** Director session id (one-person-company task); optional for agent mode. */
+  taskId?: string
+  /** Tool call that created this snapshot (restore-to-before target). */
+  toolCallId?: string
+  /** Assistant message that triggered the tool call. */
+  messageId?: string
+  label: string
+  createdAt: number
+  /** Commit in the shadow repository. */
+  commit: string
+  /** Absolute paths involved in the operation (filled after the post-diff). */
+  paths: string[]
+  /** Absolute empty directories to recreate on restore. */
+  emptyDirs: string[]
+  /** Absolute directories created by the operation (removed on restore when empty). */
+  createdDirs: string[]
+  kind: WorkspaceCheckpointKind
+}
+
+export interface WorkspaceRestoreResult {
+  ok: boolean
+  restored: number
+  deleted: number
+  skipped: number
+  conflicts?: string[]
+  safetyCheckpointId?: string
+  error?: string
+}
+
+export interface WorkspaceDiffEntry {
+  /** Absolute path. */
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+}
+
 // Persistent user memory (injected into the system prompt)
 export interface Memory {
   id: string

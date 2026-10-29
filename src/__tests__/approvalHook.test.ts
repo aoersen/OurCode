@@ -113,6 +113,39 @@ describe('createApprovalPreHook', () => {
     expect(preview).toContain('⚠️ 危险命令')
   })
 
+  it('companyVerdict decides without a dialog, even for dangerous commands', async () => {
+    const onDialog = vi.fn(async () => true)
+    const companyVerdict = vi.fn((t: ToolCall) =>
+      t.arguments?.command === 'git push'
+        ? { allow: false as const, reason: '远端不可回滚' }
+        : { allow: true as const },
+    )
+    const hook = makeHook({
+      needsApproval: () => true,
+      companyVerdict,
+      onDialog,
+    })
+
+    const denied = await hook(
+      { id: 'co1', name: 'run_command', arguments: { command: 'git push' } } as ToolCall,
+      { sessionId: 's1' },
+    )
+    expect(denied).toEqual({ deny: true, reason: '远端不可回滚' })
+
+    const allowed = await hook(tc('co2'), { sessionId: 's1' })
+    expect(allowed).toEqual({ allow: true })
+
+    // A dangerous-looking command is still decided by the company verdict —
+    // no danger dialog, no onDialog fallback.
+    const dangerous = await hook(
+      { id: 'co3', name: 'run_command', arguments: { command: 'rm -rf /' } } as ToolCall,
+      { sessionId: 's1' },
+    )
+    expect(dangerous).toEqual({ allow: true })
+    expect(onDialog).not.toHaveBeenCalled()
+    expect(companyVerdict).toHaveBeenCalledTimes(3)
+  })
+
   it('a routine command still passes without a dialog under exemptions', async () => {
     const onDialog = vi.fn(async () => true)
     const hook = makeHook({ needsApproval: () => false, onDialog })

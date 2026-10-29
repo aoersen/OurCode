@@ -8,7 +8,7 @@
   },
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/dev.mjs",
     "build": "electron-vite build",
     "build:claw-gateway": "node electron/claw-gateway/bundle.mjs",
     "predev": "npm run build:claw-gateway",

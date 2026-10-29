@@ -19,8 +19,10 @@ import { sendLLMRequest } from '@/services/llm/LLMClient'
 import { ToolExecutor } from '@/services/tools'
 import type { ToolCall, ToolResult } from '@/services/tools/types'
 import { captureCheckpoint } from '@/services/checkpointService'
+import { captureWorkspaceCheckpointForTool, finalizeWorkspaceCheckpoint } from '@/services/checkpoint/workspaceCheckpoint'
+import { isCompanySession, evaluateCompanyToolCall } from '@/services/permissions/companyGuard'
 import { buildSkillIndex, listSkills } from '@/services/skills/skillManager'
-import { loadAgentDefinition, SubagentGuard, resolveAllowedRoot } from '@/services/subagents/subagentDefinitions'
+import { loadAgentDefinition, SubagentGuard, resolveAllowedRoot, failClosedDefinition, isGenericAgentDefinition } from '@/services/subagents/subagentDefinitions'
 import { subagentStatusLabel, mergeWriteScopes, resolveSubagentModel, sanitizeModelName } from '@/services/subagents/subagentReport'
 import { useChatStore, setWireContextForRun, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
@@ -145,6 +147,25 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
     useChatStore.getState().subagentProgress[toolCallId || '']?.steps || []
 
   const session = useChatStore.getState().sessions.find((s) => s.id === opts.sessionId)
+  // Company subagents inherit the default-allow + checkpoint model. They are
+  // not exempt from the external/outside-workspace boundary.
+  const companyParent = isCompanySession(session)
+  const companyTaskId = session?.targetMode
+    ? session.id
+    : session?.workerRole
+      ? (() => {
+          const lastUser = [...(session.messages || [])].reverse().find((m) => m.role === 'user')
+          const senderTitle = /^\[来自会话「(.+?)」的会话间消息\]/.exec(lastUser?.content || '')?.[1]
+          const all = useChatStore.getState().sessions
+          const byTitle = senderTitle
+            ? all.find((x) => x.title === senderTitle && x.targetMode === true && !x.workerRole)
+            : undefined
+          const fallback = all.find(
+            (x) => x.targetMode === true && !x.workerRole && x.projectPath && x.projectPath === session.projectPath,
+          )
+          return (byTitle ?? fallback)?.id
+        })()
+      : undefined
   const configGroup = useConfigStore.getState().configGroups.find((g) => g.id === session?.configGroupId)
   // Model override (v2 §13.2): the target-mode envelope may pin a per-role
   // model; otherwise resolve from the session exactly as before. 最后一道保险：
@@ -280,13 +301,17 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
   try {
     // Resolve the agent definition (workspace .md → global → builtin) and its
     // permission guard. The definition drives role, tool allowlist, path scope,
-    // iteration budget and token budget.
-    const def = await loadAgentDefinition(opts.name, opts.projectPath)
+    // iteration budget and token budget. A missing role falls back to a
+    // read-only definition (never the unrestricted generic shape).
+    const rawDef = await loadAgentDefinition(opts.name, opts.projectPath)
+    const def = failClosedDefinition(rawDef)
+    const missingRole = isGenericAgentDefinition(rawDef)
     // Envelope hard-isolation (v2 §11.2 / §13.2): files_to_modify from the task
     // envelope becomes the write scope for THIS run, on top of the definition's
     // own allowedWritePaths. Absent writePaths → the guard sees the definition
     // exactly as-is (plain runs keep their original permission boundary).
-    const mergedWritePaths = mergeWriteScopes(def.allowedWritePaths, opts.writePaths)
+    // A missing role cannot gain write scope from the envelope (fail closed).
+    const mergedWritePaths = missingRole ? [] : mergeWriteScopes(def.allowedWritePaths, opts.writePaths)
     const guardDef = mergedWritePaths !== def.allowedWritePaths ? { ...def, allowedWritePaths: mergedWritePaths } : def
     const guard = new SubagentGuard(guardDef, opts.projectPath)
 
@@ -299,7 +324,14 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
     let iterationsLeft = def.maxIterations ?? MAX_SUBAGENT_ITERATIONS
     let finalText = ''
     let toolCallCount = 0
+    // Token totals across ALL rounds. The per-request usage is cumulative (the
+    // provider repeats it on every chunk), so a round overwrites its own
+    // counters and only then adds to these totals. The old code assigned the
+    // round value straight into `tokensUsed`, so maxTokensBudget only ever saw
+    // the LAST request and the usage dashboard recorded 0 for subagents.
     let tokensUsed = 0
+    let tokensIn = 0
+    let tokensOut = 0
     const changedPaths = new Set<string>()
     let lastError = ''
     let hitTokenBudget = false
@@ -341,6 +373,8 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
       let toolCalls: LLMToolCall[] = []
       let roundThinking = ''
       let lastThinkingPush = 0
+      let roundTokensIn = 0
+      let roundTokensOut = 0
 
       try {
         // Attribute the subagent's model requests to the parent session so
@@ -364,9 +398,12 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           if (chunk.content) fullContent += chunk.content
           if (chunk.toolCalls) toolCalls = chunk.toolCalls
           // Usage is the request's cumulative total (providers repeat it on
-          // the final chunk) — overwrite, don't accumulate, or the count
-          // inflates when usage arrives on every chunk.
-          if (chunk.usage) tokensUsed = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0)
+          // the final chunk) — overwrite THIS round's counters, don't add
+          // within the round; the round total is folded in below.
+          if (chunk.usage) {
+            roundTokensIn = chunk.usage.promptTokens || 0
+            roundTokensOut = chunk.usage.completionTokens || 0
+          }
           if (chunk.done) break
         }
       } catch (error: any) {
@@ -375,6 +412,14 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
         if (opts.abortSignal?.aborted) break
         lastError = error.message
         break
+      } finally {
+        // Fold this round's real usage into the run totals even when the
+        // request errored/aborted — the provider may already have billed it.
+        // (A plain statement after the try/catch would be skipped by the
+        // `break` above.)
+        tokensIn += roundTokensIn
+        tokensOut += roundTokensOut
+        tokensUsed = tokensIn + tokensOut
       }
 
       // Flush this round's thinking + latest usage counters (throttle may have
@@ -416,8 +461,44 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           continue
         }
 
+        // Company subagents use the same default-allow boundary as their parent:
+        // outside-workspace and remote/irreversible calls are denied without a
+        // dialog. Everything else is allowed and checkpointed.
+        if (companyParent) {
+          const verdict = evaluateCompanyToolCall({
+            name: tc.name,
+            arguments: tc.arguments,
+            projectPath: opts.projectPath,
+          })
+          if (!verdict.allow) {
+            messages.push({ role: 'tool', content: `Error: ${verdict.reason}`, toolCallId: tc.id })
+            continue
+          }
+        }
+
+        // Whole-tree snapshot for commands / mkdir / MCP / directory deletes;
+        // plain write tools keep the fast per-file checkpoint.
+        let wsCp: Awaited<ReturnType<typeof captureWorkspaceCheckpointForTool>> = null
+        if (
+          companyParent &&
+          (tc.name === 'run_command' || tc.name === 'create_directory' ||
+            tc.name === 'delete_file' || tc.name.startsWith('mcp__'))
+        ) {
+          try {
+            wsCp = await captureWorkspaceCheckpointForTool({
+              sessionId: opts.sessionId,
+              projectPath: opts.projectPath,
+              taskId: companyTaskId,
+              toolCall: tc,
+            })
+          } catch (error) {
+            messages.push({ role: 'tool', content: `Error: ${(error as Error).message}`, toolCallId: tc.id })
+            continue
+          }
+        }
+
         // Snapshot files before write tools so the subagent's edits stay revertable
-        if (WRITE_TOOLS.has(tc.name)) {
+        if (WRITE_TOOLS.has(tc.name) && !wsCp) {
           await captureCheckpoint(opts.sessionId, tc).catch(() => {})
         }
 
@@ -434,6 +515,10 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
         const execution = await executeToolWithAbort(tc)
         if (execution.aborted) break
         const result = execution.result
+        if (wsCp) {
+          const finalized = await finalizeWorkspaceCheckpoint(wsCp, { keepIfEmpty: !!tc.arguments?.background }).catch(() => wsCp)
+          if (finalized) for (const p of finalized.paths) changedPaths.add(p)
+        }
         toolCallCount++
         pushProgress({ toolCallCount })
         if (result.isError) lastError = result.result
@@ -505,6 +590,10 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
       ok: terminalStatus === 'done',
       error: terminalError,
       durationMs: Date.now() - startedAt,
+      // Real billed tokens for the whole run (all rounds) — the usage dashboard
+      // shows subagents as 0 without these two fields.
+      tokensIn,
+      tokensOut,
       payload: { toolCallCount, fileChangeCount: changedPaths.size, tokensUsed, summary: finalText.slice(0, 500) },
     }, tokensUsed)
 

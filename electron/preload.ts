@@ -293,6 +293,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkpointListReverted: (sessionId: string) => ipcRenderer.invoke('checkpoint:listReverted', sessionId),
   checkpointRestore: (sessionId: string, filePaths: string[]) => ipcRenderer.invoke('checkpoint:restore', sessionId, filePaths),
   checkpointGetRevertedRecord: (sessionId: string, filePath: string) => ipcRenderer.invoke('checkpoint:getRevertedRecord', sessionId, filePath),
+  // Whole-tree checkpoints (directory deletes, command side effects, MCP writes)
+  checkpointWorkspaceCreate: (input: any) => ipcRenderer.invoke('checkpoint:workspaceCreate', input),
+  checkpointWorkspaceList: (sessionId: string) => ipcRenderer.invoke('checkpoint:workspaceList', sessionId),
+  checkpointWorkspaceGet: (id: string) => ipcRenderer.invoke('checkpoint:workspaceGet', id),
+  checkpointWorkspaceUpdate: (id: string, patch: any) => ipcRenderer.invoke('checkpoint:workspaceUpdate', id, patch),
+  checkpointWorkspaceDiff: (id: string, paths?: string[]) => ipcRenderer.invoke('checkpoint:workspaceDiff', id, paths),
+  checkpointWorkspaceRestore: (id: string, opts?: { paths?: string[]; force?: boolean }) => ipcRenderer.invoke('checkpoint:workspaceRestore', id, opts),
+  checkpointWorkspaceRestoreBefore: (sessionId: string, toolCallId: string) => ipcRenderer.invoke('checkpoint:workspaceRestoreBefore', sessionId, toolCallId),
+  checkpointWorkspaceRestoreTask: (taskId: string) => ipcRenderer.invoke('checkpoint:workspaceRestoreTask', taskId),
+  checkpointWorkspaceDelete: (sessionId: string) => ipcRenderer.invoke('checkpoint:workspaceDelete', sessionId),
+  checkpointWorkspaceDiscard: (id: string) => ipcRenderer.invoke('checkpoint:workspaceDiscard', id),
 
   // MCP
   mcpListTools: () => ipcRenderer.invoke('mcp:listTools'),

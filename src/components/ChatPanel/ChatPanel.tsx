@@ -355,12 +355,22 @@ export default function ChatPanel() {
                 </select>
                 {/* 编辑方式 —— 四档权限模式（手动确认/自动编辑/计划/完全访问）。
                     弹出菜单展示图标 + 一句话说明；Shift+Tab 可循环切换。
-                    目标模式开启时其自身流程取代 auto_edit/plan，只保留两档。 */}
-                <ModeMenu
-                  value={projectEditMode}
-                  targetMode={targetMode}
-                  onChange={handleEditModeChange}
-                />
+                    目标模式/一人公司不使用这套模式：默认放行工作区内操作，
+                    安全网是 checkpoint + 恢复，而不是审批。 */}
+                {targetMode ? (
+                  <span
+                    title={t('chat.companyDefaultAllowHint')}
+                    className="text-xs rounded-md px-2 py-1 border border-nova-border bg-nova-input-bg text-nova-text-primary whitespace-nowrap"
+                  >
+                    {t('chat.companyDefaultAllow')}
+                  </span>
+                ) : (
+                  <ModeMenu
+                    value={projectEditMode}
+                    targetMode={false}
+                    onChange={handleEditModeChange}
+                  />
+                )}
                 {/* 轨迹视图切换 —— 本行最右侧；点击在对话与 agent 执行日志之间切换。 */}
                 <button
                   onClick={() => setView(view === 'trace' ? 'chat' : 'trace')}

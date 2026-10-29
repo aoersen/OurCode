@@ -7,6 +7,7 @@ import OfficeWorkbench from './OfficeWorkbench'
 import OfficeTopBar from './OfficeTopBar'
 import GoalChecklistCard from './GoalChecklistCard'
 import PendingCenterCard from './PendingCenterCard'
+import CheckpointCenterCard from './CheckpointCenterCard'
 import ArtifactsCard from './ArtifactsCard'
 import { MONO } from './officeTheme'
 import { useI18n } from '@/i18n/useI18n'
@@ -178,6 +179,7 @@ export default function OfficeView() {
               style={{ borderLeft: '1px solid rgba(15,23,42,0.08)' }}
             >
               <GoalChecklistCard active />
+              <CheckpointCenterCard active />
               <PendingCenterCard active />
               <ArtifactsCard active />
             </div>

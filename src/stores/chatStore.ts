@@ -1,7 +1,9 @@
-import { create } from 'zustand'
-import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
+import { create, type StoreApi, type UseBoundStore } from 'zustand'
+import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, WorkspaceCheckpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
 import { TOOL_ALLOWLIST_PREFIX, TOOL_DENYLIST_PREFIX, QUESTION_AUTO_CONTINUE_MS, DEFAULT_SESSION_TITLE, lookupModelMetadata } from '@shared/constants'
 import { kindOf, resolveApproval, targetPathsOf, isPathInScope, MODE_CYCLE, type EditMode } from '@/services/permissions/modePolicy'
+import { isCompanySession, evaluateCompanyToolCall } from '@/services/permissions/companyGuard'
+import { captureWorkspaceCheckpointForTool, finalizeWorkspaceCheckpoint } from '@/services/checkpoint/workspaceCheckpoint'
 import { IS_OFFICE, WINDOW_MODE, modeKey } from '@/utils/windowMode'
 import { shellEnvironmentNote } from '@/utils/platform'
 import { useConfigStore } from './configStore'
@@ -10,7 +12,7 @@ import { useMemoryStore } from './memoryStore'
 import { useUIStore } from './uiStore'
 import { getLastModelForGroup } from './configStore'
 import { TARGET_MODE_INSTRUCTION } from './targetModeInstruction'
-import { refreshBudgetLimit, projectBudgetExceeded, getProjectBudgetUsage } from '@/services/targetMode/budget'
+import { refreshBudgetLimit, projectBudgetExceeded, getProjectBudgetUsage, resetProjectBudget } from '@/services/targetMode/budget'
 import { ensureInitialized, resetTargetModeState, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
 import {
   WORKER_ROSTER,
@@ -33,7 +35,7 @@ import { ToolCall, ToolResult } from '@/services/tools/types'
 import { writeToolPaths } from '@/services/tools/writePaths'
 import { createApprovalPreHook } from './approvalHook'
 import { runWithConcurrency } from '@/services/subagents/parallel'
-import { loadAgentDefinition, SubagentGuard } from '@/services/subagents/subagentDefinitions'
+import { loadAgentDefinition, SubagentGuard, failClosedDefinition } from '@/services/subagents/subagentDefinitions'
 import {
   extractKeywords,
   scoreAgainstKeywords,
@@ -640,6 +642,12 @@ function isTargemodePath(p: unknown): boolean {
   return s.includes('.ourcode/targemode/')
 }
 
+/** 预算上限文件——模型不得自行改写（否则可以自己抬高消耗上限）。 */
+function isBudgetFile(p: unknown): boolean {
+  const s = String(p || '').replace(/\\/g, '/').toLowerCase()
+  return s.endsWith('.ourcode/targemode/budget.md')
+}
+
 // 计划模式防空转 — 计划模式只暴露只读工具；当用户请求明显需要写操作/命令
 // （提交/推送/安装/执行…）而 agent 连续多轮纯只读探索（读文件/搜索）且不提交
 // 计划时，强制弹一次提问让用户决定，而不是把轮次和 token 烧在空转上
@@ -724,6 +732,15 @@ function deriveLastUserMessageAt(s: ChatSession): number {
     if (m.role === 'user') return m.createdAt || s.createdAt
   }
   return s.createdAt
+}
+
+export interface RestoreChangesInput {
+  scope: 'last' | 'file' | 'path' | 'checkpoint' | 'task'
+  sessionId?: string
+  path?: string
+  checkpointId?: string
+  taskId?: string
+  dryRun?: boolean
 }
 
 export interface ChatState {
@@ -896,10 +913,16 @@ export interface ChatState {
 
   // Checkpoints (AI edit snapshots) for the active session
   checkpoints: Checkpoint[]
+  // Whole-tree checkpoints (commands / directory deletes / MCP writes)
+  workspaceCheckpoints: WorkspaceCheckpoint[]
   // File paths whose changes have been reverted (display-only, survives restart)
   revertedFiles: string[]
   loadCheckpoints: (sessionId: string) => Promise<void>
+  loadWorkspaceCheckpoints: (sessionId: string) => Promise<void>
   revertCheckpoint: (checkpointId: string) => Promise<{ ok: boolean; restored: number; error?: string } | null>
+  /** Restore changes for the AI tool / UI: last operation, a file/path, a
+   *  checkpoint, or a whole task. Creates a safety checkpoint first. */
+  restoreChanges: (input: RestoreChangesInput) => Promise<string>
 
   // Session management
   loadSessions: () => Promise<void>
@@ -1061,23 +1084,65 @@ export function toRequestImages(
 // （1500 字符）会把模型的工作集压掉：单文件 git diff（0.5-9KB）和普通
 // read_file 结果一掉出最近 N 条就被替换成占位符，模型看不到内容只能
 // 重读，重读又产生新结果把旧的挤出窗口——轮次不减反增（实测 git_diff
-// 被重复调用 5 次）。因此：只保留最近 10 条完整结果、只压缩 >12KB 的
-// 真正大输出（整库 diff、超大文件读取、海量命令输出）；常规 diff 和
-// 文件读取保持可见。上下文增长的根因是轮数（已靠「直接动手 + 按功能
-// 提交」压到 ~20 轮），不是结果体积。
-const MAX_UNCOMPACTED_TOOL_RESULTS = 10
-const COMPACT_TOOL_RESULT_THRESHOLD = 12000 // 字符
-/** Head preview kept when an old oversized tool result is compacted — the file
- *  path header + first lines so the model still knows what it was. The notice
- *  points at precise retrieval instead of re-running the tool (the old
- *  "重新调用对应工具读取" induced the re-read loop on long runs). */
-const COMPACTED_TOOL_PREVIEW_CHARS = 500
+// 被重复调用 5 次）。因此默认会话保持保守档：保留最近 10 条完整结果、
+// 只压缩 >12KB 的真正大输出（整库 diff、超大文件读取、海量命令输出）。
+//
+// 一人公司（目标模式总监 + 角色员工）另用一档更激进的配置：实测这类会话
+// 的消息里 91% 是工具结果、平均每条只有 2.4KB（远低于 12KB 阈值，等于
+// 从不压缩），1000+ 条消息的历史每轮原样重发。办公室档保留最近 8 条、
+// >4KB 即压成 800 字符头预览——不压到 1.5KB，避免上面的重读回环。
+export interface ToolResultCompactOptions {
+  /** Newest N tool results kept verbatim. */
+  keepRecent: number
+  /** Older results longer than this are replaced by a preview. */
+  thresholdChars: number
+  /** Head preview length kept for a compacted result. */
+  previewChars: number
+}
+
+export const DEFAULT_TOOL_RESULT_COMPACT: ToolResultCompactOptions = {
+  keepRecent: 10,
+  thresholdChars: 12_000,
+  previewChars: 500,
+}
+
+export const OFFICE_TOOL_RESULT_COMPACT: ToolResultCompactOptions = {
+  keepRecent: 8,
+  thresholdChars: 4_000,
+  previewChars: 800,
+}
+
+/** 办公室会话（总监 / 角色员工）用激进档，普通对话保持原档。 */
+export function toolResultCompactOptionsFor(session: {
+  targetMode?: boolean
+  workerRole?: string
+}): ToolResultCompactOptions {
+  return session.targetMode === true || !!session.workerRole
+    ? OFFICE_TOOL_RESULT_COMPACT
+    : DEFAULT_TOOL_RESULT_COMPACT
+}
 
 /** Build the compacted form of an oversized tool result: a short head preview
  *  plus a notice that steers the model to paged reads instead of re-running. */
-function buildCompactedToolResult(content: string): string {
-  const head = content.slice(0, COMPACTED_TOOL_PREVIEW_CHARS)
+function buildCompactedToolResult(content: string, previewChars = 500): string {
+  const head = content.slice(0, previewChars)
   return `${head}\n\n[…该工具结果较长（共 ${content.length} 字符），后续内容已压缩以节省上下文。需要完整内容时，用 read_file 按 startLine/endLine 分页读取或 search_in_files 定向检索，不要整体重读。]`
+}
+
+/**
+ * Estimated tokens a single request message contributes. Assistant tool-call
+ * arguments ride on EVERY request (write_file / edit_file carry the full file
+ * body), so counting only `content` under-counts the real request badly —
+ * measured office history had ~2.9M chars of tool-call payloads invisible to
+ * the old estimate, which made compaction fire far too late (requests up to
+ * 137k input tokens). Exported for unit tests.
+ */
+export function estimateRequestMessageTokens(m: {
+  content: string
+  toolCalls?: unknown[]
+}): number {
+  return estimateTokens(m.content || '')
+    + (m.toolCalls?.length ? estimateTokens(JSON.stringify(m.toolCalls)) : 0)
 }
 
 /**
@@ -1087,23 +1152,26 @@ function buildCompactedToolResult(content: string): string {
  * context warning banner + status bar so the displayed "已使用 X%" reflects
  * what the model actually receives, not the raw (pre-compaction) history.
  */
-export function estimateSessionHistoryTokens(messages: Array<{ role: string; content: string }>): number {
+export function estimateSessionHistoryTokens(
+  messages: Array<{ role: string; content: string; toolCalls?: unknown[] }>,
+  opts: ToolResultCompactOptions = DEFAULT_TOOL_RESULT_COMPACT,
+): number {
   const totalTools = messages.filter((m) => m.role === 'tool').length
   let seen = 0
   let sum = 0
   for (const m of messages) {
     if (m.role === 'tool') {
       seen++
-      // Mirror compactToolResults: only compact OLD oversized results (10 most
-      // recent kept verbatim); the compacted preview + notice is estimated at
-      // its real (bounded) size so the banner matches the request.
+      // Mirror compactToolResults: only compact OLD oversized results (the
+      // newest `keepRecent` kept verbatim); the compacted preview + notice is
+      // estimated at its real (bounded) size so the banner matches the request.
       const fromBack = totalTools - seen + 1
       const len = m.content?.length || 0
-      sum += fromBack > MAX_UNCOMPACTED_TOOL_RESULTS && len > COMPACT_TOOL_RESULT_THRESHOLD
-        ? estimateTokens(buildCompactedToolResult(m.content || ''))
+      sum += fromBack > opts.keepRecent && len > opts.thresholdChars
+        ? estimateTokens(buildCompactedToolResult(m.content || '', opts.previewChars))
         : estimateTokens(m.content || '')
     } else {
-      sum += estimateTokens(m.content || '')
+      sum += estimateRequestMessageTokens(m)
     }
   }
   return sum
@@ -1122,8 +1190,11 @@ export function estimateContextTokens(session: {
   lastContextMessageCount?: number
   summary?: string
   summaryMessageCount?: number
-  messages: Array<{ role: string; content: string }>
+  targetMode?: boolean
+  workerRole?: string
+  messages: Array<{ role: string; content: string; toolCalls?: unknown[] }>
 }): number {
+  const opts = toolResultCompactOptionsFor(session)
   const baseCount = session.lastContextMessageCount ?? 0
   const baseline = session.lastContextTokens
   if (baseline == null || baseline <= 0 || baseCount <= 0) {
@@ -1131,33 +1202,119 @@ export function estimateContextTokens(session: {
     // the compaction boundary], not the raw full history — count exactly that.
     const summarized = Math.min(session.summaryMessageCount ?? 0, session.messages.length)
     const anchor = session.summary ? estimateTokens(buildSummaryBlock(session.summary)) : 0
-    return anchor + estimateSessionHistoryTokens(session.messages.slice(summarized))
+    return anchor + estimateSessionHistoryTokens(session.messages.slice(summarized), opts)
   }
   // History edits (opt-in) may have deleted messages below the baseline count —
   // clamp so the delta can't go negative; the baseline then slightly
   // over-counts until the next request refreshes it.
   const added = session.messages.slice(Math.min(baseCount, session.messages.length))
-  return baseline + estimateSessionHistoryTokens(added)
+  return baseline + estimateSessionHistoryTokens(added, opts)
 }
 
 /** Exported for unit tests. */
-export function compactToolResults(messages: RequestMessage[]): RequestMessage[] {
+export function compactToolResults(
+  messages: RequestMessage[],
+  opts: ToolResultCompactOptions = DEFAULT_TOOL_RESULT_COMPACT,
+): RequestMessage[] {
   const totalTools = messages.filter((m) => m.role === 'tool').length
   let seen = 0
   return messages.map((m) => {
     if (m.role !== 'tool') return m
     seen++
     // 从前往后第 seen 条，其「从后往前」位置 = totalTools - seen + 1。
-    // 只压缩位置超过 MAX_UNCOMPACTED_TOOL_RESULTS（即较早）的超长结果；
+    // 只压缩位置超过 keepRecent（即较早）的超长结果；
     // 消息本身全部保留，tool 配对完整。
     const fromBack = totalTools - seen + 1
-    if (fromBack > MAX_UNCOMPACTED_TOOL_RESULTS && m.content && m.content.length > COMPACT_TOOL_RESULT_THRESHOLD) {
+    if (fromBack > opts.keepRecent && m.content && m.content.length > opts.thresholdChars) {
       return {
         ...m,
-        content: buildCompactedToolResult(m.content),
+        content: buildCompactedToolResult(m.content, opts.previewChars),
       }
     }
     return m
+  })
+}
+
+/** Tools whose arguments embed file bodies. Older calls keep only the path and a
+ *  short preview: the tool already ran, so re-sending the full body every round
+ *  is pure waste — the file on disk is the source of truth. */
+const ARG_COMPACT_TOOLS = new Set(['write_file', 'edit_file', 'multi_edit_file'])
+/** Newest N assistant tool-call rounds keep their arguments untouched — the
+ *  model may still be mid-edit and need its own recent context. */
+export const MAX_UNCOMPACTED_TOOL_ROUNDS = 8
+const COMPACTED_ARG_PREVIEW_CHARS = 160
+
+function compactArgString(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  if (value.length <= COMPACTED_ARG_PREVIEW_CHARS) return value
+  return `${value.slice(0, COMPACTED_ARG_PREVIEW_CHARS)}…[已省略 ${value.length} 字符]`
+}
+
+function compactToolCallArgsOf(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (name === 'write_file') {
+    return { ...args, content: compactArgString(args.content) }
+  }
+  if (name === 'edit_file') {
+    return {
+      ...args,
+      oldText: compactArgString(args.oldText),
+      newText: compactArgString(args.newText),
+      context: compactArgString(args.context),
+    }
+  }
+  if (name === 'multi_edit_file' && Array.isArray(args.edits)) {
+    return {
+      ...args,
+      edits: args.edits.map((edit) => {
+        if (!edit || typeof edit !== 'object') return edit
+        const e = edit as Record<string, unknown>
+        return {
+          ...e,
+          oldText: compactArgString(e.oldText),
+          newText: compactArgString(e.newText),
+          context: compactArgString(e.context),
+        }
+      }),
+    }
+  }
+  return args
+}
+
+/**
+ * Request-view only: replace the arguments of OLD write/edit tool calls with a
+ * path + short preview. The message itself (and its tool-call id/name) is
+ * preserved, so the API's tool-call/tool-result pairing stays valid; only the
+ * already-consumed file body is dropped. Exported for unit tests.
+ */
+export function compactToolCallArgs(
+  messages: RequestMessage[],
+  keepRecentRounds = MAX_UNCOMPACTED_TOOL_ROUNDS,
+): RequestMessage[] {
+  const rounds: number[] = []
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'assistant' && messages[i].toolCalls?.length) rounds.push(i)
+  }
+  const cutoff = rounds.length - keepRecentRounds
+  if (cutoff <= 0) return messages
+  const old = new Set(rounds.slice(0, cutoff))
+  return messages.map((m, i) => {
+    if (!old.has(i) || !m.toolCalls?.length) return m
+    let changed = false
+    const toolCalls = m.toolCalls.map((tc) => {
+      const name = tc.function?.name
+      if (!name || !ARG_COMPACT_TOOLS.has(name)) return tc
+      let args: Record<string, unknown>
+      try {
+        args = JSON.parse(tc.function.arguments || '{}')
+      } catch {
+        return tc
+      }
+      const next = JSON.stringify(compactToolCallArgsOf(name, args))
+      if (next === tc.function.arguments) return tc
+      changed = true
+      return { ...tc, function: { ...tc.function, arguments: next } }
+    })
+    return changed ? { ...m, toolCalls } : m
   })
 }
 
@@ -1171,7 +1328,7 @@ export function compactToolResults(messages: RequestMessage[]): RequestMessage[]
 export function trimHistoryForContext(messages: RequestMessage[], modelId: string): RequestMessage[] {
   const contextWindow = getContextWindow(modelId)
   const budget = Math.floor(contextWindow * 0.8)
-  const total = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+  const total = messages.reduce((sum, m) => sum + estimateRequestMessageTokens(m), 0)
   if (total <= budget) return messages
 
   const trimmed = [...messages]
@@ -1179,7 +1336,7 @@ export function trimHistoryForContext(messages: RequestMessage[], modelId: strin
   // Never drop the system message (index 0) or the newest message (current turn)
   while (
     trimmed.length > 2
-    && trimmed.reduce((sum, m) => sum + estimateTokens(m.content), 0) > budget
+    && trimmed.reduce((sum, m) => sum + estimateRequestMessageTokens(m), 0) > budget
   ) {
     trimmed.splice(1, 1)
     removed++
@@ -1447,7 +1604,10 @@ async function persistSubagentRun(toolCallId: string, p: SubAgentProgress): Prom
   } catch { /* 回看数据丢了不影响本轮任务 */ }
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+// Explicit annotation (instead of inference) breaks the circular type edge
+// store → receiveInboundMessage → inbound batching helper → store.getState,
+// which TypeScript otherwise resolves as `any` and cascades across the app.
+export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   runningSessionIds: [],
@@ -1462,6 +1622,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   queuedMessagesBySession: {},
   inboundQueue: [],
   checkpoints: [],
+  workspaceCheckpoints: [],
   revertedFiles: [],
   activeRuns: {},
   agentTraces: {},
@@ -2161,6 +2322,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!target) return '目标会话不存在。'
     const content = `[来自会话「${senderTitle}」的会话间消息]\n\n${message}`
     const busy = chatStore.runningSessionIds.includes(targetSessionId) || (_inboundLaunches.get(targetSessionId) || 0) > 0
+    const isDirector = target.targetMode === true && !target.workerRole
+
+    // 总监：员工回报/子任务通知常常成批到达。消息立即入历史（持久化 + UI
+    // 可见），只把“触发”收进 2 秒合并窗口——一条回报跑一整轮会把全量上下文
+    // 重复发送一遍（实测单个总监会话 900+ 次请求）。
+    if (isDirector && !hold) {
+      chatStore.addMessage(targetSessionId, { role: 'user', content })
+      void chatStore.saveSession(targetSessionId)
+      noteDirectorInbound(targetSessionId)
+      if (projectBudgetExceeded(target.projectPath || '')) {
+        return '已投递到目标会话历史（公司预算触顶，未自动续跑）。'
+      }
+      scheduleDirectorInboundRun(targetSessionId)
+      return busy
+        ? '目标会话正在生成，消息已投递，结束后合并处理。'
+        : '已投递，将在合并窗口（约 2 秒）后触发处理。'
+    }
+
     if (busy) {
       set((s) => ({
         inboundQueue: [...s.inboundQueue, { targetSessionId, senderTitle, content, hold }],
@@ -2169,6 +2348,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? '目标会话忙，消息已排队（hold 模式不自动处理）。'
         : '目标会话正在生成，消息已排队，结束后自动处理。'
     }
+    // 员工的新派发：旧历史超过阈值就先换成确定性交接摘要（只影响请求视图，
+    // 原始消息仍保留）。小任务历史不动，避免无谓的信息损失。
+    if (!hold) applyWorkerHandoffIfNeeded(targetSessionId)
     chatStore.addMessage(targetSessionId, { role: 'user', content })
     void chatStore.saveSession(targetSessionId)
     if (hold) {
@@ -2187,16 +2369,154 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadCheckpoints: async (sessionId) => {
     // Clear synchronously first so a previous session's list can't briefly
-    // leak into the new session's summary while the fetch is in flight (the
+    // leak into the current session's summary while the fetch is in flight (the
     // checkpoints are filterable by sessionId, but revertedFiles are not).
-    set({ checkpoints: [], revertedFiles: [] })
+    set({ checkpoints: [], workspaceCheckpoints: [], revertedFiles: [] })
     try {
-      const checkpoints = await window.electronAPI.checkpointList(sessionId)
-      const revertedFiles = await window.electronAPI.checkpointListReverted(sessionId)
-      set({ checkpoints, revertedFiles })
+      const workspacePromise = typeof window.electronAPI.checkpointWorkspaceList === 'function'
+        ? window.electronAPI.checkpointWorkspaceList(sessionId)
+        : Promise.resolve([])
+      const [checkpoints, revertedFiles, workspaceCheckpoints] = await Promise.all([
+        window.electronAPI.checkpointList(sessionId),
+        window.electronAPI.checkpointListReverted(sessionId),
+        workspacePromise,
+      ])
+      set({ checkpoints, workspaceCheckpoints, revertedFiles })
     } catch {
-      set({ checkpoints: [], revertedFiles: [] })
+      set({ checkpoints: [], workspaceCheckpoints: [], revertedFiles: [] })
     }
+  },
+
+  loadWorkspaceCheckpoints: async (sessionId) => {
+    try {
+      if (typeof window.electronAPI.checkpointWorkspaceList !== 'function') {
+        set({ workspaceCheckpoints: [] })
+        return
+      }
+      const workspaceCheckpoints = await window.electronAPI.checkpointWorkspaceList(sessionId)
+      set({ workspaceCheckpoints })
+    } catch {
+      set({ workspaceCheckpoints: [] })
+    }
+  },
+
+  restoreChanges: async (input) => {
+    const state = get()
+    const sessionId = input.sessionId || state.activeSessionId
+    if (!sessionId) return '无法恢复：当前没有激活会话。'
+    const session = state.sessions.find((s) => s.id === sessionId)
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+    const fmtWs = (r: { ok: boolean; restored: number; deleted: number; skipped: number; error?: string; safetyCheckpointId?: string }) =>
+      r.ok
+        ? `已恢复 ${r.restored} 个文件、删除 ${r.deleted} 个新建文件${r.safetyCheckpointId ? `（安全备份 ${r.safetyCheckpointId}，可用 scope=checkpoint 撤销）` : ''}${r.skipped ? `，跳过 ${r.skipped} 个冲突/失败项` : ''}。`
+        : `恢复失败：${r.error || `${r.skipped} 个路径无法恢复`}。`
+    const fmtFile = (r: { ok: boolean; restored: number; error?: string } | null) =>
+      r?.ok ? `已恢复 ${r.restored} 个文件（可再次回退）。` : `恢复失败：${r?.error || '检查点不可用'}。`
+
+    const list = await window.electronAPI
+      .checkpointWorkspaceList(sessionId)
+      .catch(() => state.workspaceCheckpoints)
+    const sortedWs = [...list].sort((a, b) => a.createdAt - b.createdAt)
+    // The store's `checkpoints` only belongs to the ACTIVE session. A worker
+    // restoring its own bad edit runs in the background while the director is
+    // active, so fetch that session's file checkpoints instead of using the
+    // active list (which would revert the director's work).
+    const isActiveSession = sessionId === state.activeSessionId
+    const fileList = isActiveSession
+      ? state.checkpoints
+      : await window.electronAPI.checkpointList(sessionId).catch(() => [])
+    const sortedFiles = [...fileList].sort((a, b) => a.createdAt - b.createdAt)
+    const revertFile = async (id: string) => {
+      if (isActiveSession) return get().revertCheckpoint(id)
+      try {
+        return await window.electronAPI.checkpointRevert(id)
+      } catch (error) {
+        return { ok: false, restored: 0, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
+    if (input.scope === 'checkpoint') {
+      if (!input.checkpointId) return '恢复失败：缺少 checkpointId。'
+      const ws = sortedWs.find((c) => c.id === input.checkpointId)
+      if (ws) {
+        if (input.dryRun) {
+          const diff = await window.electronAPI.checkpointWorkspaceDiff(ws.id)
+          return `将恢复 ${diff.length} 个路径：${diff.map((d) => d.path).slice(0, 10).join('、')}${diff.length > 10 ? '…' : ''}`
+        }
+        const res = await window.electronAPI.checkpointWorkspaceRestore(ws.id)
+        if (isActiveSession) {
+          await get().loadWorkspaceCheckpoints(sessionId)
+          await get().loadCheckpoints(sessionId)
+        }
+        return fmtWs(res)
+      }
+      const file = sortedFiles.find((c) => c.id === input.checkpointId)
+      if (file) {
+        if (input.dryRun) return `将恢复 ${file.files.length} 个文件：${file.files.map((f) => f.path).join('、')}`
+        return fmtFile(await revertFile(file.id))
+      }
+      return `恢复失败：找不到检查点 ${input.checkpointId}。`
+    }
+
+    if (input.scope === 'task') {
+      if (session?.workerRole) return '恢复失败：角色员工只能恢复自己的文件/操作，不能恢复整个任务。'
+      const taskId = input.taskId || (session?.targetMode && !session.workerRole ? session.id : '')
+      if (!taskId) return '恢复失败：当前会话不是一人公司任务，无法按任务恢复。'
+      const res = await window.electronAPI.checkpointWorkspaceRestoreTask(taskId)
+      if (isActiveSession) {
+        await get().loadWorkspaceCheckpoints(sessionId)
+        await get().loadCheckpoints(sessionId)
+      }
+      return fmtWs(res)
+    }
+
+    if (input.scope === 'file' || input.scope === 'path') {
+      const p = String(input.path || '')
+      if (!p) return '恢复失败：缺少路径。'
+      const target = norm(p)
+      const ws = [...sortedWs].reverse().find((c) =>
+        c.paths.some((x) => {
+          const n = norm(x)
+          return n === target || n.startsWith(target + '/') || target.startsWith(n + '/')
+        }),
+      )
+      if (ws) {
+        if (input.dryRun) {
+          const diff = await window.electronAPI.checkpointWorkspaceDiff(ws.id, [p])
+          return `将恢复 ${diff.length} 个路径：${diff.map((d) => d.path).slice(0, 10).join('、')}`
+        }
+        const res = await window.electronAPI.checkpointWorkspaceRestore(ws.id, { paths: [p] })
+        if (isActiveSession) await get().loadWorkspaceCheckpoints(sessionId)
+        return fmtWs(res)
+      }
+      const file = [...sortedFiles].reverse().find((c) => c.files.some((f) => norm(f.path) === target))
+      if (file) {
+        if (input.dryRun) return `将恢复 ${file.files.length} 个文件：${file.files.map((f) => f.path).join('、')}`
+        return fmtFile(await revertFile(file.id))
+      }
+      return `恢复失败：没有找到路径 ${p} 的检查点。`
+    }
+
+    // last: newest workspace checkpoint vs newest per-file checkpoint
+    const latestWs = sortedWs.filter((c) => c.kind !== 'restore-safety').slice(-1)[0]
+    const latestFile = sortedFiles.slice(-1)[0]
+    if (latestWs && (!latestFile || latestWs.createdAt >= latestFile.createdAt)) {
+      if (input.dryRun) {
+        const diff = await window.electronAPI.checkpointWorkspaceDiff(latestWs.id)
+        return `将恢复最近一次操作：${diff.map((d) => d.path).slice(0, 10).join('、')}`
+      }
+      const res = await window.electronAPI.checkpointWorkspaceRestore(latestWs.id)
+      if (isActiveSession) {
+        await get().loadWorkspaceCheckpoints(sessionId)
+        await get().loadCheckpoints(sessionId)
+      }
+      return fmtWs(res)
+    }
+    if (latestFile) {
+      if (input.dryRun) return `将恢复最近一次写操作：${latestFile.files.map((f) => f.path).join('、')}`
+      return fmtFile(await revertFile(latestFile.id))
+    }
+    return '没有可恢复的变更。'
   },
 
   revertCheckpoint: async (checkpointId) => {
@@ -2505,7 +2825,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 存在旧总监会话 = 项目里做过任务 → 新任务全新开张，先清掉旧运行态。
     const hasPreviousTask =
       root && get().sessions.some((s) => s.targetMode === true && !s.workerRole && s.projectPath === root)
-    if (hasPreviousTask) void resetTargetModeState(root)
+    if (hasPreviousTask) {
+      void resetTargetModeState(root)
+      // 新任务从零开始计费：上一次任务累计的 token 不应让新任务一开工就触顶。
+      resetProjectBudget(root)
+    }
     return get().createSession(configId, root)
   },
 
@@ -2571,6 +2895,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     void window.electronAPI.spillDeleteSession(sessionId).catch(() => {})
     // Drop the executor's per-session read-tracking (read-before-write guard)
     toolExecutor.forgetSession(sessionId)
+    // Drop a pending director merge-window wake-up for the deleted session.
+    cancelDirectorInboundRun(sessionId)
   },
 
   rollActiveSessionAwayFrom: (projectPath) => {
@@ -2592,7 +2918,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // chat panel shows its empty state). The removed project's sessions stay
       // stored and come back when the project is re-opened.
       localStorage.removeItem(LAST_SESSION_KEY)
-      set({ activeSessionId: null, checkpoints: [], revertedFiles: [] })
+      set({ activeSessionId: null, checkpoints: [], workspaceCheckpoints: [], revertedFiles: [] })
     }
   },
 
@@ -2808,7 +3134,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // M4：触顶判定按**项目合计**（总监 + 全体员工的消耗），公司级语义。
     const tmSession = get().sessions.find((s) => s.id === sessionId)
     if (tmSession?.targetMode) {
-      await refreshBudgetLimit(sessionId)
+      await refreshBudgetLimit(sessionId, tmSession.projectPath || '')
       if (projectBudgetExceeded(tmSession.projectPath || '')) {
         const { used, limit } = getProjectBudgetUsage(tmSession.projectPath || '')
         useUIStore.getState().showNotification(t('chat.targetModeBudgetExceeded'), 'warning')
@@ -2816,7 +3142,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           role: 'assistant',
           content:
             `[目标模式全局预算已触顶（${used.toLocaleString()} / ${limit.toLocaleString()} tokens），已停止自主续跑。` +
-            '可修改 .ourcode/targemode/budget.md 提高上限后点击"继续"。]',
+            '预算上限由用户调整（.ourcode/targemode/budget.md 或预算面板），调高后点击"继续"。]',
         })
         return
       }
@@ -3093,6 +3419,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Stop ONLY the given session's generation — parallel conversations must
     // never be stopped by acting on a different session's button.
     get().abortControllers[sessionId]?.abort()
+    // A user Stop must also cancel a pending director merge-window wake-up:
+    // otherwise reports that arrived just before the stop would start a new
+    // autonomous turn a couple of seconds later.
+    cancelDirectorInboundRun(sessionId)
     // If the agent is blocked on a dialog for this session, resolve it so the
     // loop can unwind (each session has its own resolve slot).
     if (_questionResolves.has(sessionId)) {
@@ -3353,6 +3683,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       clearInterval(_gitBranchInterval)
       _gitBranchInterval = null
     }
+    for (const timer of _inboundBatchTimers.values()) clearTimeout(timer)
+    _inboundBatchTimers.clear()
+    _inboundSeq.clear()
+    _directorRunSeq.clear()
     _persistedSessionIds.clear()
     localStorage.removeItem(LAST_SESSION_KEY)
     set({
@@ -3368,6 +3702,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       queuedMessagesBySession: {},
       inboundQueue: [],
       checkpoints: [],
+      workspaceCheckpoints: [],
       revertedFiles: [],
       undoStack: [],
       activeRuns: {},
@@ -3381,6 +3716,154 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })
   },
 }))
+
+// ── 一人公司上下文治理 ─────────────────────────────────────────────────
+//
+// 实测（2026-09）：办公室会话的总输入里 97.9% 是重复发送的历史，员工会话
+// 能到 1000+ 条消息 / 140 万字符。这里做两件事，都不改变模型当前工作集：
+//  1. 员工每次收到新派发时，把超长旧历史换成确定性交接摘要（不调 LLM），
+//     原始消息仍保留在 SQLite/UI；
+//  2. 总监收到的员工回报按 2 秒窗口合并成一轮，而不是每条回报都跑一整轮。
+
+/** 员工历史超过这个估算值才做派发交接；小任务保持原样，避免无谓的信息损失。 */
+export const WORKER_HANDOFF_THRESHOLD_TOKENS = 8_000
+/** 单次派发的 token 安全上限。正常派发远低于此值；超过说明任务失控/没有收敛，
+ *  停下让总监拆分重派，比继续烧到项目总预算更划算。 */
+export const WORKER_DISPATCH_TOKEN_CAP = 400_000
+
+export function workerDispatchCapReached(role: string | undefined, tokens: number): boolean {
+  return !!role && tokens >= WORKER_DISPATCH_TOKEN_CAP
+}
+const HANDOFF_MAX_FILES = 30
+const HANDOFF_REPORT_CHARS = 1_500
+const HANDOFF_TASK_CHARS = 400
+const HANDOFF_WRITE_TOOLS = new Set([
+  'write_file', 'edit_file', 'multi_edit_file', 'delete_file', 'create_directory',
+])
+
+function collectHandoffPaths(messages: ChatMessage[]): string[] {
+  const out = new Set<string>()
+  for (const m of messages) {
+    for (const tc of m.toolCalls ?? []) {
+      if (!HANDOFF_WRITE_TOOLS.has(tc.name)) continue
+      const args = tc.arguments || {}
+      if (typeof args.path === 'string' && args.path) out.add(args.path)
+      if (Array.isArray(args.edits)) {
+        for (const e of args.edits) {
+          if (e && typeof e === 'object' && typeof (e as { path?: unknown }).path === 'string') {
+            out.add((e as { path: string }).path)
+          }
+        }
+      }
+    }
+  }
+  return Array.from(out).slice(-HANDOFF_MAX_FILES)
+}
+
+/**
+ * Deterministic handoff for a worker's next dispatch: last task + last report +
+ * touched files. No LLM call (costs nothing and cannot hallucinate). Returns
+ * null while the history is small enough to keep verbatim.
+ */
+export function buildWorkerHandoff(
+  messages: ChatMessage[],
+  previousSummary = '',
+): { summary: string; messageCount: number } | null {
+  if (messages.length === 0) return null
+  if (estimateSessionHistoryTokens(messages, OFFICE_TOOL_RESULT_COMPACT) < WORKER_HANDOFF_THRESHOLD_TOKENS) {
+    return null
+  }
+  const lastReport = [...messages].reverse().find((m) => m.role === 'assistant' && (m.content || '').trim())
+  const lastDispatch = [...messages].reverse().find((m) => m.role === 'user' && (m.content || '').trim())
+  const paths = collectHandoffPaths(messages)
+  const parts = [
+    '## 派发交接（系统生成，非 LLM 摘要）',
+    '你在本工位之前完成过工作；旧对话已从本次请求的上下文中移除（完整记录仍保存在界面与数据库中）。',
+    // A previous compaction summary carries decisions the raw tail no longer
+    // shows — keep a bounded copy instead of silently dropping it.
+    previousSummary.trim() ? `更早工作的摘要：\n${previousSummary.trim().slice(0, HANDOFF_REPORT_CHARS)}` : '',
+    lastDispatch ? `上一次派发的任务：${(lastDispatch.content || '').slice(0, HANDOFF_TASK_CHARS)}` : '',
+    lastReport ? `上一次的收尾报告：\n${(lastReport.content || '').slice(0, HANDOFF_REPORT_CHARS)}` : '',
+    paths.length > 0
+      ? `已修改的文件（内容可能已变化，改动前先 read_file 确认）：\n${paths.map((p) => `- ${p}`).join('\n')}`
+      : '',
+    '当前任务的目标与进度以 .ourcode/targemode/implementationStatus.md 为准；不要凭记忆修改文件。',
+  ].filter(Boolean)
+  return { summary: parts.join('\n\n'), messageCount: messages.length }
+}
+
+/** Apply the handoff at a dispatch boundary (request view only). */
+function applyWorkerHandoffIfNeeded(sessionId: string): void {
+  const target = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+  if (!target?.workerRole || target.messages.length === 0) return
+  const handoff = buildWorkerHandoff(target.messages, target.summary)
+  if (!handoff) return
+  useChatStore.setState((s) => ({
+    sessions: s.sessions.map((sess) =>
+      sess.id === sessionId
+        ? {
+            ...sess,
+            summary: handoff.summary,
+            summaryMessageCount: handoff.messageCount,
+            // The old baseline described a request view that no longer exists.
+            lastContextTokens: undefined,
+            lastContextMessageCount: undefined,
+          }
+        : sess,
+    ),
+  }))
+}
+
+/** Director reports often arrive in bursts (several workers finish together).
+ *  Waiting for a short quiet period lets one full-context turn handle the whole
+ *  batch instead of one turn per report.
+ *
+ *  `_inboundSeq` counts delivered reports per director; `_directorRunSeq` is the
+ *  count captured when a run starts. A run starts with everything delivered so
+ *  far (its request is built from the store), so the finally only needs a
+ *  follow-up when the sequence advanced DURING the run — this avoids both
+ *  "one turn per report" and a redundant turn after a user-started run. */
+const OFFICE_DIRECTOR_BATCH_MS = 2_000
+const _inboundBatchTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const _inboundSeq = new Map<string, number>()
+const _directorRunSeq = new Map<string, number>()
+
+function noteDirectorInbound(sessionId: string): void {
+  _inboundSeq.set(sessionId, (_inboundSeq.get(sessionId) || 0) + 1)
+}
+
+function launchDirectorRun(sessionId: string): void {
+  const st = useChatStore.getState()
+  const target = st.sessions.find((s) => s.id === sessionId)
+  if (!target) return
+  // Budget fuse: messages stay in history; only the auto-resume is gated.
+  if (target.targetMode === true && projectBudgetExceeded(target.projectPath || '')) return
+  // Busy → do nothing: the running loop's finally compares the sequence and
+  // schedules a follow-up only if new reports actually arrived mid-run.
+  if (st.runningSessionIds.includes(sessionId) || (_inboundLaunches.get(sessionId) || 0) > 0) return
+  _directorRunSeq.set(sessionId, _inboundSeq.get(sessionId) || 0)
+  markInboundLaunch(sessionId)
+  void runAgentLoop(sessionId).finally(() => { markInboundSettled(sessionId) })
+}
+
+function scheduleDirectorInboundRun(sessionId: string): void {
+  const prev = _inboundBatchTimers.get(sessionId)
+  if (prev) clearTimeout(prev)
+  const timer = setTimeout(() => {
+    _inboundBatchTimers.delete(sessionId)
+    launchDirectorRun(sessionId)
+  }, OFFICE_DIRECTOR_BATCH_MS)
+  _inboundBatchTimers.set(sessionId, timer)
+}
+
+function cancelDirectorInboundRun(sessionId: string): void {
+  const timer = _inboundBatchTimers.get(sessionId)
+  if (timer) clearTimeout(timer)
+  _inboundBatchTimers.delete(sessionId)
+  _inboundSeq.delete(sessionId)
+  _directorRunSeq.delete(sessionId)
+}
+
 
 // ─────────────────────────── Agent loop ───────────────────────────
 
@@ -3473,6 +3956,13 @@ async function runAgentLoop(
   const agentMode = opts?.agentModeOverride || 'agent'
   // Target mode: the agent runs the autonomous .ourcode/targemode/ workflow
   const targetMode = session.targetMode === true
+  // One-person-company sessions (office / target mode / role worker) use the
+  // default-allow + checkpoint model — never approval dialogs.
+  const company = isCompanySession(session)
+  // Freeze the inbound sequence together with the session snapshot: this run's
+  // request is built from `session` (messages added later are NOT in it), so a
+  // report delivered after this point must trigger exactly one follow-up run.
+  if (targetMode) _directorRunSeq.set(sessionId, _inboundSeq.get(sessionId) || 0)
 
   // 一人公司防双跑兜底：新建会话已不再被「同项目存在目标模式会话」拦截（见
   // createSession），同一项目可并存多个目标模式会话（历史 + 新建）。两个监管
@@ -3608,9 +4098,11 @@ async function runAgentLoop(
   // 循环体在轮次边界干净退出时不会抛错，需要循环后补一条停止标记，但不能重复。
   let stopMarked = false
   // 员工终态分类信号（声明在 try 外：finally 的自动回报需要读取）——
-  // 打转守卫停 / 轮数用尽都不是「完成」，回报总监时不能误报为完成。
+  // 打转守卫停 / 轮数用尽 / 单次派发预算触顶都不是「完成」，回报总监时不能
+  // 误报为完成。
   let haltedByLoopGuard = false
   let exhaustedIterations = false
+  let workerBudgetHit = false
 
   // 目标模式监管 guard（见 TARGET_MODE_SUPERVISOR_DENIED 注释）：工具清单里
   // 已隐藏禁用工具，这里兜底拦截幻觉调用，并给 write/create/delete 加
@@ -3626,6 +4118,12 @@ async function runAgentLoop(
         return (
           `目标模式：监管 Agent 不允许直接${tc.name === 'run_command' ? '执行命令' : tc.name.startsWith('git_') ? '做变更类 git 操作' : '修改业务代码'}（系统已拦截）。` +
           `请改用 run_subagent 派发 ${dispatch}，prompt 按任务信封模板构造（frontmatter 声明 files_to_modify / acceptance）。`
+        )
+      }
+      if ((tc.name === 'write_file' || tc.name === 'create_directory' || tc.name === 'delete_file') && isBudgetFile(tc.arguments?.path)) {
+        return (
+          `目标模式：预算上限文件（.ourcode/targemode/budget.md）只能由用户修改，Agent 不得自行调整。` +
+          `若预算确实不够，请向用户说明需要的额度，由用户在 budget.md 或预算面板中调高。`
         )
       }
       if ((tc.name === 'write_file' || tc.name === 'create_directory' || tc.name === 'delete_file') && !isTargemodePath(tc.arguments?.path)) {
@@ -3661,14 +4159,14 @@ async function runAgentLoop(
   let baseSystemPrompt = configGroup.systemPrompt || 'You are a helpful AI coding assistant.'
   let workerGuard: SubagentGuard | null = null
   if (session.workerRole) {
-    const workerDef = await loadAgentDefinition(session.workerRole, workspacePath || undefined)
+    const workerDef = failClosedDefinition(await loadAgentDefinition(session.workerRole, workspacePath || undefined))
     baseSystemPrompt = await buildWorkerSystemPrompt(
       session.workerRole,
       workerDef?.systemPrompt ?? '',
     )
     // 员工模式：send_message（回报总监）与 run_subagent（派只读调研助手）
     // 对员工放行，其余控制类工具照旧封禁。
-    workerGuard = new SubagentGuard(workerDef, workspacePath || '', { workerMode: true })
+    workerGuard = new SubagentGuard(workerDef, workspacePath || '', { workerMode: true, denyMcpByDefault: true })
   }
   // Split the prompt into a byte-stable prefix + per-turn dynamic context so
   // provider prefix caches (OpenAI / DeepSeek / Anthropic) keep hitting across
@@ -3682,6 +4180,20 @@ async function runAgentLoop(
   ))
   let stableSystemPrompt = stable
   let dynamicContext = dynamic
+  // 一人公司：把当前员工名册直接放进动态上下文。此前总监每轮都要调用
+  // list_agents 重新确认名单（实测单个总监会话 61 次），每次都多一个回合
+  // + 一组消息永远留在历史里。名册变化（增/删员工）时下一轮自动更新。
+  if (targetMode) {
+    const rosterRoot = workspacePath || getWorkspaceRoot()
+    const roster = useChatStore.getState().sessions
+      .filter((s) => !!s.workerRole && s.projectPath === rosterRoot)
+      .sort((a, b) => (a.workerSlot ?? 0) - (b.workerSlot ?? 0))
+    if (roster.length > 0) {
+      dynamicContext += `\n\n<company_roster>\n当前员工名册（派发时直接使用这里的会话 id；名单未变化时不要调用 list_agents）：\n${
+        roster.map((s) => `- ${s.title}（${s.workerRole}，会话 id: ${s.id}）`).join('\n')
+      }\n</company_roster>`
+    }
+  }
   // #sess_<id> references — expand into the request's dynamic context so the
   // model can continue from another conversation (bounded tail, at most
   // MAX_REFERENCES_PER_TURN sessions per turn). Unresolved ids get an explicit
@@ -3726,7 +4238,7 @@ async function runAgentLoop(
         }
       }
     } else {
-      const planningPhase = (session.projectEditMode || DEFAULT_PROJECT_EDIT_MODE) === 'plan' && !opts?.planApproved
+      const planningPhase = !company && (session.projectEditMode || DEFAULT_PROJECT_EDIT_MODE) === 'plan' && !opts?.planApproved
       stableSystemPrompt += planningPhase ? PLAN_MODE_INSTRUCTION : AGENT_MODE_INSTRUCTION
     }
   }
@@ -3811,7 +4323,12 @@ async function runAgentLoop(
   //   the full schema size, delaying compaction until the provider overflows.
   // - The ratio's headroom covers a plain reply; thinking models can emit far
   //   more, so a thinking session reserves extra output headroom up front.
-  messages = compactToolResults(messages)
+  // Office sessions (target-mode director + role workers) compact tool results
+  // and consumed write/edit arguments more aggressively — their history is
+  // dominated by tool output that is re-sent every round.
+  const toolCompact = toolResultCompactOptionsFor(session)
+  messages = compactToolResults(messages, toolCompact)
+  messages = compactToolCallArgs(messages)
   const compactionWindow = getContextWindow(model)
   const overheadTokens = estimateTokens(JSON.stringify(
     toolExecutor.getToolDefinitions()
@@ -3906,6 +4423,9 @@ async function runAgentLoop(
       outputReserve,
       compactionEnabled,
       estimateTokens,
+      // Count assistant tool-call arguments too: they ride on the request every
+      // round and were the invisible bulk of office history (~2.9M chars).
+      estimateMessageTokens: estimateRequestMessageTokens,
       summarize: summarizeHistory,
     })
     if (!compacted) return false
@@ -3983,6 +4503,9 @@ async function runAgentLoop(
   // 计划模式批准后的 file_write 在此按「范围内」计为 auto——范围外的由
   // scopeGate 拦截（见下方 hook 注册）。
   const needsApproval = (name: string): boolean => {
+    // Company sessions are default-allow; the companyVerdict hook rejects the
+    // only unrecoverable cases (outside workspace / remote) without a dialog.
+    if (company) return false
     if (agentMode !== 'agent') return toolExecutor.requiresApproval(name)
     // Read the CURRENT edit mode live — the anti-flail question can switch
     // it mid-run, and approval rules must follow.
@@ -4047,6 +4570,15 @@ async function runAgentLoop(
         ? '已自动拒绝（项目黑名单）'
         : null,
     scopeGate,
+    // 公司会话：默认放行工作区内操作，只拒绝工作区外/远端不可逆/无法快照的
+    // 调用。该回调存在时 approvalHook 永远不会走到 onDialog。
+    companyVerdict: company
+      ? (tc) => evaluateCompanyToolCall({
+          name: tc.name,
+          arguments: tc.arguments,
+          projectPath: projectPath || getWorkspaceRoot() || '',
+        })
+      : undefined,
     // Show the per-tool approval dialog (project edit mode / batch / allowlist
     // exemptions are all folded into needsApproval above). 权限请求不超时：
     // 一直等待用户决策（对齐 ZCode）；后台会话的请求停在后备队列也不超时。
@@ -4077,8 +4609,71 @@ async function runAgentLoop(
   // misses those. Best-effort: capture failures just mean no snapshot.
   const runPreStates = new Map<string, RunPreState>()
 
+  // Whole-tree checkpoints for the operations per-file snapshots can't cover:
+  // run_command, directory deletes, mkdir and MCP tools. Keyed by tool call id
+  // so the post-hook can fill in the changed paths.
+  const workspaceCheckpointByCall = new Map<string, WorkspaceCheckpoint | null>()
+  const companyTaskId = targetMode
+    ? sessionId
+    : session.workerRole
+      ? (() => {
+          // Prefer the director named in the latest dispatch message; a project
+          // can host several director tasks, so "first director in the project"
+          // is only a fallback.
+          const lastUser = [...session.messages].reverse().find((m) => m.role === 'user')
+          const senderTitle = /^\[来自会话「(.+?)」的会话间消息\]/.exec(lastUser?.content || '')?.[1]
+          const all = useChatStore.getState().sessions
+          const byTitle = senderTitle
+            ? all.find((x) => x.title === senderTitle && x.targetMode === true && !x.workerRole)
+            : undefined
+          const fallback = all.find(
+            (x) => x.targetMode === true && !x.workerRole && x.projectPath && x.projectPath === session.projectPath,
+          )
+          return (byTitle ?? fallback)?.id
+        })()
+      : undefined
+
   disposeCheckpointHook = toolExecutor.registerPreHook(async (tc, ctx) => {
     if (ctx.sessionId !== sessionId) return { allow: true }
+    const callId = ctx.toolCallId ?? tc.id
+    const runProjectPath = ctx.projectPath || projectPath || getWorkspaceRoot() || ''
+
+    const wsMeta = {
+      sessionId,
+      projectPath: runProjectPath,
+      taskId: companyTaskId,
+      messageId: assistantMsgIdRef.current,
+      toolCall: tc,
+    }
+
+    // Company mode: commands / mkdir / MCP writes use a whole-tree snapshot.
+    // create_directory targets a path that does not exist yet, so it must be
+    // handled before the per-file branch (which cannot snapshot an empty dir).
+    if (company && (tc.name === 'run_command' || tc.name === 'create_directory' || tc.name.startsWith('mcp__'))) {
+      try {
+        const cp = await captureWorkspaceCheckpointForTool(wsMeta)
+        if (cp) workspaceCheckpointByCall.set(callId, cp)
+      } catch (error) {
+        return { deny: true, reason: (error as Error).message }
+      }
+      return { allow: true }
+    }
+
+    // Directory delete: snapshot the whole subtree for every session (the
+    // per-file snapshot cannot restore a directory tree). Single-file deletes
+    // fall through to the per-file checkpoint.
+    if (tc.name === 'delete_file') {
+      try {
+        const cp = await captureWorkspaceCheckpointForTool(wsMeta)
+        if (cp) {
+          workspaceCheckpointByCall.set(callId, cp)
+          return { allow: true }
+        }
+      } catch (error) {
+        return { deny: true, reason: (error as Error).message }
+      }
+    }
+
     // Snapshot the files a write tool is about to touch (revertable edits).
     // Runs AFTER approval — a rejected call changes nothing, so no snapshot.
     if (CHECKPOINT_TOOLS.has(tc.name)) {
@@ -4090,7 +4685,7 @@ async function runAgentLoop(
           // projectPath is the workspace boundary + host separator hint:
           // files outside it are never snapshotted, and paths use its spelling.
           const pre = await captureRunPreState(workDir, ctx.projectPath || undefined)
-          if (pre) runPreStates.set(ctx.toolCallId ?? tc.id, pre)
+          if (pre) runPreStates.set(callId, pre)
         } catch { /* run-command checkpoint is best-effort */ }
       }
     }
@@ -4100,10 +4695,22 @@ async function runAgentLoop(
   // Diff the tree after the command and checkpoint the changed files (runs
   // regardless of command success — a failed command can still half-write).
   disposeRunCmdCheckpointHook = toolExecutor.registerPostHook(async (tc, result, ctx) => {
-    if (ctx.sessionId !== sessionId || tc.name !== 'run_command') return result
-    const pre = runPreStates.get(ctx.toolCallId ?? tc.id)
+    if (ctx.sessionId !== sessionId) return result
+    const callId = ctx.toolCallId ?? tc.id
+    if (workspaceCheckpointByCall.has(callId)) {
+      const cp = workspaceCheckpointByCall.get(callId) ?? null
+      workspaceCheckpointByCall.delete(callId)
+      try { await finalizeWorkspaceCheckpoint(cp, { keepIfEmpty: !!tc.arguments?.background }) } catch { /* best-effort */ }
+      // Refresh the office restore card if this run belongs to the visible
+      // session. Worker runs must not overwrite the director's visible list.
+      if (useChatStore.getState().activeSessionId === sessionId) {
+        void useChatStore.getState().loadWorkspaceCheckpoints(sessionId)
+      }
+    }
+    if (tc.name !== 'run_command') return result
+    const pre = runPreStates.get(callId)
     if (!pre) return result
-    runPreStates.delete(ctx.toolCallId ?? tc.id)
+    runPreStates.delete(callId)
     try {
       await buildRunCommandCheckpoint(pre, String(tc.arguments?.command || ''), sessionId, assistantMsgIdRef.current)
     } catch { /* best-effort */ }
@@ -4147,10 +4754,22 @@ async function runAgentLoop(
 
   while (iterationsLeft-- > 0) {
       if (abortController.signal.aborted) break
+      // Per-dispatch safety net for role workers: stop at a round boundary and
+      // let the finally's auto-report tell the director to split the task,
+      // instead of burning the whole project budget on one runaway dispatch.
+      if (!workerBudgetHit && workerDispatchCapReached(session.workerRole, runTokensIn + runTokensOut)) {
+        workerBudgetHit = true
+        chatStore.addMessage(sessionId, {
+          role: 'assistant',
+          content: `[本员工单次派发已达 token 上限（${WORKER_DISPATCH_TOKEN_CAP.toLocaleString()}），已停止并回报总监。请由总监拆分任务或确认后再继续。]`,
+        })
+        break
+      }
       touchActivity() // a new request round resets the idle clock
-      // 压缩早期的大体积工具结果，避免每轮重发全量历史导致 token 平方级增长
-      // （见 compactToolResults 注释）
-      messages = compactToolResults(messages)
+      // 压缩早期的大体积工具结果/已消费的写入参数，避免每轮重发全量历史导致
+      // token 平方级增长（见 compactToolResults / compactToolCallArgs 注释）
+      messages = compactToolResults(messages, toolCompact)
+      messages = compactToolCallArgs(messages)
 
       // Agent mode with the default 'plan' edit mode exposes only read-only +
       // agent-control tools until a plan is approved (the planning phase is
@@ -4159,7 +4778,7 @@ async function runAgentLoop(
       // plan-mode anti-flail question can switch the edit mode mid-run and it
       // takes effect on the very next round.
       const projectEditMode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE
-      const usePlanTools = agentMode === 'agent' && projectEditMode === 'plan' && !opts?.planApproved && !targetMode
+      const usePlanTools = agentMode === 'agent' && projectEditMode === 'plan' && !opts?.planApproved && !targetMode && !company
       // 角色员工（M4）：工具边界 = 角色定义的 guard（tools 白名单 + 读写路径），
       // 与子智能体同机制——员工只能碰自己角色允许的工具。
       const workerToolFilter = workerGuard ? (name: string) => workerGuard!.toolAllowed(name) : undefined
@@ -4762,6 +5381,13 @@ async function runAgentLoop(
 
         // ── submit_plan: save the plan and pause for approval ──
         if (tc.name === 'submit_plan') {
+          if (company) {
+            const result = '公司模式不需要计划审批。请把计划写入 .ourcode/targemode/ 下的文档，然后直接执行；不要等待用户批准。'
+            chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result }))
+            recordToolMessage(tc.id, result)
+            useChatStore.getState().setTraceStatus(sessionId, tc.id, 'success')
+            continue
+          }
           const plan = {
             title: String(tc.arguments.title || '执行计划'),
             steps: Array.isArray(tc.arguments.steps) ? tc.arguments.steps : [],
@@ -4797,6 +5423,13 @@ async function runAgentLoop(
 
         // ── ask_user_question: prompt the user, feed the answer back ──
         if (tc.name === 'ask_user_question') {
+          if (company) {
+            const result = '公司模式不等待用户回答。请自行决策，并把关键假设写入 .ourcode/targemode/ 下的文档；确实需要用户决定的事项，在最终汇报中说明。'
+            chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result }))
+            recordToolMessage(tc.id, result)
+            useChatStore.getState().setTraceStatus(sessionId, tc.id, 'success')
+            continue
+          }
           const answer = await new Promise<string>((resolve) => {
             if (_questionResolves.has(sessionId)) { _questionResolves.get(sessionId)!('（用户取消了上一次提问）'); _questionResolves.delete(sessionId) }
             _questionResolves.set(sessionId, resolve)
@@ -5224,7 +5857,13 @@ async function runAgentLoop(
             !!lastAssistant?.error ||
             (liveSession.agentRuns?.find((r) => r.id === runId)?.status === 'error') ||
             haltedByLoopGuard
-          const status = aborted ? '已停止' : failed ? '失败' : exhaustedIterations ? '部分完成' : '完成'
+          const status = aborted
+            ? '已停止'
+            : failed
+              ? '失败'
+              : exhaustedIterations || workerBudgetHit
+                ? '部分完成'
+                : '完成'
           const body =
             (lastAssistant?.error ? `错误：${lastAssistant.error}\n` : '') +
             (lastAssistant?.content?.trim() || '（无文字汇报）')
@@ -5291,17 +5930,46 @@ async function runAgentLoop(
     // the relaunched loop's own finally drains the next, so messages for the
     // same session are processed strictly one at a time.
     const inbound = useChatStore.getState().inboundQueue
-    const inboundIdx = inbound.findIndex((m) => m.targetSessionId === sessionId)
-    if (inboundIdx !== -1) {
-      const item = inbound[inboundIdx]
-      useChatStore.setState({ inboundQueue: inbound.filter((_, i) => i !== inboundIdx) })
-      chatStore.addMessage(sessionId, { role: 'user', content: item.content })
-      if (item.hold) {
+    const targetSession = useChatStore.getState().sessions.find((s) => s.id === sessionId)
+    const targetIsDirector = targetSession?.targetMode === true && !targetSession.workerRole
+    if (targetIsDirector) {
+      // Director: drain the whole batch at once (reports queued while it was
+      // running belong to the same wake-up) and let the merge window trigger
+      // exactly one follow-up turn.
+      const items = inbound.filter((m) => m.targetSessionId === sessionId)
+      if (items.length > 0) {
+        useChatStore.setState({ inboundQueue: inbound.filter((m) => m.targetSessionId !== sessionId) })
+        for (const item of items) {
+          chatStore.addMessage(sessionId, { role: 'user', content: item.content })
+          if (!item.hold && !abortController.signal.aborted) noteDirectorInbound(sessionId)
+        }
         void chatStore.saveSession(sessionId)
-      } else {
-        markInboundLaunch(sessionId)
-        void runAgentLoop(sessionId).finally(() => { markInboundSettled(sessionId) })
+        if (!abortController.signal.aborted && items.some((i) => !i.hold)) scheduleDirectorInboundRun(sessionId)
       }
+    } else {
+      const inboundIdx = inbound.findIndex((m) => m.targetSessionId === sessionId)
+      if (inboundIdx !== -1) {
+        const item = inbound[inboundIdx]
+        useChatStore.setState({ inboundQueue: inbound.filter((_, i) => i !== inboundIdx) })
+        if (item.hold) {
+          chatStore.addMessage(sessionId, { role: 'user', content: item.content })
+          void chatStore.saveSession(sessionId)
+        } else {
+          // Worker dispatch boundary: replace stale history with the compact
+          // deterministic handoff before the new dispatch lands.
+          applyWorkerHandoffIfNeeded(sessionId)
+          chatStore.addMessage(sessionId, { role: 'user', content: item.content })
+          markInboundLaunch(sessionId)
+          void runAgentLoop(sessionId).finally(() => { markInboundSettled(sessionId) })
+        }
+      }
+    }
+    // Reports that arrived DURING this run are in history but were NOT in its
+    // request snapshot (the loop read `session` at start) — schedule exactly
+    // one batched follow-up. Reports delivered before the run started are
+    // already covered and must not cause a redundant turn.
+    if (!abortController.signal.aborted && targetMode && (_inboundSeq.get(sessionId) || 0) > (_directorRunSeq.get(sessionId) || 0)) {
+      scheduleDirectorInboundRun(sessionId)
     }
   }
 }

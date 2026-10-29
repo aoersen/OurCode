@@ -202,6 +202,29 @@ export interface ElectronAPI {
   checkpointListReverted: (sessionId: string) => Promise<string[]>
   checkpointRestore: (sessionId: string, filePaths: string[]) => Promise<{ ok: boolean; restored: number; failed?: string[]; error?: string }>
   checkpointGetRevertedRecord: (sessionId: string, filePath: string) => Promise<import('@shared/types').RevertedFileRecord | null>
+  // Whole-tree checkpoints
+  checkpointWorkspaceCreate: (input: {
+    sessionId: string
+    projectPath: string
+    taskId?: string
+    toolCallId?: string
+    messageId?: string
+    label?: string
+    kind?: import('@shared/types').WorkspaceCheckpointKind
+    paths?: string[]
+    includeGenerated?: boolean
+    collectEmptyDirs?: boolean
+    createdDirs?: string[]
+  }) => Promise<import('@shared/types').WorkspaceCheckpoint>
+  checkpointWorkspaceList: (sessionId: string) => Promise<import('@shared/types').WorkspaceCheckpoint[]>
+  checkpointWorkspaceGet: (id: string) => Promise<import('@shared/types').WorkspaceCheckpoint | null>
+  checkpointWorkspaceUpdate: (id: string, patch: Partial<Pick<import('@shared/types').WorkspaceCheckpoint, 'paths' | 'emptyDirs' | 'createdDirs' | 'label' | 'taskId' | 'messageId'>>) => Promise<import('@shared/types').WorkspaceCheckpoint | null>
+  checkpointWorkspaceDiff: (id: string, paths?: string[]) => Promise<import('@shared/types').WorkspaceDiffEntry[]>
+  checkpointWorkspaceRestore: (id: string, opts?: { paths?: string[]; force?: boolean }) => Promise<import('@shared/types').WorkspaceRestoreResult>
+  checkpointWorkspaceRestoreBefore: (sessionId: string, toolCallId: string) => Promise<import('@shared/types').WorkspaceRestoreResult>
+  checkpointWorkspaceRestoreTask: (taskId: string) => Promise<import('@shared/types').WorkspaceRestoreResult>
+  checkpointWorkspaceDelete: (sessionId: string) => Promise<void>
+  checkpointWorkspaceDiscard: (id: string) => Promise<void>
 
   // MCP (Model Context Protocol)
   mcpListTools: () => Promise<Array<{ server: string; name: string; description?: string; inputSchema?: Record<string, any> }>>

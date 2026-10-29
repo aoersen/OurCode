@@ -6,7 +6,7 @@ import { useEditorStore } from './stores/editorStore'
 import { useUIStore } from './stores/uiStore'
 import { DEFAULT_PREFERENCES } from './types'
 import { setLocale, resolveLocale, setSystemLocale, getSystemLocale, type LanguagePreference } from './i18n'
-import { installBudgetFuse } from './services/targetMode/budget'
+import { installBudgetFuse, flushBudgetWrites } from './services/targetMode/budget'
 import { IS_OFFICE } from './utils/windowMode'
 
 /**
@@ -33,6 +33,9 @@ async function bootstrap(): Promise<void> {
   // Target-mode budget fuse (v2 §13.3): listens for usage-recorded events and
   // accumulates per target-mode session; only consulted by target-mode auto-resume.
   installBudgetFuse()
+  // 预算累计是节流落盘的（5s）；关窗前把最后一次累计写回 budget.md，避免
+  // 重启后从更早的持久值继续（用量会少记最后一小段）。
+  window.addEventListener('beforeunload', () => { flushBudgetWrites() })
 
   // 一人公司独立窗口：落地即为 3D 办公室视图。办公室窗口不带右侧聊天面板
   // （isChatVisible 恒为 false），侧栏保持可见且停留在 office 页。

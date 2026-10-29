@@ -26,6 +26,9 @@ export const CONTROL_TOOLS = new Set([
   // Delegating work across sessions from a subagent could create unbounded
   // agent ping-pong; subagents may still use list_agents (read-only discovery).
   'send_message',
+  // Restoring a checkpoint is allowed for role workers (they may undo their
+  // own bad edit), but not for plain read-only subagents.
+  'restore_changes',
 ])
 
 /** Tools whose `path` argument must stay inside allowedPaths (when configured). */
@@ -180,6 +183,33 @@ function genericDefinition(name: string): Omit<SubAgentDefinition, 'name' | 'sou
     systemPrompt:
       `你是「${name}」子智能体，由主智能体派生的专责执行者。你需要自主、专注地完成交给你的子任务，然后向主智能体报告结果。`,
     maxIterations: 10,
+  }
+}
+
+/** Read-only tool set used when a role definition is missing/unparseable.
+ *  A missing role must not silently degrade to "all tools, no path limits". */
+export const READONLY_AGENT_TOOLS = [
+  'read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree',
+  'search_files', 'search_in_files', 'git_status', 'git_diff', 'git_log', 'git_branch',
+  'read_terminal_output', 'stop_terminal', 'web_search', 'read_url',
+]
+
+/** True when loadAgentDefinition fell back to the unrestricted generic shape. */
+export function isGenericAgentDefinition(def: SubAgentDefinition): boolean {
+  return def.source === 'builtin' && !BUILTIN_AGENTS[def.name]
+}
+
+/** Fail closed for missing role definitions: read-only, project-scoped, no
+ *  write paths. The worker/subagent can still report and (workers) restore. */
+export function failClosedDefinition(def: SubAgentDefinition): SubAgentDefinition {
+  if (!isGenericAgentDefinition(def)) return def
+  return {
+    ...def,
+    tools: READONLY_AGENT_TOOLS,
+    allowedReadPaths: ['.'],
+    allowedWritePaths: [],
+    systemPrompt:
+      `${def.systemPrompt}\n\n（系统提示：未找到该角色的定义文件，已降级为只读模式；写文件/执行命令会被拒绝。请把结论回报给总监。）`,
   }
 }
 
@@ -400,7 +430,7 @@ export class SubagentGuard {
   constructor(
     private def: SubAgentDefinition,
     private projectPath: string,
-    private opts: { workerMode?: boolean } = {},
+    private opts: { workerMode?: boolean; denyMcpByDefault?: boolean } = {},
   ) {}
 
   // 员工模式（M4）：员工是一等会话、不是子智能体——员工规则要求他们用
@@ -409,11 +439,24 @@ export class SubagentGuard {
   // 对员工放行这两项；其余控制类工具（submit_plan / ask_user_question /
   // manage_todo）对员工仍然封禁——隐藏会话不能向用户提问或提交计划。
   private controlAllowed(name: string): boolean {
-    return this.opts.workerMode === true && (name === 'send_message' || name === 'run_subagent')
+    return this.opts.workerMode === true &&
+      (name === 'send_message' || name === 'run_subagent' || name === 'restore_changes')
+  }
+
+  /** MCP tools are opt-in for role workers: the full MCP catalog rides on
+   *  EVERY request (schema tokens), and a definition without a `tools` list
+   *  would otherwise allow all of it. A role that needs an MCP tool lists it
+   *  explicitly in `.ourcode/agents/<role>.md` frontmatter. */
+  private mcpDenied(name: string): boolean {
+    return this.opts.denyMcpByDefault === true && name.startsWith('mcp__') && this.def.tools == null
   }
 
   toolAllowed(name: string): boolean {
-    if (CONTROL_TOOLS.has(name) && !this.controlAllowed(name)) return false
+    // Control tools follow the workerMode rule, not the role's tools list:
+    // workers must be able to report (send_message), delegate read-only
+    // research (run_subagent) and undo their own bad edit (restore_changes).
+    if (CONTROL_TOOLS.has(name)) return this.controlAllowed(name)
+    if (this.mcpDenied(name)) return false
     if (this.def.tools == null) return true
     // skill__ tools only load instructions — harmless for any subagent
     if (name.startsWith('skill__')) return true
@@ -422,8 +465,14 @@ export class SubagentGuard {
 
   /** Returns an error message when the call is blocked, else null. */
   checkCall(name: string, args: Record<string, any>): string | null {
-    if (CONTROL_TOOLS.has(name) && !this.controlAllowed(name)) {
-      return `工具 "${name}" 是控制类工具，子智能体不允许调用。`
+    if (this.mcpDenied(name)) {
+      return `员工默认不加载 MCP 工具（节省每轮工具定义 token）。如需使用 ${name}，请在 .ourcode/agents/${this.def.name}.md 的 tools 中显式列出。`
+    }
+    if (CONTROL_TOOLS.has(name)) {
+      if (!this.controlAllowed(name)) {
+        return `工具 "${name}" 是控制类工具，子智能体不允许调用。`
+      }
+      return null
     }
     if (this.def.tools != null && !this.def.tools.includes(name) && !name.startsWith('skill__')) {
       return `工具 "${name}" 不在子智能体「${this.def.name}」的权限白名单中。可用的工具: ${this.def.tools.join(', ')}。`

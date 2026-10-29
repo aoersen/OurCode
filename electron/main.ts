@@ -9,7 +9,7 @@ import * as pty from 'node-pty'
 import picomatch from 'picomatch'
 import { AppUpdater } from './services/app-updater'
 import { ClawManager } from './services/claw-manager'
-import type { ClawChannelConfig, ClawChannelId, ClawGatewayEvent, ClawAgentState, OfficeSnapshot, OfficeInstructionRequest, OfficeInstructionResult } from '../shared/types'
+import type { ClawChannelConfig, ClawChannelId, ClawGatewayEvent, ClawAgentState, OfficeSnapshot, OfficeInstructionRequest, OfficeInstructionResult, WorkspaceCheckpoint, WorkspaceRestoreResult, WorkspaceDiffEntry } from '../shared/types'
 import { isClawChannelId, CLAW_CHANNEL_IDS } from '../shared/claw'
 import { FileSystemService } from './services/file-system'
 import { FileIndexService } from './services/file-index'
@@ -37,6 +37,7 @@ import {
 } from './services/browser-session'
 import { SpillStore } from './services/spill-store'
 import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
+import { CheckpointRepo } from './services/checkpoint-repo'
 import { v4 as uuidv4 } from 'uuid'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { UsageEvent, BrowserAction, BrowserActOptions } from '../shared/types'
@@ -450,6 +451,7 @@ let appUpdater: AppUpdater | null = null
 let claw: ClawManager | null = null
 let spillStore: SpillStore
 let wireLog: WireLogService
+let checkpointRepo: CheckpointRepo | null = null
 
 // Language servers by document URI (one per open file)
 const lspServers = new Map<string, LspServer>()
@@ -2262,8 +2264,15 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('checkpoint:delete', async (_event, sessionId: string) => {
+    const wsRows = store.getWorkspaceCheckpoints(sessionId)
     store.deleteCheckpoints(sessionId)
     store.deleteRevertedFiles(sessionId)
+    store.deleteWorkspaceCheckpoints(sessionId)
+    if (checkpointRepo) {
+      for (const cp of wsRows) {
+        try { await checkpointRepo.deleteRef(cp.projectPath, cp.id) } catch { /* best-effort */ }
+      }
+    }
   })
 
   ipcMain.handle('checkpoint:listReverted', async (_event, sessionId: string) => {
@@ -2399,6 +2408,185 @@ function registerIpcHandlers(): void {
   ipcMain.handle('checkpoint:getRevertedRecord', async (_event, sessionId: string, filePath: string) => {
     const rec = store.getRevertedFileRecords(sessionId).find((r) => r.path === filePath)
     return rec ?? null
+  })
+
+  // ── Workspace checkpoints (shadow git snapshots) ──────────────────────
+  // One command/dir/MCP operation = one whole-tree snapshot. Restores are
+  // themselves snapshotted first (restore-safety) so a rollback can be undone.
+  const requireCheckpointRepo = (): CheckpointRepo => {
+    if (!checkpointRepo) throw new Error('checkpoint repo 未初始化')
+    return checkpointRepo
+  }
+
+  const restoreWorkspaceCheckpoint = async (
+    cp: WorkspaceCheckpoint,
+    opts: { paths?: string[]; force?: boolean } = {},
+  ): Promise<WorkspaceRestoreResult> => {
+    assertPathWritable(cp.projectPath)
+    const repo = requireCheckpointRepo()
+    const scoped = (opts.paths && opts.paths.length > 0)
+      ? opts.paths
+      : (cp.paths.length > 0 ? cp.paths : undefined)
+
+    // Safety snapshot first: the restore itself must be undoable. Always
+    // snapshot the whole tree — targeted snapshots fail when the operation
+    // deleted some of the paths we would scope to.
+    const safetyId = uuidv4()
+    let safetyCheckpointId: string | undefined
+    try {
+      const safety = await repo.snapshot(cp.projectPath, { id: safetyId, collectEmptyDirs: false })
+      store.addWorkspaceCheckpoint({
+        id: safetyId,
+        sessionId: cp.sessionId,
+        projectPath: cp.projectPath,
+        taskId: cp.taskId,
+        toolCallId: cp.toolCallId,
+        messageId: cp.messageId,
+        label: `恢复前备份 · ${cp.label}`,
+        commit: safety.commit,
+        paths: scoped || [],
+        emptyDirs: safety.emptyDirs,
+        createdDirs: [],
+        kind: 'restore-safety',
+      })
+      safetyCheckpointId = safetyId
+    } catch (error) {
+      // If the pre-restore snapshot fails, do NOT restore: an unrecoverable
+      // restore is exactly what this feature must never do.
+      return { ok: false, restored: 0, deleted: 0, skipped: 0, error: `恢复前备份失败：${(error as Error).message}` }
+    }
+
+    const changedBefore = await repo.diff(cp.projectPath, cp.commit, scoped)
+    const result = await repo.restore(cp.projectPath, cp.commit, {
+      paths: scoped,
+      emptyDirs: cp.emptyDirs,
+      createdDirs: cp.createdDirs,
+      conflicts: opts.force ? [] : undefined,
+      // Directory deletes were snapshotted with -f and no excludes; restore
+      // must stage the same full subtree (including nested generated dirs).
+      includeGenerated: cp.kind === 'dir-delete',
+    })
+    try {
+      for (const entry of changedBefore) broadcast('fs:fileChanged', entry.path)
+    } catch {
+      // A closing window must not turn a completed restore into a failure.
+    }
+    return {
+      ok: result.skipped === 0,
+      restored: result.restored,
+      deleted: result.deleted,
+      skipped: result.skipped,
+      conflicts: result.conflicts,
+      safetyCheckpointId,
+    }
+  }
+
+  ipcMain.handle('checkpoint:workspaceCreate', async (_event, input: any) => {
+    if (!input?.sessionId || !input?.projectPath) throw new Error('检查点参数不完整')
+    assertPathWritable(input.projectPath)
+    const repo = requireCheckpointRepo()
+    // Never accept an id from the renderer: it becomes a git ref path.
+    const id = uuidv4()
+    const scopePaths = (Array.isArray(input.paths) ? input.paths : []).map(String).filter(Boolean)
+    // A mkdir target does not exist yet, so it cannot be a git pathspec — take
+    // a full snapshot and keep the directory in createdDirs for restore.
+    const snapshotPaths = input.kind === 'mkdir' ? [] : scopePaths
+    const snapshot = await repo.snapshot(input.projectPath, {
+      id,
+      paths: snapshotPaths,
+      includeGenerated: !!input.includeGenerated,
+      collectEmptyDirs: !!input.collectEmptyDirs,
+    })
+    return store.addWorkspaceCheckpoint({
+      id,
+      sessionId: String(input.sessionId),
+      projectPath: String(input.projectPath),
+      taskId: typeof input.taskId === 'string' ? input.taskId : undefined,
+      toolCallId: typeof input.toolCallId === 'string' ? input.toolCallId : undefined,
+      messageId: typeof input.messageId === 'string' ? input.messageId : undefined,
+      label: typeof input.label === 'string' ? input.label : '工作区快照',
+      commit: snapshot.commit,
+      paths: scopePaths,
+      emptyDirs: snapshot.emptyDirs,
+      createdDirs: (Array.isArray(input.createdDirs) ? input.createdDirs : []).map(String).filter(Boolean),
+      kind: input.kind === 'command' || input.kind === 'mkdir' || input.kind === 'restore-safety' || input.kind === 'dir-delete'
+        ? input.kind
+        : 'files',
+    })
+  })
+
+  ipcMain.handle('checkpoint:workspaceList', async (_event, sessionId: string) => {
+    return store.getWorkspaceCheckpoints(sessionId)
+  })
+
+  ipcMain.handle('checkpoint:workspaceGet', async (_event, id: string) => {
+    return store.getWorkspaceCheckpoint(id)
+  })
+
+  ipcMain.handle('checkpoint:workspaceUpdate', async (_event, id: string, patch: any) => {
+    const safe: Record<string, unknown> = {}
+    for (const key of ['paths', 'emptyDirs', 'createdDirs', 'label', 'taskId', 'messageId']) {
+      if (patch && key in patch) safe[key] = patch[key]
+    }
+    store.updateWorkspaceCheckpoint(id, safe as any)
+    return store.getWorkspaceCheckpoint(id)
+  })
+
+  ipcMain.handle('checkpoint:workspaceDiff', async (_event, id: string, paths?: string[]): Promise<WorkspaceDiffEntry[]> => {
+    const cp = store.getWorkspaceCheckpoint(id)
+    if (!cp) throw new Error('检查点不存在')
+    assertPathWritable(cp.projectPath)
+    const repo = requireCheckpointRepo()
+    const requested = Array.isArray(paths) ? paths.map(String) : []
+    const scoped = requested.length > 0 ? requested : (cp.paths.length > 0 ? cp.paths : undefined)
+    return repo.diff(cp.projectPath, cp.commit, scoped)
+  })
+
+  ipcMain.handle('checkpoint:workspaceRestore', async (_event, id: string, opts?: { paths?: string[]; force?: boolean }) => {
+    const cp = store.getWorkspaceCheckpoint(id)
+    if (!cp) return { ok: false, restored: 0, deleted: 0, skipped: 0, error: '检查点不存在' }
+    const safeOpts = {
+      paths: Array.isArray(opts?.paths) ? opts!.paths!.map(String) : undefined,
+      force: opts?.force === true,
+    }
+    return restoreWorkspaceCheckpoint(cp, safeOpts)
+  })
+
+  ipcMain.handle('checkpoint:workspaceRestoreBefore', async (_event, sessionId: string, toolCallId: string) => {
+    const cp = store.getWorkspaceCheckpointByToolCall(sessionId, toolCallId)
+    if (!cp) return { ok: false, restored: 0, deleted: 0, skipped: 0, error: '该操作没有工作区快照' }
+    return restoreWorkspaceCheckpoint(cp)
+  })
+
+  ipcMain.handle('checkpoint:workspaceRestoreTask', async (_event, taskId: string) => {
+    const all = store.getWorkspaceCheckpointsByTask(taskId).filter((c) => c.kind !== 'restore-safety')
+    if (all.length === 0) return { ok: false, restored: 0, deleted: 0, skipped: 0, error: '任务没有可恢复的快照' }
+    const earliest = all[0]
+    const anyFull = all.some((c) => c.paths.length === 0)
+    const scoped = anyFull ? undefined : Array.from(new Set(all.flatMap((c) => c.paths)))
+    return restoreWorkspaceCheckpoint(earliest, { paths: scoped })
+  })
+
+  ipcMain.handle('checkpoint:workspaceDelete', async (_event, sessionId: string) => {
+    const rows = store.getWorkspaceCheckpoints(sessionId)
+    store.deleteWorkspaceCheckpoints(sessionId)
+    const repo = requireCheckpointRepo()
+    for (const cp of rows) {
+      try { await repo.deleteRef(cp.projectPath, cp.id) } catch { /* best-effort */ }
+    }
+    try {
+      const project = rows[0]?.projectPath
+      if (project) await repo.gc(project)
+    } catch { /* best-effort */ }
+  })
+
+  // Drop a checkpoint that turned out to have no changes (e.g. a read-only
+  // command). Keeping it would make "restore" scope to the whole workspace.
+  ipcMain.handle('checkpoint:workspaceDiscard', async (_event, id: string) => {
+    const cp = store.getWorkspaceCheckpoint(id)
+    if (!cp) return
+    store.deleteWorkspaceCheckpoint(id)
+    try { await requireCheckpointRepo().deleteRef(cp.projectPath, id) } catch { /* best-effort */ }
   })
 
   // ───────────────────── MCP (Model Context Protocol) ─────────────────────
@@ -2970,6 +3158,7 @@ app.whenReady().then(() => {
   fileSystem = new FileSystemService()
   fileIndex = new FileIndexService(fileSystem)
   store = new SQLiteStore(userDataPath)
+  checkpointRepo = new CheckpointRepo(join(userDataPath, 'checkpoints'))
   // Trust needs the store for its durable grants, so it can only exist here.
   // The userData dir is the app's own and never needs asking about.
   trust = new WorkspaceTrust({

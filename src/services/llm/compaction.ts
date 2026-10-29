@@ -93,6 +93,12 @@ export interface CompactOptions {
   compactionEnabled: boolean
   /** Calibrated token estimator (chatStore's, injected to avoid duplication). */
   estimateTokens: (text: string) => number
+  /** Per-message estimator used for the trigger and the cut point. Defaults to
+   *  `estimateTokens(m.content)` for backward compatibility; chatStore injects
+   *  one that also counts assistant tool-call arguments — those are re-sent on
+   *  every request and were making the real payload much larger than the
+   *  estimate (compaction fired too late, requests overflowed). */
+  estimateMessageTokens?: (m: CompactMessage) => number
   /** Summary generator — injected so tests can fake it; chatStore wires the
    *  real LLM summarizer. Returns '' (or throws) on failure. */
   summarize: (input: { anchor: string; history: string }) => Promise<string>
@@ -133,6 +139,7 @@ export function findCompactionCutPoint(
   messages: CompactMessage[],
   keepRecentTokens: number,
   estimateTokens: (text: string) => number,
+  estimateMessageTokens: (m: CompactMessage) => number = (m) => estimateTokens(m.content || ''),
 ): number {
   if (messages.length <= 1) return 0
   let accumulated = 0
@@ -140,7 +147,7 @@ export function findCompactionCutPoint(
   for (let i = messages.length - 1; i >= 1; i--) {
     const role = messages[i].role
     if (role === 'user' || role === 'assistant') lastSafeBoundary = i
-    accumulated += estimateTokens(messages[i].content || '')
+    accumulated += estimateMessageTokens(messages[i])
     // Only cut once we've both met the budget AND found a safe boundary. A tail
     // that ends in tool results must keep walking back to the assistant that
     // owns them (never split a round-trip).
@@ -240,9 +247,34 @@ export function buildSummarizePrompt(anchor: string, history: string): { system:
   }
 }
 
+/** Short, bounded description of a tool call for the summarizer input: name +
+ *  path(s) only (arguments were already compacted in the request view). Keeping
+ *  this in the summarizer input lets the summary preserve "what was written
+ *  where" even after the file bodies are dropped. */
+function renderToolCallBrief(tc: LLMToolCall): string {
+  const name = tc.function?.name || 'tool'
+  try {
+    const args = JSON.parse(tc.function?.arguments || '{}')
+    if (typeof args.path === 'string' && args.path) return `${name}(${args.path})`
+    if (Array.isArray(args.edits)) {
+      const paths = args.edits
+        .map((e: any) => (e && typeof e.path === 'string' ? e.path : ''))
+        .filter(Boolean)
+        .slice(0, 3)
+      if (paths.length > 0) return `${name}(${paths.join(', ')})`
+    }
+  } catch { /* malformed legacy arguments — name only */ }
+  return name
+}
+
 function renderHistoryEntry(m: CompactMessage): string {
   const label = m.role === 'user' ? '用户' : m.role === 'assistant' ? 'AI' : '工具结果'
-  return `${label}: ${m.content}`
+  const calls = m.toolCalls?.length
+    ? `\n[工具: ${m.toolCalls.slice(0, 4).map(renderToolCallBrief).join('; ')}${
+        m.toolCalls.length > 4 ? ` 等 ${m.toolCalls.length} 个` : ''
+      }]`
+    : ''
+  return `${label}: ${m.content}${calls}`
 }
 
 /**
@@ -304,12 +336,14 @@ export async function maybeCompact(opts: CompactOptions): Promise<CompactResult 
   const contextWindow = opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW
   const keepRecentTokens = opts.keepRecentTokens
     ?? Math.min(MAX_KEEP_RECENT_TOKENS, Math.floor(contextWindow * DEFAULT_KEEP_RECENT_RATIO))
+  const estimateMessage = opts.estimateMessageTokens
+    ?? ((m: CompactMessage) => opts.estimateTokens(m.content || ''))
 
   // Cut point = keep the most recent ~keepRecentTokens verbatim and summarize
   // the older prefix. Using findKeepBoundary (last user message) here would
   // leave a long agent run un-compactable, because its last user message is the
   // run START. The token-budget cut slices mid-run at a safe boundary instead.
-  const boundary = findCompactionCutPoint(opts.messages, keepRecentTokens, opts.estimateTokens)
+  const boundary = findCompactionCutPoint(opts.messages, keepRecentTokens, opts.estimateTokens, estimateMessage)
   // Nothing before the cut point (system prompt only) — nothing to summarize.
   if (boundary <= 1) return null
 
@@ -322,7 +356,7 @@ export async function maybeCompact(opts: CompactOptions): Promise<CompactResult 
   if (!opts.force) {
     const ratio = opts.ratio ?? DEFAULT_COMPACTION_RATIO
     const budget = Math.floor(contextWindow * ratio) - (opts.outputReserve || 0)
-    const total = opts.messages.reduce((sum, m) => sum + opts.estimateTokens(m.content), 0) + (opts.overheadTokens || 0)
+    const total = opts.messages.reduce((sum, m) => sum + estimateMessage(m), 0) + (opts.overheadTokens || 0)
     if (total <= budget) return null
   }
 

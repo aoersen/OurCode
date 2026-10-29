@@ -311,3 +311,34 @@ describe('maybeCompact file list integration', () => {
     expect(result!.summary).toContain('- /y.py')
   })
 })
+
+describe('maybeCompact per-message estimator', () => {
+  it('counts assistant tool-call arguments when the caller injects the estimator', async () => {
+    // Content-only estimate stays under the budget; the write_file argument
+    // (200 chars) pushes the REAL request over it. This is the bug that let
+    // office requests reach 137k input tokens while compaction thought they
+    // were still under the window.
+    const bigArgs = JSON.stringify({ path: '/a.ts', content: 'x'.repeat(200) })
+    const messages: CompactMessage[] = [
+      sys,
+      assistant('intro'),
+      user('x'.repeat(100)),
+      {
+        role: 'assistant',
+        content: 'a',
+        toolCalls: [{ id: 'w', type: 'function', function: { name: 'write_file', arguments: bigArgs } }],
+      },
+      user('CURRENT TURN'),
+    ]
+    const contentOnly = await maybeCompact(baseOpts({ messages, contextWindow: 300 }))
+    expect(contentOnly).toBeNull()
+
+    const withToolCalls = await maybeCompact(baseOpts({
+      messages,
+      contextWindow: 300,
+      estimateMessageTokens: (m) =>
+        est(m.content || '') + (m.toolCalls?.length ? est(JSON.stringify(m.toolCalls)) : 0),
+    }))
+    expect(withToolCalls).not.toBeNull()
+  })
+})
