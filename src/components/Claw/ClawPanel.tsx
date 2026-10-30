@@ -34,7 +34,7 @@ export default function ClawPanel() {
           </h2>
           <span
             className="px-2 py-0.5 text-[11px] font-semibold rounded-full"
-            style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+            style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
           >
             {t('claw.hubSummary', { enabled: enabledCount, total: CLAW_CHANNELS.length })}
           </span>
@@ -128,7 +128,7 @@ export default function ClawPanel() {
         style={{ borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}
       >
         <span>{t('claw.gatewayFooter', { count: CLAW_CHANNELS.length })}</span>
-        <button style={{ color: 'var(--accent)' }} onClick={() => useClawStore.getState().loadConfigs()}>
+        <button style={{ color: 'var(--accent-text)' }} onClick={() => useClawStore.getState().loadConfigs()}>
           {t('claw.refresh')}
         </button>
       </div>

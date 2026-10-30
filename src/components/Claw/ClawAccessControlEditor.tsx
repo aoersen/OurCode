@@ -5,7 +5,7 @@ import {
   type ClawAccessPolicy,
 } from '@shared/claw'
 
-const inputCls = 'px-2.5 py-1.5 rounded-md text-xs outline-none transition-colors'
+const inputCls = 'h-9 rounded-lg border border-nova-border bg-nova-input-bg px-2.5 text-[13px] leading-[18px] text-nova-text-primary outline-none transition-colors'
 const inputStyle = { background: 'var(--hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
 
 /**
@@ -90,7 +90,7 @@ export default function ClawAccessControlEditor({
               className={`${inputCls} w-[88px] text-right`}
               style={inputStyle}
             />
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            <span className="text-[12px] leading-[18px]" style={{ color: 'var(--text-muted)' }}>
               {t('claw.perMinute')}
             </span>
           </div>
@@ -115,7 +115,7 @@ export default function ClawAccessControlEditor({
               className={`${inputCls} w-[92px] disabled:opacity-40`}
               style={inputStyle}
             />
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            <span className="text-[12px] leading-[18px]" style={{ color: 'var(--text-muted)' }}>
               →
             </span>
             <input
@@ -140,10 +140,10 @@ function Field({ label, desc, control }: { label: string; desc: string; control:
       style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
     >
       <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+        <span className="text-[13px] leading-[18px] font-medium" style={{ color: 'var(--text-primary)' }}>
           {label}
         </span>
-        <span className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[12px] leading-[18px]" style={{ color: 'var(--text-muted)' }}>
           {desc}
         </span>
       </div>

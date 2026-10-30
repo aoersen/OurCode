@@ -12,7 +12,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useUIStore } from '@/stores/uiStore'
 import type { ClawAccessPolicy, ClawChannelConfig, ModelInfo } from '@/types'
 
-const inputCls = 'px-2.5 py-1.5 rounded-md text-xs outline-none transition-colors'
+const inputCls = 'px-2.5 py-1.5 rounded-md text-[12px] leading-[18px] outline-none transition-colors'
 const inputStyle = { background: 'var(--hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
 
 /**
@@ -167,24 +167,23 @@ export default function ClawSettingsSection() {
   }
 
   return (
-    <section className="flex flex-col gap-4">
+    <section className="flex flex-col gap-3 rounded-xl border border-nova-border bg-nova-card px-5 py-4">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>
-            <span style={{ width: 3, height: 14, background: 'var(--accent)', borderRadius: 2 }} />
+        <div className="flex flex-col gap-1">
+          <h3 className="text-[14px] leading-[20px] font-semibold text-nova-text-primary">
             {t('claw.settingsTitle')}
           </h3>
-          <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+          <p className="text-[12px] leading-[18px] text-nova-text-muted">
             {t('claw.settingsSubtitle')}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
           {savedFlash && (
-            <span className="text-[11px]" style={{ color: 'var(--success)' }}>
+            <span className="text-[12px] leading-[18px]" style={{ color: 'var(--success)' }}>
               {t('claw.saved')}
             </span>
           )}
-          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          <span className="text-[12px] leading-[18px]" style={{ color: 'var(--text-muted)' }}>
             {t('claw.masterSwitch')}
           </span>
           <Toggle on={masterEnabled} onClick={() => toggleMaster(!masterEnabled)} label={t('claw.masterSwitch')} />
@@ -209,11 +208,11 @@ export default function ClawSettingsSection() {
             <button
               key={meta.id}
               onClick={() => setActiveId(meta.id)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[12px] leading-[18px] transition-colors"
               style={{
                 background: isActive ? 'var(--bg-selected)' : 'var(--card)',
                 border: `1px solid ${isActive ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border)'}`,
-                color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                color: isActive ? 'var(--accent-text)' : 'var(--text-secondary)',
               }}
             >
               <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: dot }} />
@@ -226,18 +225,18 @@ export default function ClawSettingsSection() {
       {/* 选中渠道：连接 + 凭据 */}
       <div
         className="rounded-xl px-4 py-3.5 flex flex-col gap-3"
-        style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
+        
       >
         <div className="flex items-center gap-3">
           <ClawChannelIcon id={activeMeta.id} color={activeMeta.brandColor} size={32} radius={10} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+              <span className="text-[13px] leading-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                 {activeMeta.label}
               </span>
               {activeMeta.maturity === 'beta' && (
                 <span
-                  className="px-1.5 py-[1px] text-[9px] font-semibold rounded-full uppercase"
+                  className="px-1.5 py-[1px] text-[12px] leading-[18px] font-semibold rounded-full uppercase"
                   style={{ background: 'var(--hover)', color: 'var(--text-muted)' }}
                   title={t('claw.betaHint')}
                 >
@@ -245,11 +244,11 @@ export default function ClawSettingsSection() {
                 </span>
               )}
             </div>
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            <span className="text-[12px] leading-[18px]" style={{ color: 'var(--text-muted)' }}>
               {isZh ? activeMeta.description : activeMeta.descriptionEn}
             </span>
           </div>
-          <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+          <span className="text-[12px] leading-[18px] shrink-0" style={{ color: 'var(--text-muted)' }}>
             {t('claw.channelEnable')}
           </span>
           <Toggle
@@ -279,10 +278,10 @@ export default function ClawSettingsSection() {
 
         {/* 凭据去哪拿、连接方式是什么——直接写在界面上，用户不用翻文档 */}
         <div className="flex flex-col gap-0.5">
-          <span className="text-[11px] leading-4" style={{ color: 'var(--text-secondary)' }}>
+          <span className="text-[12px] leading-[18px] leading-4" style={{ color: 'var(--text-secondary)' }}>
             {t('claw.connectionMode')}
           </span>
-          <span className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+          <span className="text-[12px] leading-[18px] leading-4" style={{ color: 'var(--text-muted)' }}>
             {isZh ? activeMeta.credentialHint : activeMeta.credentialHintEn}
           </span>
         </div>
@@ -291,10 +290,10 @@ export default function ClawSettingsSection() {
       {/* 接入控制（每渠道一份） */}
       <div className="flex flex-col gap-2">
         <div>
-          <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          <h4 className="text-[13px] leading-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>
             {t('claw.accessControlTitle', { name: activeMeta.label })}
           </h4>
-          <p className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+          <p className="text-[12px] leading-[18px] leading-4" style={{ color: 'var(--text-muted)' }}>
             {t('claw.accessControlSubtitle')}
           </p>
         </div>
@@ -307,10 +306,10 @@ export default function ClawSettingsSection() {
       {/* Agent 状态（跨渠道共享） */}
       <div className="flex flex-col gap-2">
         <div>
-          <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          <h4 className="text-[13px] leading-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>
             {t('claw.agentStateTitle')}
           </h4>
-          <p className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+          <p className="text-[12px] leading-[18px] leading-4" style={{ color: 'var(--text-muted)' }}>
             {t('claw.agentStateSubtitle')}
           </p>
         </div>
@@ -319,7 +318,7 @@ export default function ClawSettingsSection() {
           label={t('claw.agentWorkspace')}
           desc={t('claw.agentWorkspaceDesc')}
           right={
-            <div className="flex flex-col items-end gap-0.5 text-[11px] max-w-[320px]" style={{ color: 'var(--text-secondary)' }}>
+            <div className="flex flex-col items-end gap-0.5 text-[12px] leading-[18px] max-w-[320px]" style={{ color: 'var(--text-secondary)' }}>
               <span className="truncate">
                 {agentWorkspace
                   ? agentState?.currentWorkspace ?? t('claw.sandboxLabel', { path: agentState?.sandboxPath ?? '' })
@@ -339,7 +338,7 @@ export default function ClawSettingsSection() {
           desc={t('claw.agentGroupDesc')}
           right={
             <select
-              value={selectedGroup?.id ?? ''}
+              aria-label="渠道使用的配置组" value={selectedGroup?.id ?? ''}
               onChange={(e) => pickGroup(e.target.value)}
               className={`${inputCls} max-w-[240px]`}
               style={inputStyle}
@@ -363,7 +362,7 @@ export default function ClawSettingsSection() {
           }
           right={
             <select
-              value={modelOptions.includes(modelIdPref) ? modelIdPref : ''}
+              aria-label="渠道模型" value={modelOptions.includes(modelIdPref) ? modelIdPref : ''}
               onChange={(e) => pickModel(e.target.value)}
               disabled={modelOptions.length === 0}
               className={`${inputCls} max-w-[240px] disabled:opacity-50`}
@@ -384,7 +383,7 @@ export default function ClawSettingsSection() {
           desc={t('claw.agentApprovalDesc')}
           right={
             <select
-              value={approvalMode}
+              aria-label="权限审批模式" value={approvalMode}
               onChange={(e) => pickApprovalMode(e.target.value as 'approve' | 'full_access')}
               className={inputCls}
               style={inputStyle}
@@ -401,7 +400,7 @@ export default function ClawSettingsSection() {
           right={
             <div className="flex items-center gap-1.5">
               <input
-                type="text"
+                aria-label="工作区目录" type="text"
                 value={workspaceDir}
                 onChange={(e) => {
                   void savePreferences({ clawWorkspaceDir: e.target.value })
@@ -413,7 +412,7 @@ export default function ClawSettingsSection() {
                 style={inputStyle}
               />
               <button
-                className="px-2.5 py-1.5 text-xs rounded-md shrink-0"
+                className="px-2.5 py-1.5 text-[12px] leading-[18px] rounded-md shrink-0"
                 style={{ background: 'var(--hover)', color: 'var(--text-secondary)' }}
                 onClick={() => void pickWorkspace()}
               >
@@ -445,7 +444,7 @@ function FieldInput({
   const help = zh ? field.help : field.helpEn
   return (
     <label className="flex flex-col gap-1 min-w-0">
-      <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+      <span className="text-[12px] leading-[18px] font-medium" style={{ color: 'var(--text-secondary)' }}>
         {label}
         {field.required && <span style={{ color: 'var(--error)' }}> *</span>}
       </span>
@@ -460,7 +459,7 @@ function FieldInput({
         autoComplete="off"
       />
       {help && (
-        <span className="text-[10px] leading-3.5" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
           {help}
         </span>
       )}
@@ -471,14 +470,14 @@ function FieldInput({
 function Row({ label, desc, right }: { label: string; desc: string; right: React.ReactNode }) {
   return (
     <div
-      className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-lg"
-      style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
+      className="flex items-center justify-between gap-6 border-b border-nova-border py-3 last:border-b-0"
+      
     >
       <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+        <span className="text-[13px] leading-[18px] font-medium" style={{ color: 'var(--text-primary)' }}>
           {label}
         </span>
-        <span className="text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[12px] leading-[18px] leading-4" style={{ color: 'var(--text-muted)' }}>
           {desc}
         </span>
       </div>
@@ -493,12 +492,12 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
       onClick={onClick}
       aria-label={label}
       aria-pressed={on}
-      className="w-10 h-[22px] rounded-full relative shrink-0 border-none cursor-pointer transition-colors"
+      className="relative h-5 w-9 shrink-0 rounded-full border border-transparent cursor-pointer transition-colors"
       style={{ background: on ? 'var(--accent)' : 'var(--border-strong)' }}
     >
       <span
-        className="block w-[18px] h-[18px] rounded-full bg-white absolute top-[2px] transition-all"
-        style={{ left: on ? '20px' : '2px' }}
+        className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform"
+        style={{ transform: on ? 'translateX(16px)' : 'translateX(0)' }}
       />
     </button>
   )

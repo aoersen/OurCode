@@ -75,7 +75,7 @@ export default function ClawChannelCard({
           </span>
           <button
             className="px-2 py-0.5 text-[11px] rounded-md shrink-0"
-            style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+            style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
             onClick={() => openChannelSettings(meta.id)}
           >
             {t('claw.goToSettings')}
@@ -91,7 +91,7 @@ export default function ClawChannelCard({
           </span>
           <button
             className="px-2 py-0.5 text-[11px] rounded-md shrink-0"
-            style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+            style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
             onClick={() => openChannelSettings(meta.id)}
           >
             {t('claw.checkSettings')}
@@ -102,7 +102,7 @@ export default function ClawChannelCard({
       {enabled && configured && meta.loginMode === 'qr' && state !== 'connected' && (
         <button
           className="self-start px-2.5 py-1 text-[11px] rounded-md"
-          style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+          style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
           onClick={() => void startLogin(meta.id)}
         >
           {state === 'loggingIn' ? t('claw.loggingIn') : t('claw.startLogin')}

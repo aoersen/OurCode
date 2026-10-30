@@ -228,23 +228,23 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
     }
   }
 
-  const groupHeaderCls = 'text-[11px] font-semibold text-nova-text-secondary flex items-center gap-1.5'
+  const groupHeaderCls = 'text-[12px] leading-[18px] font-semibold uppercase tracking-[0.08em] text-nova-text-muted flex items-center gap-1.5'
 
   return (
     <div className="flex flex-col gap-3">
       {/* Header row */}
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] text-nova-text-muted truncate">
+        <div className="truncate text-[12px] leading-[18px] text-nova-text-muted">
           配置分两级：全局（所有项目可用）与当前项目（仅本项目）
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {status && (
             <span
-              className={`text-[10px] px-2 py-1 rounded ${
+              className={`rounded-full px-2 py-0.5 text-[12px] leading-[18px] font-medium ${
                 status.type === 'ok'
-                  ? 'text-green-500 bg-green-500/10'
+                  ? 'bg-success-10 text-success'
                   : status.type === 'error'
-                    ? 'text-red-400 bg-red-500/10'
+                    ? 'bg-error-10 text-error'
                     : 'text-nova-text-muted bg-nova-hover'
               }`}
             >
@@ -253,13 +253,13 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
           )}
           <button
             onClick={loadConfig}
-            className="px-2.5 py-1 text-[11px] text-nova-text-secondary hover:text-nova-text-primary hover:bg-nova-hover rounded-md transition-colors"
+            className="h-8 rounded-lg px-2.5 text-[13px] leading-[18px] text-nova-text-secondary transition-colors hover:bg-nova-hover hover:text-nova-text-primary"
           >
             重新加载
           </button>
           <button
             onClick={saveConfig}
-            className="px-3 py-1 text-[11px] font-medium text-white rounded-full hover:opacity-90 transition-all shadow-sm" style={{ background: 'var(--grad-brand)' }}
+            className="px-3 py-1 h-8 rounded-lg bg-nova-accent px-3 text-[13px] leading-[18px] font-medium text-white transition-opacity hover:opacity-90" style={{ background: 'var(--grad-brand)' }}
           >
             保存配置
           </button>
@@ -267,9 +267,9 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
       </div>
 
       {/* ─────────────── 全局 MCP ─────────────── */}
-      <div className="rounded-xl border border-nova-accent/30 bg-nova-card/70 p-3 flex flex-col gap-2.5">
+      <div className="rounded-xl border border-accent-30 bg-nova-card p-3 flex flex-col gap-2.5">
         <div className={groupHeaderCls}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-nova-accent shrink-0">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent-text shrink-0">
             <circle cx="12" cy="12" r="10" />
             <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
           </svg>
@@ -279,7 +279,7 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
           </span>
         </div>
         {globalServers.length === 0 && (
-          <div className="text-[11px] text-nova-text-muted px-1 py-1">
+          <div className="text-[12px] leading-[18px] text-nova-text-muted px-1 py-1">
             还没有全局 MCP 服务器，点击下方「添加全局服务器」开始
           </div>
         )}
@@ -293,7 +293,7 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
         ))}
         <button
           onClick={() => addServer('global')}
-          className="self-start inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-nova-accent bg-nova-accent/10 hover:bg-nova-accent/20 rounded-full transition-colors"
+          className="self-start inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-10 px-3 text-[13px] leading-[18px] text-accent-text transition-colors hover:bg-accent-20"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
             <path d="M12 5v14M5 12h14" />
@@ -303,7 +303,7 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
       </div>
 
       {/* ─────────────── 项目 MCP ─────────────── */}
-      <div className="rounded-xl border border-nova-border bg-nova-card/70 p-3 flex flex-col gap-2.5">
+      <div className="rounded-xl border border-nova-border bg-nova-card p-3 flex flex-col gap-2.5">
         <div className={groupHeaderCls}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-nova-text-muted shrink-0">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -314,12 +314,12 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
           </span>
         </div>
         {!rootPath && (
-          <div className="text-[11px] text-nova-text-muted px-1 py-1">
+          <div className="text-[12px] leading-[18px] text-nova-text-muted px-1 py-1">
             打开文件夹并开始一个对话后，即可为该项目配置独立的 MCP 服务器
           </div>
         )}
         {rootPath && projectServers.length === 0 && (
-          <div className="text-[11px] text-nova-text-muted px-1 py-1">
+          <div className="text-[12px] leading-[18px] text-nova-text-muted px-1 py-1">
             还没有项目 MCP 服务器，点击下方「添加项目服务器」开始
           </div>
         )}
@@ -335,7 +335,7 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
           <>
             <button
               onClick={addBundledGitServer}
-              className="self-start inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-nova-text-secondary border border-nova-border hover:border-nova-accent/40 rounded-full transition-colors"
+              className="self-start inline-flex h-8 items-center gap-1.5 rounded-lg border border-nova-border px-3 text-[13px] leading-[18px] text-nova-text-secondary transition-colors hover:border-accent-40"
               title="添加内置 Git MCP 服务器（使用 IDE 自带 Node 运行，无需安装 Node）"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -346,7 +346,7 @@ export default function McpConfigSection({ rootPath }: { rootPath: string | null
             </button>
             <button
               onClick={() => addServer('project')}
-              className="self-start inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-nova-accent bg-nova-accent/10 hover:bg-nova-accent/20 rounded-full transition-colors"
+              className="self-start inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-10 px-3 text-[13px] leading-[18px] text-accent-text transition-colors hover:bg-accent-20"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                 <path d="M12 5v14M5 12h14" />
@@ -371,27 +371,27 @@ function ServerCard({
   onDelete: () => void
 }) {
   const inputCls =
-    'w-full px-2.5 py-1.5 text-xs bg-nova-input-bg border border-nova-border rounded-md text-nova-text-primary placeholder-nova-text-muted focus:border-nova-accent/50 focus:outline-none transition-colors'
-  const labelCls = 'text-[10px] text-nova-text-muted mb-1 block'
+    'h-9 w-full rounded-lg bg-nova-input-bg border border-nova-border px-2.5 text-[12px] leading-[18px] text-nova-text-primary placeholder-nova-text-muted focus:border-accent-50 focus:outline-none transition-colors'
+  const labelCls = 'mb-1 block text-[12px] leading-[18px] text-nova-text-muted'
 
   return (
-    <div className="rounded-xl border border-nova-border bg-nova-card/70 p-3 flex flex-col gap-2.5 hover:border-nova-accent/30 transition-colors">
+    <div className="rounded-xl border border-nova-border bg-nova-card p-3 flex flex-col gap-2.5 hover:border-accent-30 transition-colors">
       <div className="flex items-center gap-2">
         <input
-          value={draft.name}
+          aria-label="服务器名称" value={draft.name}
           onChange={(e) => onChange({ name: e.target.value })}
           placeholder="服务器名称"
           className={`${inputCls} flex-1 font-mono`}
         />
         <select
-          value={draft.type}
+          aria-label="服务器类型" value={draft.type}
           onChange={(e) => onChange({ type: e.target.value as 'stdio' | 'http' })}
-          className="px-2 py-1.5 text-[11px] bg-nova-input-bg border border-nova-border rounded-md text-nova-text-primary outline-none cursor-pointer hover:border-nova-accent"
+          className="h-8 cursor-pointer rounded-lg border border-nova-border bg-nova-input-bg px-2 text-[13px] leading-[18px] text-nova-text-primary outline-none hover:border-nova-accent"
         >
           <option value="stdio">本地命令</option>
           <option value="http">HTTP / SSE</option>
         </select>
-        <label className="flex items-center gap-1.5 text-[11px] text-nova-text-secondary cursor-pointer select-none">
+        <label className="flex items-center gap-1.5 text-[12px] leading-[18px] text-nova-text-secondary cursor-pointer select-none">
           <input
             type="checkbox"
             checked={draft.enabled}
@@ -402,7 +402,7 @@ function ServerCard({
         </label>
         <button
           onClick={onDelete}
-          className="p-1.5 text-nova-text-muted hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+          className="rounded-md p-1.5 text-nova-text-muted transition-colors hover:bg-error-10 hover:text-error"
           title="删除服务器"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -416,7 +416,7 @@ function ServerCard({
           <div>
             <span className={labelCls}>启动命令 command</span>
             <input
-              value={draft.command}
+              aria-label="启动命令" value={draft.command}
               onChange={(e) => onChange({ command: e.target.value })}
               placeholder="例如：node、npx；内置 Git 用 bundled-node（免装 Node）"
               className={`${inputCls} font-mono`}
@@ -426,7 +426,7 @@ function ServerCard({
             <div>
               <span className={labelCls}>参数 args（空格分隔）</span>
               <input
-                value={draft.argsText}
+                aria-label="命令参数" value={draft.argsText}
                 onChange={(e) => onChange({ argsText: e.target.value })}
                 placeholder="例如：server.js --port 3000"
                 className={`${inputCls} font-mono`}
@@ -435,7 +435,7 @@ function ServerCard({
             <div>
               <span className={labelCls}>环境变量 env（每行 KEY=VALUE）</span>
               <textarea
-                value={draft.envText}
+                aria-label="环境变量" value={draft.envText}
                 onChange={(e) => onChange({ envText: e.target.value })}
                 placeholder="GIT_PAGER=cat"
                 rows={2}
@@ -449,7 +449,7 @@ function ServerCard({
           <div>
             <span className={labelCls}>服务器地址 URL（HTTP / SSE）</span>
             <input
-              value={draft.url}
+              aria-label="服务器地址" value={draft.url}
               onChange={(e) => onChange({ url: e.target.value })}
               placeholder="例如：http://localhost:3001/mcp"
               className={`${inputCls} font-mono`}
@@ -458,14 +458,14 @@ function ServerCard({
           <div>
             <span className={labelCls}>请求头 headers（每行 KEY: VALUE）</span>
             <textarea
-              value={draft.headersText}
+              aria-label="请求头" value={draft.headersText}
               onChange={(e) => onChange({ headersText: e.target.value })}
               placeholder="Authorization: Bearer xxx"
               rows={2}
               className={`${inputCls} font-mono resize-y`}
             />
           </div>
-          <label className="flex items-center gap-1.5 text-[11px] text-nova-text-secondary cursor-pointer select-none">
+          <label className="flex items-center gap-1.5 text-[12px] leading-[18px] text-nova-text-secondary cursor-pointer select-none">
             <input
               type="checkbox"
               checked={draft.skipTlsVerify}

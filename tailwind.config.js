@@ -30,6 +30,7 @@ module.exports = {
           'text-secondary': 'var(--text-secondary, #334155)',
           'text-muted': 'var(--text-muted, #64748b)',
           accent: 'var(--accent, #0058bc)',
+          'accent-text': 'var(--accent-text, var(--accent, #0058bc))',
         },
         accent: {
           blue: 'var(--accent, #0058bc)',

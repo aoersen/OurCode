@@ -66,9 +66,11 @@ test.describe('Light-mode editor deep diagnostic', () => {
     await settingsDialog.locator('button', { hasText: /外观|Appearance/ }).first().click()
     const themeRow = settingsDialog.locator('div.flex.items-center.justify-between', { hasText: /界面主题|Interface Theme/ }).first()
     await expect(themeRow).toBeVisible({ timeout: 10000 })
-    const sel = themeRow.locator('select')
-    const current = await sel.inputValue()
-    if (current !== 'light') await sel.selectOption({ label: '☀️ 浅色模式' })
+    // The theme control is a segmented radiogroup (light / dark / system) —
+    // click 浅色 instead of driving the old <select>.
+    const lightOption = themeRow.locator('button', { hasText: /浅色|Light/ }).first()
+    await expect(lightOption).toBeVisible({ timeout: 5000 })
+    if ((await lightOption.getAttribute('aria-checked')) !== 'true') await lightOption.click()
     await win.waitForTimeout(600)
     await win.keyboard.press('Escape')
     await win.waitForTimeout(500)

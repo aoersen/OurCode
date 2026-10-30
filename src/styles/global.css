@@ -78,6 +78,10 @@
   --text-placeholder: #94a3b8;
   --text-disabled: #cbd5e1;
   --accent: var(--primary-color, #0058bc);
+  /* Accent tuned for SMALL TEXT: in light mode it equals the accent, in dark
+     mode the raw accent (#0058bc on a #151a26 surface = 2.4:1) is unreadable,
+     so it is lifted towards white (>= 4.5:1). */
+  --accent-text: var(--primary-color, #0058bc);
   --accent-purple: #7c3aed;
   --primary-color: #0058bc;
   --primary-color-10: rgba(0, 88, 188, 0.1);
@@ -145,6 +149,7 @@
   --text-placeholder: #565b66;
   --text-disabled: #565b66;
   --accent: var(--primary-color, #4d94ff);
+  --accent-text: color-mix(in srgb, var(--primary-color, #4d94ff) 45%, #ffffff);
   --accent-purple: #dcaeff;
   --primary-color: #4d94ff;
   --primary-color-10: rgba(77, 148, 255, 0.12);

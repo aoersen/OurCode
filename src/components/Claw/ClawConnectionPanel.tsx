@@ -63,7 +63,7 @@ export default function ClawConnectionPanel({
               ) : (
                 <button
                   className={accentBtn}
-                  style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+                  style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
                   disabled={state === 'loggingIn' || !enabled}
                   onClick={() => void startLogin(meta.id)}
                 >
@@ -93,7 +93,7 @@ export default function ClawConnectionPanel({
                   />
                   <button
                     className={accentBtn}
-                    style={{ background: 'var(--bg-selected)', color: 'var(--accent)' }}
+                    style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
                     onClick={() => {
                       void submitVerifyCode(meta.id, verifyCode)
                       setVerifyCode('')
@@ -109,7 +109,7 @@ export default function ClawConnectionPanel({
                     target="_blank"
                     rel="noreferrer"
                     className="text-xs underline truncate flex-1"
-                    style={{ color: 'var(--accent)' }}
+                    style={{ color: 'var(--accent-text)' }}
                   >
                     {ui.qrUrl}
                   </a>
