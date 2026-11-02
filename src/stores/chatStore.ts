@@ -3365,6 +3365,12 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
       attachments: attachments.length ? attachments : undefined,
     })
 
+    // A new user instruction is the explicit "continue" that clears a desktop
+    // emergency stop (Esc / Stop button / computer_stop) for this session.
+    if (useEditorStore.getState().preferences.computerUseEnabled === true) {
+      window.electronAPI.computerReset(sessionId).catch(() => undefined)
+    }
+
     // Auto-title on the first message — and only then: a title the user renamed
     // (or that was already generated) is never overwritten, and regenerating
     // the first message must not re-truncate the title. The heuristic below is
@@ -3452,6 +3458,11 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     // Stop ONLY the given session's generation — parallel conversations must
     // never be stopped by acting on a different session's button.
     get().abortControllers[sessionId]?.abort()
+    // Desktop control: the Stop button is also an emergency stop. Fire and
+    // forget — the main process latches locally even if the helper is wedged.
+    if (useEditorStore.getState().preferences.computerUseEnabled === true) {
+      window.electronAPI.computerStop(sessionId).catch(() => undefined)
+    }
     // A user Stop must also cancel a pending director merge-window wake-up:
     // otherwise reports that arrived just before the stop would start a new
     // autonomous turn a couple of seconds later.
@@ -4384,7 +4395,10 @@ async function runAgentLoop(
   const compactionWindow = getContextWindow(model)
   const overheadTokens = estimateTokens(JSON.stringify(
     toolExecutor.getToolDefinitions()
-      .filter((d) => useEditorStore.getState().preferences.aiAutoMemory || d.function.name !== 'remember'),
+      .filter((d) =>
+        (useEditorStore.getState().preferences.aiAutoMemory || d.function.name !== 'remember') &&
+        (useEditorStore.getState().preferences.computerUseEnabled === true || !d.function.name.startsWith('computer_')),
+      ),
   ))
   // Unified thinking level (thinkingLevel selector, else thinking/reasoningEffort
   // fallback) — a non-off level means this round can produce a long reasoning
@@ -4846,7 +4860,10 @@ async function runAgentLoop(
         : toolExecutor.getToolDefinitions(
             workerToolFilter ?? (targetMode ? (name) => !TARGET_MODE_SUPERVISOR_DENIED.has(name) : undefined),
           ))
-        .filter((d) => useEditorStore.getState().preferences.aiAutoMemory || d.function.name !== 'remember')
+        .filter((d) =>
+          (useEditorStore.getState().preferences.aiAutoMemory || d.function.name !== 'remember') &&
+          (useEditorStore.getState().preferences.computerUseEnabled === true || !d.function.name.startsWith('computer_')),
+        )
 
       // Cache-break diagnostics: sign the byte-stable prefix (system + tools)
       // before the request so a later cache miss can name what changed.

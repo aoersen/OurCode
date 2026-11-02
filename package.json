@@ -106,6 +106,10 @@
         "to": "mcp-servers"
       },
       {
+        "from": "tools/cua-helper/win",
+        "to": "cua-helper/win"
+      },
+      {
         "from": "out/claw-gateway",
         "to": "claw-gateway"
       },

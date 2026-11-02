@@ -215,6 +215,20 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
         aborted: false,
       })
     }
+    // 电脑操控默认在子智能体里硬禁用（无人监督的桌面输入不可接受）：
+    // 即使工具定义里写进了 computer_*，运行时也拒绝；只有用户显式开启
+    // computerUseInSubagent 才放行。
+    if (tc.name.startsWith('computer_') && useEditorStore.getState().preferences.computerUseInSubagent !== true) {
+      return Promise.resolve({
+        result: {
+          toolCallId: tc.id,
+          name: tc.name,
+          result: '[子智能体] 已拒绝：电脑操控默认不允许子智能体使用（设置 → 电脑操控 → 允许子智能体）。',
+          isError: true,
+        },
+        aborted: false,
+      })
+    }
     const ctx = {
       sessionId: opts.sessionId,
       projectPath: opts.projectPath,

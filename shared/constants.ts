@@ -133,6 +133,17 @@ export const IPC_CHANNELS = {
   BROWSER_CLOSE: 'browser:close',
   BROWSER_EVENT: 'browser:event',
 
+  // Computer Use（桌面应用操控）— 见 docs/COMPUTER_USE.md 与 shared/computer.ts
+  COMPUTER_STATUS: 'computer:status',
+  COMPUTER_LIST_APPS: 'computer:listApps',
+  COMPUTER_GET_STATE: 'computer:getState',
+  COMPUTER_ACTION: 'computer:action',
+  COMPUTER_SCREENSHOT: 'computer:screenshot',
+  COMPUTER_RUN_STEPS: 'computer:runSteps',
+  COMPUTER_STOP: 'computer:stop',
+  COMPUTER_RESET: 'computer:reset',
+  COMPUTER_EVENT: 'computer:event',
+
   // Auto Update
   UPDATE_CHECK: 'update:check',
   UPDATE_DOWNLOAD: 'update:download',
@@ -217,6 +228,24 @@ export const DEFAULT_PREFERENCES = {
   clawConfigGroupId: '',
   /** Claw 会话使用的模型（留空 = 组的默认模型）。 */
   clawModelId: '',
+  /** 电脑操控（Computer Use）总开关。默认关：关闭时既不启动 helper，也不把
+   *  computer_* 工具暴露给模型。 */
+  computerUseEnabled: false,
+  /** 追加的敏感应用黑名单（内置黑名单始终生效；按窗口名/进程名子串匹配）。 */
+  computerUseAppDenylist: [] as string[],
+  /** true = 只允许 computerUseAppAllowlist 里的应用（公司/演示环境用）。 */
+  computerUseAllowlistMode: false,
+  computerUseAppAllowlist: [] as string[],
+  /** 是否允许子智能体使用电脑操控（默认禁止：子代理无人监督）。 */
+  computerUseInSubagent: false,
+  /** 「OurCode 正在操作」覆盖层（红框 + Esc 提示）。 */
+  computerUseShowOverlay: true,
+  /** 单次观察的树节点上限（默认 300）。 */
+  computerUseMaxNodes: 300,
+  /** 动作后等待 UI 稳定的起始毫秒数（默认 300）。 */
+  computerUsePostActionMs: 300,
+  /** 截图帧保留分钟数（默认 30）。 */
+  computerUseKeepFramesMin: 30,
 }
 
 // Free model keywords

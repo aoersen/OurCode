@@ -151,6 +151,34 @@ export interface ElectronAPI {
   browserClose: () => Promise<void>
   onBrowserEvent: (callback: (payload: import('@shared/types').BrowserEvent) => void) => () => void
 
+  // Computer Use（桌面应用操控）
+  computerStatus: () => Promise<{
+    ok: boolean
+    status?: import('@shared/computer').CuaStatus
+    error?: import('@shared/computer').CuaErrorInfo
+  }>
+  computerListApps: (owner?: string) => Promise<{
+    ok: boolean
+    apps: import('@shared/computer').CuaAppInfo[]
+    blocked: number
+    error?: import('@shared/computer').CuaErrorInfo
+  }>
+  computerGetState: (
+    request: import('@shared/computer').CuaGetStateRequest,
+  ) => Promise<{ ok: boolean; state?: import('@shared/computer').CuaState; error?: import('@shared/computer').CuaErrorInfo }>
+  computerAction: (
+    request: import('@shared/computer').CuaActionRequest,
+  ) => Promise<import('@shared/computer').CuaActionResult>
+  computerScreenshot: (
+    request: import('@shared/computer').CuaScreenshotRequest,
+  ) => Promise<import('@shared/computer').CuaScreenshotResult>
+  computerRunSteps: (
+    request: import('@shared/computer').CuaRunStepsRequest,
+  ) => Promise<import('@shared/computer').CuaRunStepsResult>
+  computerStop: (owner?: string) => Promise<{ ok: boolean }>
+  computerReset: (owner?: string) => Promise<{ ok: boolean }>
+  onComputerEvent: (callback: (payload: unknown) => void) => () => void
+
   // Shell
   shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => Promise<{ success: boolean; output: string; error?: string }>
   shellKill: (requestId: string) => Promise<boolean>

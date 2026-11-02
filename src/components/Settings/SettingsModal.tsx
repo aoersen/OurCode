@@ -20,6 +20,7 @@ import ClawSettingsSection from './ClawSettingsSection'
 import { askText } from '@/components/Common/PromptDialog'
 import PluginSection from '../Plugin/PluginSection'
 import NoLimitsSettingsSection from './NoLimitsSettingsSection'
+import ComputerUseSection from './ComputerUseSection'
 import SettingsLayout, { type SettingsNavGroup, type SettingsTabKey } from './SettingsLayout'
 import {
   T_BODY,
@@ -1479,6 +1480,7 @@ export default function SettingsModal() {
     { id: 'settings-feature-claw', label: '渠道接入' },
     { id: 'settings-feature-entry', label: '功能入口' },
     { id: 'settings-feature-nolimits', label: '无限制模式' },
+  { id: 'settings-feature-computer', label: '电脑操控' },
     { id: 'settings-feature-plugins', label: '插件' },
     { id: 'settings-feature-project', label: '项目设置' },
     { id: 'settings-feature-mcp', label: 'MCP 服务器' },
@@ -1565,6 +1567,9 @@ export default function SettingsModal() {
 
       {/* 无限制模式（no-limits）：破甲能力取自 dsh-purge，默认关闭 */}
       <div id="settings-feature-nolimits"><NoLimitsSettingsSection /></div>
+
+      {/* 电脑操控（Computer Use）：桌面应用观察/操作，默认关闭 */}
+      <ComputerUseSection />
 
       <SettingsSection id="settings-feature-plugins" title="插件（扩展）" description="安装、启用与卸载第三方扩展。">
         <PluginSection />

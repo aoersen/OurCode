@@ -19,6 +19,7 @@ export type ToolKind =
   | 'command'       // run_command
   | 'git_write'     // git_commit / git_push / git_split_commit
   | 'browser_write' // browser_act / create_pull_request
+  | 'computer_write'// 桌面操控写入（点击/输入/按键/滚动/拖拽/批量/启动应用）
   | 'mcp'           // mcp__*（非内置打包服务器）
   | 'delegate'      // run_subagent
   | 'interactive'   // 提问/计划/todo/记忆/会话间消息 —— 永远免审
@@ -28,12 +29,24 @@ const KIND_SETS: Record<Exclude<ToolKind, 'read' | 'interactive' | 'mcp'>, reado
   command: ['run_command'],
   git_write: ['git_commit', 'git_push', 'git_split_commit'],
   browser_write: ['browser_act', 'create_pull_request'],
+  computer_write: [
+    'computer_click',
+    'computer_type',
+    'computer_key',
+    'computer_set_value',
+    'computer_scroll',
+    'computer_drag',
+    'computer_run_steps',
+    'computer_launch_app',
+  ],
   delegate: ['run_subagent'],
 }
 
 const INTERACTIVE_TOOLS = new Set([
   'ask_user_question', 'submit_plan', 'manage_todo', 'remember', 'send_message',
   'list_agents', 'read_session', 'search_sessions',
+  // 急停永远可用：不是「一次写操作」，不能被审批卡住。
+  'computer_stop',
 ])
 
 export function kindOf(toolName: string): ToolKind {

@@ -36,6 +36,7 @@ import {
   initBrowserSession,
 } from './services/browser-session'
 import { SpillStore } from './services/spill-store'
+import { initComputerUse, registerComputerUseIpc, shutdownComputerUse } from './services/computer-use'
 import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
 import { CheckpointRepo } from './services/checkpoint-repo'
 import { ensureWhisperServer, stopWhisperServer, whisperStatus } from './services/whisperRuntime'
@@ -3027,6 +3028,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.BROWSER_VISIBLE, (_event, visible: boolean) => browserSetVisible(visible === true))
   ipcMain.handle(IPC_CHANNELS.BROWSER_CLOSE, () => browserClose())
 
+  // ── Computer Use（桌面应用操控）─────────────────────────────────────────
+  // Helper 进程 + 观察/动作语义层；未开启时服务自身拒绝一切调用（工具面也已被
+  // chatStore 过滤），见 docs/COMPUTER_USE.md。
+  initComputerUse({
+    broadcast: (channel, payload) => broadcast(channel, payload),
+    getPreferences: () => store.getPreferences(),
+  })
+  registerComputerUseIpc()
+
   // Shell exec handler (for run_command tool)
   ipcMain.handle(IPC_CHANNELS.SHELL_EXEC, async (_event, command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => {
     return new Promise((resolve) => {
@@ -3548,6 +3558,7 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   stopWhisperServer()
+  void shutdownComputerUse()
   browserClose()
   claw?.shutdownNow()
   store.close()

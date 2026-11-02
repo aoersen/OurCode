@@ -224,6 +224,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_EVENT, listener) }
   },
 
+  // Computer Use（桌面应用操控）— observe/act on native windows through the
+  // helper process. Every call is refused by the main process unless the user
+  // turned the feature on; see docs/COMPUTER_USE.md.
+  computerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_STATUS),
+  computerListApps: (owner?: string) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_LIST_APPS, owner),
+  computerGetState: (request: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_GET_STATE, request),
+  computerAction: (request: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_ACTION, request),
+  computerScreenshot: (request: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_SCREENSHOT, request),
+  computerRunSteps: (request: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_RUN_STEPS, request),
+  computerStop: (owner?: string) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_STOP, owner),
+  computerReset: (owner?: string) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_RESET, owner),
+  onComputerEvent: (callback: (payload: unknown) => void) => {
+    const listener = (_event: any, payload: any) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.COMPUTER_EVENT, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.COMPUTER_EVENT, listener) }
+  },
+
   // Shell
   shellExec: (command: string, cwd?: string, options?: { timeoutMs?: number; requestId?: string }) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_EXEC, command, cwd, options),
   shellKill: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_KILL, requestId),

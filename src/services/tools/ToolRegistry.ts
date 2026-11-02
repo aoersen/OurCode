@@ -398,6 +398,276 @@ export function createToolRegistry(): Tool[] {
       timeoutMs: 45_000,
     },
 
+    // ──────────────── Computer Use（桌面操控）───────────────
+    // 仅在设置里开启「电脑操控」后暴露；读取类免审，写入类走 computer_write 矩阵。
+    // 详见 docs/COMPUTER_USE.md。
+    {
+      name: 'computer_list_apps',
+      description:
+        'List the desktop windows/apps this machine can be driven through (UI Automation). ' +
+        'Start here before operating another application. Sensitive apps (password managers, banking, UAC) are filtered out.',
+      parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      execute: async () => {
+        const { computerListAppsTool } = await import('@/services/tools/computerTools')
+        return computerListAppsTool()
+      },
+      timeoutMs: 20_000,
+    },
+    {
+      name: 'computer_get_state',
+      description:
+        'Observe one desktop application: returns an indexed accessibility tree (role/name/value/actions) plus a state_id. ' +
+        'Element indexes are valid ONLY for the latest observation of that app — re-observe after any change. ' +
+        'Screenshots are off by default (set include_screenshot=true to spend vision tokens).',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string', description: 'Application name, "pid:1234" or "window:5678"' },
+          include_screenshot: { type: 'boolean', description: 'Also attach a PNG of the window (use sparingly)' },
+          max_nodes: { type: 'number', description: 'Tree node cap (default 300)' },
+          disable_diffing: { type: 'boolean', description: 'Force a full tree instead of a delta' },
+        },
+        required: ['app'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerGetStateTool } = await import('@/services/tools/computerTools')
+        return computerGetStateTool(args)
+      },
+      timeoutMs: 30_000,
+    },
+    {
+      name: 'computer_click',
+      description:
+        'Click a desktop element by index (preferred: semantic UI Automation action, does not steal focus) or by coordinates. ' +
+        'Coordinates MUST come from the latest computer_screenshot and carry its screenshot_id. ' +
+        'Returns action_sent and effect_evidence so you can tell "done" from "delivered but ignored".',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string' },
+          element_index: { type: 'number', description: 'Index from the latest computer_get_state' },
+          x: { type: 'number' },
+          y: { type: 'number' },
+          screenshot_id: { type: 'string', description: 'frame id from computer_screenshot (required with x/y)' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'] },
+          count: { type: 'number', enum: [1, 2, 3] },
+          strategy: { type: 'string', enum: ['auto', 'a11y', 'event'] },
+          confirm: { type: 'boolean', description: 'Only after the user explicitly approved a dangerous action' },
+        },
+        required: ['app'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('click', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'computer_type',
+      description:
+        'Type text into the focused control of a desktop application (Unicode-safe). ' +
+        'Prefer computer_set_value when the element exposes set_value. Never type passwords/OTP — ask the user instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string' },
+          text: { type: 'string' },
+          confirm: { type: 'boolean' },
+        },
+        required: ['app', 'text'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('type', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'computer_key',
+      description:
+        'Press a key or key combination in a desktop application, e.g. "Return", "Tab", "Control_L+a". ' +
+        'Windows/Meta combinations are refused on purpose (they collide with global shortcuts).',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string' },
+          keys: { type: 'string', description: 'Key chord, e.g. "Control_L+s" or "Return"' },
+          confirm: { type: 'boolean' },
+        },
+        required: ['app', 'keys'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('key', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'computer_set_value',
+      description:
+        'Set the value of a desktop element through its UI Automation ValuePattern (most reliable text entry). ' +
+        'Element must come from the latest observation and support set_value.',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string' },
+          element_index: { type: 'number' },
+          value: { type: 'string' },
+          confirm: { type: 'boolean' },
+        },
+        required: ['app', 'element_index', 'value'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('setValue', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'computer_scroll',
+      description: 'Scroll a desktop element (index) or a coordinate region (x/y + screenshot_id).',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string' },
+          element_index: { type: 'number' },
+          x: { type: 'number' },
+          y: { type: 'number' },
+          screenshot_id: { type: 'string' },
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+          amount: { type: 'number', description: 'Scroll amount in "pages" (default 1)' },
+        },
+        required: ['app', 'direction'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('scroll', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'computer_drag',
+      description: 'Drag from one screen point to another inside a desktop window. Both points must come from the latest screenshot.',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string' },
+          from: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
+          to: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
+          screenshot_id: { type: 'string' },
+        },
+        required: ['app', 'from', 'to'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('drag', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 45_000,
+    },
+    {
+      name: 'computer_screenshot',
+      description:
+        'Capture a desktop window (or the whole screen) and attach the PNG, returning its frame id. ' +
+        'Required before any coordinate click; element actions do not need it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string', description: 'Window to capture; omit with screen=true for the whole screen' },
+          window_id: { type: 'number' },
+          screen: { type: 'boolean' },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerScreenshotTool } = await import('@/services/tools/computerTools')
+        return computerScreenshotTool(args)
+      },
+      timeoutMs: 30_000,
+    },
+    {
+      name: 'computer_launch_app',
+      description: 'Launch a desktop application by name or executable path and wait for its window to appear.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'App name (e.g. "notepad") or a path' },
+          path: { type: 'string' },
+          confirm: { type: 'boolean' },
+        },
+        required: ['target'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerActionTool } = await import('@/services/tools/computerTools')
+        return computerActionTool('launch', args)
+      },
+      requiresApproval: true,
+      timeoutMs: 60_000,
+    },
+    {
+      name: 'computer_run_steps',
+      description:
+        'Run a short batch (≤20) of desktop actions in one round-trip: observe→act→verify per step, aborting on the first failure. ' +
+        'Each step is {kind, args}; kinds are the same as the individual computer_* actions. ' +
+        'Use this instead of many separate clicks when the sequence is already known.',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string', description: 'Default application for every step' },
+          steps: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                kind: {
+                  type: 'string',
+                  enum: ['click', 'type', 'key', 'setValue', 'scroll', 'drag', 'paste', 'performAction', 'selectText'],
+                },
+                args: { type: 'object' },
+              },
+              required: ['kind'],
+            },
+          },
+          post_action_sleep_ms: { type: 'number', description: 'Extra wait between steps (max 2000)' },
+          final_state: { type: 'boolean', description: 'Return the final observation' },
+        },
+        required: ['steps'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { computerRunStepsTool } = await import('@/services/tools/computerTools')
+        return computerRunStepsTool(args)
+      },
+      requiresApproval: true,
+      timeoutMs: 120_000,
+    },
+    {
+      name: 'computer_stop',
+      description:
+        'Emergency stop for desktop control. Latches immediately: further computer_* actions are refused until the user ' +
+        'sends a new instruction. Use it when the screen shows something unexpected.',
+      parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      execute: async () => {
+        const { computerStopTool } = await import('@/services/tools/computerTools')
+        return computerStopTool()
+      },
+      timeoutMs: 15_000,
+    },
+
     // ──────────────── Pull requests (local `gh` CLI) ────────────────
     {
       name: 'read_pull_request',

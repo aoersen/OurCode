@@ -550,6 +550,23 @@ export interface UserPreferences {
   clawConfigGroupId?: string
   /** Claw 会话使用的模型 id（留空 = 组的默认模型）。 */
   clawModelId?: string
+  /** 电脑操控总开关（关闭时不暴露 computer_* 工具、不启动 helper）。 */
+  computerUseEnabled?: boolean
+  /** 追加敏感应用黑名单（内置黑名单始终生效）。 */
+  computerUseAppDenylist?: string[]
+  /** true = 只允许白名单应用。 */
+  computerUseAllowlistMode?: boolean
+  computerUseAppAllowlist?: string[]
+  /** 允许子智能体使用电脑操控（默认禁止）。 */
+  computerUseInSubagent?: boolean
+  /** 「正在操作」覆盖层。 */
+  computerUseShowOverlay?: boolean
+  /** 单次观察节点上限。 */
+  computerUseMaxNodes?: number
+  /** 动作后 settle 起始等待（ms）。 */
+  computerUsePostActionMs?: number
+  /** 截图帧保留分钟数。 */
+  computerUseKeepFramesMin?: number
   /** web_search 后端：auto = 有 DeepSeek Key 用 DeepSeek，其次 SearXNG，然后 Bing，最后 DuckDuckGo；multi = 多源并发聚合。 */
   webSearchProvider?: 'auto' | 'multi' | 'deepseek' | 'searxng' | 'bing' | 'brave' | 'duckduckgo'
   /** DeepSeek Search/Fetch API Key；留空时自动复用官方 DeepSeek 配置组的 Key。 */

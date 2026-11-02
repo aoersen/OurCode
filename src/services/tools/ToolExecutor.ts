@@ -10,6 +10,8 @@ import { truncateToolOutput, ToolOutputLimits, shouldSpill, buildSpillPreview } 
 import { runWithTimeout } from './withTimeout'
 import { redactSecrets, type RedactSecretsOptions } from '@/services/llm/redact'
 import { writeToolPaths } from './writePaths'
+import { analyzeActionDanger } from '@shared/computerPolicy'
+import type { CuaActionKind } from '@shared/computer'
 
 /** Execution context for one tool call (falls back to the shared session context) */
 export interface ToolExecuteContext {
@@ -572,9 +574,49 @@ export class ToolExecutor {
     }
   }
 
+  /** Approval-card text for a desktop action: which window, which target, what risk. */
+  private previewComputerCall(toolCall: ToolCall): string {
+    const args = toolCall.arguments ?? {}
+    const app = String(args.app ?? args.target ?? '(未指定应用)')
+    const target =
+      args.element_index !== undefined
+        ? `元素 [${args.element_index}]`
+        : args.x !== undefined
+          ? `坐标 (${args.x}, ${args.y})`
+          : ''
+    const kindMap: Record<string, CuaActionKind> = {
+      computer_click: 'click',
+      computer_type: 'type',
+      computer_key: 'key',
+      computer_set_value: 'setValue',
+      computer_scroll: 'scroll',
+      computer_drag: 'drag',
+      computer_launch_app: 'launch',
+      computer_run_steps: 'click',
+      computer_screenshot: 'click',
+    }
+    const lines = [`桌面操作：${app}${target ? ` · ${target}` : ''}`]
+    if (args.text !== undefined) lines.push(`输入 ${String(args.text).length} 个字符：${String(args.text).slice(0, 80)}`)
+    if (args.value !== undefined) lines.push(`赋值 ${String(args.value).length} 个字符：${String(args.value).slice(0, 80)}`)
+    if (args.keys) lines.push(`按键 ${String(args.keys)}`)
+    if (Array.isArray(args.steps)) lines.push(`批量 ${args.steps.length} 步`)
+    if (toolCall.name === 'computer_screenshot') lines.push('仅截图，不改动界面')
+    const danger = analyzeActionDanger({
+      kind: kindMap[toolCall.name] ?? 'click',
+      appIdentity: app,
+      text: String(args.text ?? args.value ?? ''),
+      path: String(args.path ?? ''),
+    })
+    if (danger.danger) lines.push(`⚠ 高危：${danger.danger.reason}（需要用户明确同意后才可执行）`)
+    return lines.join('\n')
+  }
+
   /** Get a preview of what a tool call will do (for approval dialog) */
-  getPreview(toolCall: ToolCall): string {
-    const args = toolCall.arguments
+  getPreview(toolCall: ToolCall): string {    const args = toolCall.arguments
+    // 电脑操控：审批卡必须说清「操作哪个窗口的什么」，否则用户无从判断。
+    if (toolCall.name.startsWith('computer_')) {
+      return this.previewComputerCall(toolCall)
+    }
     switch (toolCall.name) {
       case 'write_file':
         return `Write to: ${args.path}\nContent length: ${(args.content || '').length} chars`
