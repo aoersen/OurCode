@@ -607,8 +607,15 @@ export class ToolExecutor {
         }`
       case 'git_push':
         return `git push ${[args.remote, args.branch].filter(Boolean).join(' ') || '(当前分支到 origin)'}`
-      case 'web_search':
-        return `Web search: ${args.query}`
+      case 'web_search': {
+        const extras = [
+          args.site ? `site:${args.site}` : '',
+          args.lang ? `lang:${args.lang}` : '',
+          args.after ? `after:${args.after}` : '',
+          args.before ? `before:${args.before}` : '',
+        ].filter(Boolean)
+        return `Web search: ${args.query}${extras.length ? ` (${extras.join(', ')})` : ''}`
+      }
       case 'read_url':
         return `Read URL: ${args.url}`
       case 'manage_todo':

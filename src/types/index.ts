@@ -3,6 +3,7 @@ export * from '@shared/types'
 export * from '@shared/constants'
 
 import type { ClawChannelId } from '@shared/types'
+import type { HostedFetchInput, HostedFetchResult, WebSearchInput, WebSearchResult } from '@shared/webTools'
 
 // Electron API type
 export interface ElectronAPI {
@@ -163,10 +164,12 @@ export interface ElectronAPI {
   wireLogDeleteSession: (sessionId: string) => Promise<void>
   wireLogOpenDir: () => Promise<boolean>
 
-  // Web fetch (web_search / read_url tools)
+  // Web tools (web_search / read_url)
   webFetch: (url: string, options?: { timeoutMs?: number; maxBytes?: number }) => Promise<{
     ok: boolean; status?: number; contentType?: string; finalUrl?: string; text?: string; error?: string
   }>
+  webSearch: (input: WebSearchInput) => Promise<WebSearchResult>
+  webFetchHosted: (input: HostedFetchInput) => Promise<HostedFetchResult>
 
   // LLM HTTP bridge — main-process net.fetch (no CORS), supports streaming
   llmHttp: (req: {

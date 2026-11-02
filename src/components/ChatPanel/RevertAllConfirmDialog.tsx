@@ -72,7 +72,7 @@ export default function RevertAllConfirmDialog() {
           {t('chat.filesChangedRevertAllBodySuffix')}
         </p>
         {list.length > 0 && (
-          <div className="bg-[#f8fafc] dark:bg-white/5 rounded-lg p-3 flex flex-col gap-2 border border-nova-border max-h-48 overflow-y-auto">
+          <div className="bg-[var(--surface-sunken)] rounded-lg p-3 flex flex-col gap-2 border border-nova-border max-h-48 overflow-y-auto">
             {list.map((p) => (
               <div key={p} className="flex items-center gap-2 text-nova-text-secondary min-w-0">
                 <MSIcon name="description" className="text-[15px] leading-none text-nova-text-muted shrink-0" />

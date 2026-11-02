@@ -49,6 +49,36 @@ function hostOf(base: string): string {
   }
 }
 
+/** Hosts that serve OpenAI-style chat completions directly at the host root. */
+const HOSTS_WITHOUT_VERSION = new Set([
+  'api.perplexity.ai',
+  'models.inference.ai.azure.com',
+  'api.githubcopilot.com',
+])
+
+/**
+ * Root to which `/chat/completions` / `/models` should be appended for
+ * OpenAI-style formats.
+ *
+ * Vendors spell their base URL differently: `…/v1` (OpenAI), `…/api/paas/v4`
+ * (Zhipu), `…/api/v3` (Volcengine), `…/v1/openai` (DeepInfra), `…/openai`
+ * (LongCat) or no version at all (Perplexity). Treating every non-`/v1` base as
+ * a bare host would produce `…/v4/v1/chat/completions`, so detect the version
+ * segment instead of hard-coding `/v1`.
+ */
+function openAiRoot(base: string): string {
+  const b = trimTrailingSlash(base)
+  const lower = b.toLowerCase()
+  // Version already present, optionally followed by /openai (or /openai then
+  // the version, as some relays expose).
+  if (/\/v\d+[a-z]*(\/openai)?$/.test(lower)) return b
+  if (/\/openai\/v\d+[a-z]*$/.test(lower)) return b
+  // Vendor root without a version segment: /openai → /openai/v1 (LongCat).
+  if (lower.endsWith('/openai')) return `${b}/v1`
+  if (HOSTS_WITHOUT_VERSION.has(hostOf(b))) return b
+  return `${b}/v1`
+}
+
 /**
  * Build the final chat-request URL for a request format.
  *
@@ -60,15 +90,13 @@ export function buildChatUrl(baseUrl: string, format: EndpointFormat, model?: st
   const base = trimTrailingSlash(baseUrl)
 
   switch (format) {
-    case 'openai': // POST /v1/chat/completions
+    case 'openai': // POST /chat/completions
       if (endsWithPath(base, '/chat/completions')) return base
-      if (endsWithPath(base, '/v1')) return `${base}/chat/completions`
-      return `${base}/v1/chat/completions`
+      return `${openAiRoot(base)}/chat/completions`
 
-    case 'responses': // POST /v1/responses
+    case 'responses': // POST /responses
       if (endsWithPath(base, '/responses')) return base
-      if (endsWithPath(base, '/v1')) return `${base}/responses`
-      return `${base}/v1/responses`
+      return `${openAiRoot(base)}/responses`
 
     case 'anthropic': // POST /v1/messages (official) or /anthropic/v1/messages (gateway)
       if (endsWithPath(base, '/messages')) return base
@@ -101,14 +129,13 @@ export function buildModelsUrl(baseUrl: string, format: EndpointFormat): string 
   const base = trimTrailingSlash(baseUrl)
 
   switch (format) {
-    case 'openai': // GET /v1/models
+    case 'openai': // GET /models
     case 'responses': {
       if (endsWithPath(base, '/models')) return base
       // A user may have pasted a full chat endpoint as the base URL; recover the
       // base before appending the models path so the derived URL stays sane.
       const stripped = stripTrailingPath(stripTrailingPath(base, '/chat/completions'), '/responses')
-      if (endsWithPath(stripped, '/v1')) return `${stripped}/models`
-      return `${stripped}/v1/models`
+      return `${openAiRoot(stripped)}/models`
     }
 
     case 'gemini': // GET /v1beta/models

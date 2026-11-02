@@ -93,6 +93,8 @@ export class GeminiAdapter implements LLMAdapter {
         functionDeclarations: [{ name: t.function.name, description: t.function.description, parameters: t.function.parameters }],
       }))
     }
+    // Per-model config overrides (reasoning param mapping) win over defaults.
+    Object.assign(body, req.extraBody)
 
     const response = await llmFetch(url, {
       method: 'POST',

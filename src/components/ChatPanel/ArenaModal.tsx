@@ -4,7 +4,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { runArenaPrompt, ArenaResult } from '@/services/arena'
 import MarkdownRenderer from '../Common/MarkdownRenderer'
 import ModalPortal from '../Common/ModalPortal'
-import { lookupModelMetadata } from '@/types'
+import { getKnownContextWindow } from '@/services/llm/modelDefaults'
 import { useI18n } from '@/i18n/useI18n'
 
 function getProviderFromModelId(modelId: string): string {
@@ -17,8 +17,12 @@ function getProviderFromModelId(modelId: string): string {
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
-  openai: '#10a37f', anthropic: '#d47757', google: '#4285f4', deepseek: '#4f46e5', other: '#2563eb',
+  openai: '#10a37f', anthropic: '#d47757', google: '#4285f4', deepseek: '#4f46e5', other: 'var(--accent)',
 }
+
+/** 半透明同色底：token 色不能用 `#rrggbb` + alpha 后缀拼接（`var(--accent)20`
+ *  不是合法颜色），统一走 color-mix。 */
+const tint = (color: string, percent: number) => `color-mix(in srgb, ${color} ${percent}%, transparent)`
 
 /**
  * Arena — parallel model comparison. Run the same prompt on
@@ -110,7 +114,7 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
             <span className="text-lg">⚖️</span>
             <div>
               <strong className="text-sm text-nova-text-primary">{t('chat.arenaCompare')}</strong>
-              <div className="text-[10px] text-nova-text-muted">{t('chat.arenaSubtitle')}</div>
+              <div className="text-[11px] text-nova-text-muted">{t('chat.arenaSubtitle')}</div>
             </div>
           </div>
           <button onClick={onClose} className="text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover p-1 rounded transition-colors">
@@ -137,15 +141,15 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
                   const provider = getProviderFromModelId(id)
                   return (
                     <span key={id}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border border-nova-accent/40 bg-nova-accent/10 text-nova-accent">
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: PROVIDER_COLORS[provider] || '#2563eb' }} />
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border border-nova-accent/40 bg-nova-accent/10 text-nova-accent">
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: PROVIDER_COLORS[provider] || 'var(--accent)' }} />
                       <span className="truncate max-w-[100px]">{id.split('/').pop() || id}</span>
                       <button onClick={() => toggleModel(id)} className="text-nova-text-muted hover:text-red-400 ml-0.5">×</button>
                     </span>
                   )
                 })}
                 {selected.length === 0 && (
-                  <span className="text-[10px] text-nova-text-muted">{t('chat.arenaNoModels')}</span>
+                  <span className="text-[11px] text-nova-text-muted">{t('chat.arenaNoModels')}</span>
                 )}
               </div>
             </div>
@@ -214,23 +218,23 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
           {/* Duration comparison bar */}
           {results.length > 0 && (
             <div className="mb-4 p-3 bg-nova-card/70 rounded-xl border border-nova-border">
-              <div className="text-[10px] font-semibold text-nova-text-muted uppercase tracking-wider mb-2">⏱ 响应耗时对比</div>
+              <div className="text-[11px] font-semibold text-nova-text-muted uppercase tracking-wider mb-2">⏱ 响应耗时对比</div>
               <div className="space-y-1.5">
                 {results.map((r) => {
                   const pct = maxDuration > 0 ? (r.durationMs / maxDuration) * 100 : 0
                   return (
                     <div key={r.model} className="flex items-center gap-2">
-                      <span className="text-[10px] text-nova-text-secondary w-[120px] truncate shrink-0">{r.model}</span>
+                      <span className="text-[11px] text-nova-text-secondary w-[120px] truncate shrink-0">{r.model}</span>
                       <div className="flex-1 h-3 bg-nova-hover rounded-full overflow-hidden">
                         <div
                           className="h-full rounded-full transition-all duration-500"
                           style={{
                             width: `${pct}%`,
-                            background: r.error ? '#ef4444' : `linear-gradient(90deg, var(--accent), #8b5cf6)`,
+                            background: r.error ? 'var(--error)' : `linear-gradient(90deg, var(--accent), #8b5cf6)`,
                           }}
                         />
                       </div>
-                      <span className="text-[10px] text-nova-text-muted font-mono w-[40px] text-right shrink-0">
+                      <span className="text-[11px] text-nova-text-muted font-mono w-[40px] text-right shrink-0">
                         {r.error ? '❌' : `${(r.durationMs / 1000).toFixed(1)}s`}
                       </span>
                     </div>
@@ -243,7 +247,7 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
           {/* Result cards */}
           <div className="grid gap-3" style={{ gridTemplateColumns: results.length > 1 ? 'repeat(auto-fit, minmax(260px, 1fr))' : '1fr' }}>
             {results.map((r) => {
-              const meta = lookupModelMetadata(r.model)
+              const contextWindow = getKnownContextWindow(r.model)
               const provider = getProviderFromModelId(r.model)
               const isFastest = r.durationMs === Math.min(...results.filter((x) => !x.error).map((x) => x.durationMs))
               return (
@@ -251,20 +255,22 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
                   {/* Card header */}
                   <div className="flex items-center gap-2 px-3 py-2.5 border-b border-nova-border/60 bg-nova-hover/20">
                     <div className="w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold shrink-0"
-                      style={{ background: `${PROVIDER_COLORS[provider] || '#2563eb'}20`, color: PROVIDER_COLORS[provider] || '#2563eb' }}>
+                      style={{ background: tint(PROVIDER_COLORS[provider] || 'var(--accent)', 13), color: PROVIDER_COLORS[provider] || 'var(--accent)' }}>
                       {provider.charAt(0).toUpperCase()}
                     </div>
                     <div className="min-w-0 flex-1">
                       <span className="text-xs font-medium text-nova-text-primary truncate block">{r.model.split('/').pop() || r.model}</span>
-                      {meta?.contextWindow && (
-                        <span className="text-[11px] text-nova-text-muted">{Math.round(meta.contextWindow / 1000)}K context</span>
+                      {contextWindow && (
+                        <span className="text-[11px] text-nova-text-muted">
+                          {contextWindow >= 1048576 ? `${Math.round(contextWindow / 1048576)}M` : `${Math.round(contextWindow / 1000)}K`} context
+                        </span>
                       )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       {isFastest && !r.error && (
                         <span className="text-[11px] px-1 py-0.5 rounded bg-green-500/15 text-green-400">最快 🚀</span>
                       )}
-                      <span className="text-[10px] text-nova-text-muted font-mono">
+                      <span className="text-[11px] text-nova-text-muted font-mono">
                         {(r.durationMs / 1000).toFixed(1)}s
                       </span>
                     </div>
@@ -306,9 +312,9 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
           {running && results.length === 0 && (
             <div className="flex flex-col items-center justify-center gap-4 py-12">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full animate-think-bounce" style={{ background: '#838485' }} />
-                <span className="w-2 h-2 rounded-full animate-think-bounce" style={{ background: '#838485', animationDelay: '0.2s' }} />
-                <span className="w-2 h-2 rounded-full animate-think-bounce" style={{ background: '#838485', animationDelay: '0.4s' }} />
+                <span className="w-2 h-2 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)' }} />
+                <span className="w-2 h-2 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)', animationDelay: '0.2s' }} />
+                <span className="w-2 h-2 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)', animationDelay: '0.4s' }} />
               </div>
               <div className="text-sm text-nova-text-muted">{t('chat.arenaInferring')}</div>
               <div className="text-[11px] text-nova-text-muted">
@@ -321,7 +327,7 @@ export default function ArenaModal({ onClose }: { onClose: () => void }) {
         {/* Adopt all button */}
         {results.length > 0 && results.some((r) => !r.error && r.content) && (
           <div className="px-5 py-3 border-t border-nova-border shrink-0 flex items-center justify-between">
-            <span className="text-[10px] text-nova-text-muted">
+            <span className="text-[11px] text-nova-text-muted">
               点击「采纳此回答」将单个结果添加到对话 · 或
             </span>
             <button

@@ -2,7 +2,7 @@ import { useState, useMemo, lazy, Suspense } from 'react'
 import { useConfigStore, setLastModelForGroup } from '@/stores/configStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
-import { lookupModelMetadata } from '@/types'
+import { getKnownContextWindow } from '@/services/llm/modelDefaults'
 
 const ModelCompareView = lazy(() => import('./ModelCompareView'))
 
@@ -20,8 +20,12 @@ function getProviderFromModelId(modelId: string): string {
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
-  openai: '#10a37f', anthropic: '#d47757', google: '#4285f4', deepseek: '#4f46e5', groq: '#f97316', other: '#2563eb',
+  openai: '#10a37f', anthropic: '#d47757', google: '#4285f4', deepseek: '#4f46e5', groq: '#f97316', other: 'var(--accent)',
 }
+
+/** 半透明同色底：token 色不能用 `#rrggbb` + alpha 后缀拼接（`var(--accent)20`
+ *  不是合法颜色），统一走 color-mix。 */
+const tint = (color: string, percent: number) => `color-mix(in srgb, ${color} ${percent}%, transparent)`
 
 export default function ModelSelector() {
   const models = useConfigStore((s) => s.models)
@@ -57,6 +61,10 @@ export default function ModelSelector() {
     activeSession ? s.configGroups.find((g) => g.id === activeSession.configGroupId) : undefined
   )
   const currentModel = activeSession?.model || sessionConfigGroup?.defaultModel || activeGroup?.defaultModel || ''
+  // Effective window: the enriched list entry already merges custom config →
+  // curated table → catalog; fall back for models not in the current list.
+  const currentModelContext = models.find((m) => m.id === currentModel)?.contextWindow
+    ?? getKnownContextWindow(currentModel)
 
   // Filter models of the currently selected provider
   const filteredModels = useMemo(() => {
@@ -103,7 +111,7 @@ export default function ModelSelector() {
           onClick={() => { setShowProviderMenu(!showProviderMenu); setShowModelList(false) }}
           className="flex items-center gap-1.5 py-1.5 pl-2.5 pr-2 bg-nova-input-bg text-nova-text-secondary rounded-full border border-nova-border text-xs hover:border-nova-accent/40 transition-colors max-w-[45%]"
         >
-          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: activeGroup?.color || '#6C9EFF' }} />
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: activeGroup?.color || 'var(--accent)' }} />
           <span className="truncate">{activeGroup?.name || '选择提供商'}</span>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 opacity-60"><polyline points="6 9 12 15 18 9" /></svg>
         </button>
@@ -116,9 +124,9 @@ export default function ModelSelector() {
           {currentModel ? (
             <>
               <span className="truncate">{currentModel}</span>
-              {lookupModelMetadata(currentModel)?.contextWindow && (
-                <span className="text-[10px] text-nova-text-muted shrink-0">
-                  {Math.round((lookupModelMetadata(currentModel)?.contextWindow || 0) / 1000)}K
+              {currentModelContext && (
+                <span className="text-[11px] text-nova-text-muted shrink-0">
+                  {currentModelContext >= 1048576 ? `${Math.round(currentModelContext / 1048576)}M` : `${Math.round(currentModelContext / 1000)}K`}
                 </span>
               )}
             </>
@@ -153,7 +161,7 @@ export default function ModelSelector() {
           {configGroups.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
               <div className="text-xs font-medium text-nova-text-primary">还没有 API 配置</div>
-              <div className="text-[10px] text-nova-text-muted">添加一个提供商后即可选择模型</div>
+              <div className="text-[11px] text-nova-text-muted">添加一个提供商后即可选择模型</div>
               <button
                 onClick={() => { setShowProviderMenu(false); openSettings() }}
                 className="mt-1 px-3 py-1.5 text-[11px] bg-nova-accent text-white rounded-lg hover:opacity-90 transition-opacity">
@@ -162,7 +170,7 @@ export default function ModelSelector() {
             </div>
           ) : (
             <div className="py-1">
-              <div className="text-[10px] font-semibold text-nova-text-muted uppercase tracking-wider px-3 py-1.5">选择 API 配置（提供商）</div>
+              <div className="text-[11px] font-semibold text-nova-text-muted uppercase tracking-wider px-3 py-1.5">选择 API 配置（提供商）</div>
               {configGroups.map((g) => {
                 const active = g.id === activeConfigGroupId
                 return (
@@ -170,10 +178,10 @@ export default function ModelSelector() {
                     className={`flex items-center gap-2.5 w-full px-3.5 py-2 text-left transition-colors ${
                       active ? 'bg-nova-accent/10' : 'hover:bg-nova-hover'
                     }`}>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: g.color || '#6C9EFF' }} />
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: g.color || 'var(--accent)' }} />
                     <span className="flex-1 min-w-0">
                       <span className="block text-[12px] font-medium text-nova-text-primary truncate">{g.name}</span>
-                      <span className="block text-[10px] text-nova-text-muted truncate font-mono">{g.baseUrl}</span>
+                      <span className="block text-[11px] text-nova-text-muted truncate font-mono">{g.baseUrl}</span>
                     </span>
                     {active && <span className="text-[11px] text-nova-accent shrink-0">✓</span>}
                   </button>
@@ -201,13 +209,13 @@ export default function ModelSelector() {
               {/* Filters */}
               <div className="flex items-center gap-1.5 px-2.5 py-1.5">
                 <button onClick={() => setFreeOnly(!freeOnly)}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] rounded-full border transition-colors ${
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-full border transition-colors ${
                     freeOnly ? 'bg-green-500/15 text-green-400 border-green-500/40' : 'bg-nova-hover text-nova-text-muted border-transparent hover:text-nova-text-secondary'
                   }`}>
                   免费 {freeCount > 0 && `(${freeCount})`}
                 </button>
                 <button onClick={() => setShowFavorites(!showFavorites)}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] rounded-full border transition-colors ${
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-full border transition-colors ${
                     showFavorites ? 'bg-yellow-500/15 text-yellow-400 border-yellow-500/40' : 'bg-nova-hover text-nova-text-muted border-transparent hover:text-nova-text-secondary'
                   }`}>
                   ★ 收藏
@@ -239,7 +247,7 @@ export default function ModelSelector() {
               {models.length === 0 ? (
                 <>
                   <div className="text-xs font-medium text-nova-text-primary">暂无模型</div>
-                  <div className="text-[10px] text-nova-text-muted">点「刷新」从接口拉取，或在设置里添加模型</div>
+                  <div className="text-[11px] text-nova-text-muted">点「刷新」从接口拉取，或在设置里添加模型</div>
                   <button onClick={() => fetchModels()} className="mt-1 px-3 py-1.5 text-[11px] bg-nova-hover text-nova-text-secondary rounded-lg hover:text-nova-text-primary transition-colors">
                     刷新获取模型
                   </button>
@@ -254,7 +262,6 @@ export default function ModelSelector() {
           {!isLoadingModels && filteredModels.length > 0 && (
             <div className="max-h-[220px] overflow-y-auto border-t border-nova-border">
               {filteredModels.slice(0, 50).map((model) => {
-                const meta = lookupModelMetadata(model.id)
                 const provider = getProviderFromModelId(model.id)
                 return (
                   <div
@@ -272,27 +279,27 @@ export default function ModelSelector() {
 
                     {/* Provider icon */}
                     <div className="w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-bold shrink-0"
-                      style={{ background: `${PROVIDER_COLORS[provider] || '#2563eb'}20`, color: PROVIDER_COLORS[provider] || '#2563eb' }}>
+                      style={{ background: tint(PROVIDER_COLORS[provider] || 'var(--accent)', 13), color: PROVIDER_COLORS[provider] || 'var(--accent)' }}>
                       {provider.charAt(0).toUpperCase()}
                     </div>
 
                     {/* Info */}
                     <div className="flex-1 min-w-0">
                       <div className="text-[12px] font-medium text-nova-text-primary truncate">{model.alias || model.id}</div>
-                      <div className="text-[10px] text-nova-text-muted">{provider}</div>
+                      <div className="text-[11px] text-nova-text-muted">{provider}</div>
                     </div>
 
                     {/* Meta tags */}
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {meta?.contextWindow && (
+                      {model.contextWindow && (
                         <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-hover text-nova-text-muted">
-                          {meta.contextWindow >= 1048576 ? `${Math.round(meta.contextWindow / 1048576)}M` : `${Math.round(meta.contextWindow / 1000)}K`}
+                          {model.contextWindow >= 1048576 ? `${Math.round(model.contextWindow / 1048576)}M` : `${Math.round(model.contextWindow / 1000)}K`}
                         </span>
                       )}
-                      {meta?.vision && (
+                      {model.vision && (
                         <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-accent/10 text-nova-accent">👁 视觉</span>
                       )}
-                      {meta?.functionCall && (
+                      {model.functionCall && (
                         <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-nova-accent/10 text-nova-accent">⚡ 函数调用</span>
                       )}
                       {model.isFree && (
@@ -303,7 +310,7 @@ export default function ModelSelector() {
                 )
               })}
               {filteredModels.length > 50 && (
-                <div className="text-[10px] text-nova-text-muted text-center py-2">还有 {filteredModels.length - 50} 个模型...</div>
+                <div className="text-[11px] text-nova-text-muted text-center py-2">还有 {filteredModels.length - 50} 个模型...</div>
               )}
             </div>
           )}
@@ -323,7 +330,6 @@ export default function ModelSelector() {
       {favoriteModels.length > 0 && (
         <div className="flex gap-2 overflow-x-auto py-1">
           {favoriteModels.map((m) => {
-            const meta = lookupModelMetadata(m.id)
             const provider = getProviderFromModelId(m.id)
             return (
               <button
@@ -335,12 +341,12 @@ export default function ModelSelector() {
                     : 'border-nova-border bg-nova-card hover:border-nova-accent/50'
                 }`}
               >
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: PROVIDER_COLORS[provider] || '#2563eb' }} />
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: PROVIDER_COLORS[provider] || 'var(--accent)' }} />
                 <span className="text-[11px] font-medium text-nova-text-primary">{m.alias || m.id}</span>
-                {meta?.contextWindow && (
-                  <span className="text-[11px] text-nova-text-muted">{Math.round(meta.contextWindow / 1000)}K</span>
+                {m.contextWindow && (
+                  <span className="text-[11px] text-nova-text-muted">{m.contextWindow >= 1048576 ? `${Math.round(m.contextWindow / 1048576)}M` : `${Math.round(m.contextWindow / 1000)}K`}</span>
                 )}
-                <span className="text-[10px] text-yellow-400">★</span>
+                <span className="text-[11px] text-yellow-400">★</span>
               </button>
             )
           })}

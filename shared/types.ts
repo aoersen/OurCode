@@ -1,5 +1,6 @@
 // Shared types between main and renderer processes
 import type { ClawAccessPolicy, ClawChannelId } from './claw'
+import type { ModelCapability, ModelModality, ReasoningLevel } from './modelCatalog'
 
 export type { ClawAccessPolicy, ClawChannelId }
 
@@ -549,6 +550,18 @@ export interface UserPreferences {
   clawConfigGroupId?: string
   /** Claw 会话使用的模型 id（留空 = 组的默认模型）。 */
   clawModelId?: string
+  /** web_search 后端：auto = 有 DeepSeek Key 用 DeepSeek，其次 SearXNG，然后 Bing，最后 DuckDuckGo；multi = 多源并发聚合。 */
+  webSearchProvider?: 'auto' | 'multi' | 'deepseek' | 'searxng' | 'bing' | 'brave' | 'duckduckgo'
+  /** DeepSeek Search/Fetch API Key；留空时自动复用官方 DeepSeek 配置组的 Key。 */
+  webSearchDeepseekApiKey?: string
+  /** DeepSeek API Base URL；默认 https://api.deepseek.com（也可填 …/v1）。 */
+  webSearchDeepseekBaseUrl?: string
+  /** SearXNG 实例地址；需在 settings.yml 的 search.formats 中开启 json。 */
+  webSearchSearxngUrl?: string
+  /** read_url 抓取方式：auto = 本地抽取优先，失败或正文过短时回退 DeepSeek Fetch。 */
+  webFetchProvider?: 'auto' | 'local' | 'deepseek'
+  /** 允许 read_url 访问内网/本地地址（默认关闭；会带来 SSRF 风险）。 */
+  webFetchAllowPrivate?: boolean
 }
 
 // Model Info
@@ -559,6 +572,11 @@ export interface ModelInfo {
   isFavorite: boolean
   alias?: string
   contextWindow?: number // context window size in tokens
+  maxOutputTokens?: number // vendor default cap on a single reply
+  inputModalities?: ModelModality[]
+  outputModalities?: ModelModality[]
+  capabilities?: ModelCapability[]
+  reasoningLevels?: ReasoningLevel[]
   vision?: boolean
   functionCall?: boolean
 }
@@ -609,6 +627,10 @@ export interface LLMRequest {
   // Deep thinking (reasoning models); optional so non-chat request builders stay compatible
   thinking?: boolean
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
+  /** Per-model extra request-body fields from the model config's reasoning
+   *  mapping (e.g. { reasoning_effort: 'low' }). Merged last by each adapter,
+   *  so it can override vendor defaults but not auth/headers. */
+  extraBody?: Record<string, unknown>
   /** Internal: emit provider prompt-caching markers (e.g. Anthropic cache_control).
    *  Set by the client when the user enabled prompt caching — not part of the
    *  cache key. */
@@ -656,6 +678,16 @@ export interface CustomModel {
   name: string
   provider: ApiConfigGroup['provider']
   contextWindow?: number
+  /** Default cap on a single reply; 0/undefined means "provider default". */
+  maxOutputTokens?: number
+  inputModalities?: ModelModality[]
+  outputModalities?: ModelModality[]
+  capabilities?: ModelCapability[]
+  /** Thinking levels the model accepts (metadata shown in the config editor). */
+  reasoningLevels?: ReasoningLevel[]
+  /** JSON object mapping a thinking level to extra request-body fields, e.g.
+   *  {"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}. */
+  reasoningParamMap?: string
   vision?: boolean
   functionCall?: boolean
   createdAt: number

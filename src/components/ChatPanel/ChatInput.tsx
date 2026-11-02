@@ -8,10 +8,26 @@ import { filterSlashCommands, buildSlashPrompt, getEditorSlashContext, getAllSla
 import { takePendingVibeReplace } from '@/services/vibeReplace'
 import { useI18n } from '@/i18n/useI18n'
 import type { TranslationKey } from '@/i18n'
+import { useContextUsage } from '@/hooks/useContextUsage'
+import ContextUsageRing from '@/components/Common/ContextUsageRing'
+import ContextBreakdownPopover from './ContextBreakdownPopover'
+import { formatTokenCount } from '@/services/llm/contextUsage'
 import { dragSource } from '../Sidebar/FileTreeNode'
 import FileChip from './FileChip'
 import { isPathInside, makeFileLink, extractPathsFromUriList, basename } from '@/utils/fileRefs'
 import { isComposingEvent } from '@/utils/composition'
+import {
+  DEFAULT_STT_CONFIG,
+  SttConfig,
+  SttSource,
+  VoiceRecorder,
+  isRecordingSupported,
+  isSttConfigured,
+  loadSttConfig,
+  resolveSttConfig,
+  saveSttConfig,
+  transcribeRecording,
+} from '@/services/speech/stt'
 import { fileToImageAttachment, imageAttachmentDataUrl, isImageFile, MAX_IMAGES_PER_MESSAGE } from '@/utils/imageAttach'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -132,43 +148,112 @@ export default function ChatInput({
    *  图片是真正的多模态内容，会编码进 LLM 请求。 */
   const [images, setImages] = useState<MessageAttachment[]>([])
   const imageInputRef = useRef<HTMLInputElement>(null)
-  const recognitionRef = useRef<{ stop: () => void } | null>(null)
   const t = useI18n()
 
-  // Voice input via the Web Speech API (Ctrl+Shift+M is taken by the Problems panel)
-  const toggleVoiceInput = () => {
-    const SR = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition
-    if (!SR) {
-      alert(t('chat.voiceUnsupported'))
-      return
+  // 空态 starter 建议：点击后只把提示词填进输入框（不直接发送，用户还能改）。
+  // 用 CustomEvent 解耦 —— 空态渲染在 ChatMessages，输入框在这里，两者没有
+  // 父子关系，走 store 或事件比层层透传 props 更轻。
+  useEffect(() => {
+    const onFill = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text
+      if (!text) return
+      setInput(text)
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus()
+        textareaRef.current?.setSelectionRange(text.length, text.length)
+      })
     }
+    window.addEventListener('ourcode:fill-input', onFill)
+    return () => window.removeEventListener('ourcode:fill-input', onFill)
+  }, [])
+
+  // ── Voice input ──
+  // 录音走 MediaRecorder，转写走主进程的 OpenAI 兼容端点（见 services/speech/stt.ts）。
+  // 旧的 webkitSpeechRecognition 路径已删除：Electron 官方构建不带 Google 语音
+  // API key，start() 之后必然以 error='network' 结束，国内网络更不可能通。
+  //
+  // 端点优先级：用户手填 > 随包分发的内置引擎 > 本机 whisper 服务探测。
+  // 所以「客户什么都不配」时默认就走内置引擎，不需要联网也不需要填任何东西。
+  const recorderRef = useRef<VoiceRecorder | null>(null)
+  const activeCfgRef = useRef<SttConfig | null>(null)
+  const [voiceBusy, setVoiceBusy] = useState(false)
+  const [voiceSource, setVoiceSource] = useState<SttSource | null>(null)
+  const [showVoiceSetup, setShowVoiceSetup] = useState(false)
+  const [sttDraft, setSttDraft] = useState<SttConfig>(() => loadSttConfig())
+
+  /** 转写结果追加到草稿末尾（中文之间不加空格，接续原文更自然）。 */
+  const appendTranscript = (text: string) => {
+    setInput((prev) => {
+      const needsSpace = prev.length > 0 && !/\s$/.test(prev) && /[A-Za-z0-9]$/.test(prev)
+      return prev + (needsSpace ? ' ' : '') + text
+    })
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }
+
+  const voiceErrorText = (err: unknown): string => {
+    const code = err instanceof Error ? err.message : String(err)
+    if (code === 'empty-recording') return t('chat.voiceEmpty')
+    if (code === 'stt-not-configured') return t('chat.voiceNotConfigured')
+    if (code === 'empty-transcript') return t('chat.voiceNoSpeech')
+    if (code === 'speech-bridge-missing') return t('chat.voiceBridgeMissing')
+    return t('chat.voiceTranscribeFailed', { error: code })
+  }
+
+  const toggleVoiceInput = async () => {
+    if (voiceBusy) return
+    const notify = useUIStore.getState().showNotification
+
+    // 再点一次 = 结束录音并转写
     if (listening) {
-      recognitionRef.current?.stop()
+      const rec = recorderRef.current
+      const cfg = activeCfgRef.current ?? loadSttConfig()
+      recorderRef.current = null
+      activeCfgRef.current = null
       setListening(false)
+      if (!rec) return
+      setVoiceBusy(true)
+      try {
+        const recording = await rec.stop()
+        const text = await transcribeRecording(recording, cfg)
+        appendTranscript(text)
+      } catch (err) {
+        notify(voiceErrorText(err), 'error')
+      } finally {
+        setVoiceBusy(false)
+      }
       return
     }
+
+    if (!isRecordingSupported()) {
+      notify(t('chat.voiceUnsupported'), 'warning')
+      return
+    }
+
+    const { config, source } = await resolveSttConfig(loadSttConfig())
+    setVoiceSource(source)
+    if (source === 'none') {
+      // 没有可用端点：说明原因 + 给手动入口，同时告诉用户输入法那条零配置路径
+      notify(t('chat.voiceNoEndpoint'), 'warning')
+      setSttDraft(loadSttConfig())
+      setShowVoiceSetup(true)
+      return
+    }
+
+    const rec = new VoiceRecorder()
     try {
-      const rec = new SR()
-      rec.lang = 'zh-CN'
-      rec.interimResults = false
-      rec.continuous = false
-      rec.onresult = (e: any) => {
-        const text = e?.results?.[0]?.[0]?.transcript
-        if (text) {
-          setInput((prev) => (prev ? prev + ' ' : '') + text)
-          textareaRef.current?.focus()
-        }
-      }
-      rec.onend = () => setListening(false)
-      rec.onerror = () => setListening(false)
-      recognitionRef.current = rec
-      rec.start()
+      await rec.start()
+      activeCfgRef.current = config
+      recorderRef.current = rec
       setListening(true)
-    } catch {
-      alert(t('chat.voiceStartFailed'))
-      setListening(false)
+    } catch (err) {
+      rec.cancel()
+      const code = err instanceof Error ? err.message : String(err)
+      notify(code === 'recording-unsupported' ? t('chat.voiceUnsupported') : t('chat.voiceStartFailed'), 'error')
     }
   }
+
+  // 组件卸载 / 切会话时松掉麦克风，否则系统录音指示灯一直亮
+  useEffect(() => () => { recorderRef.current?.cancel(); recorderRef.current = null }, [])
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileSearchRef = useRef<HTMLDivElement>(null)
@@ -193,6 +278,24 @@ export default function ChatInput({
   })
   const activeConfigGroupId = useConfigStore((s) => s.activeConfigGroupId)
   const rootPath = useUIStore((s) => s.rootPath)
+
+  // Context-window gauge in the composer footer — same view model as the status
+  // bar and the warning banner. Its popover is anchored upward (the composer
+  // sits at the bottom edge) and the wrapper owns click-outside so the trigger
+  // and the card can live in one ref.
+  const contextUsage = useContextUsage()
+  const [showUsagePopover, setShowUsagePopover] = useState(false)
+  const usagePopoverRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!showUsagePopover) return
+    const onDown = (e: MouseEvent) => {
+      if (usagePopoverRef.current && !usagePopoverRef.current.contains(e.target as Node)) {
+        setShowUsagePopover(false)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [showUsagePopover])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -746,7 +849,7 @@ export default function ChatInput({
               <button
                 onClick={() => setImages((prev) => prev.filter((x) => x.id !== img.id))}
                 title={t('chat.removeImage')}
-                className="absolute -top-1.5 -right-1.5 hidden group-hover:flex w-4 h-4 items-center justify-center rounded-full bg-nova-surface border border-nova-border text-nova-text-muted hover:text-nova-text-primary text-[10px] leading-none"
+                className="absolute -top-1.5 -right-1.5 hidden group-hover:flex w-4 h-4 items-center justify-center rounded-full bg-nova-surface border border-nova-border text-nova-text-muted hover:text-nova-text-primary text-[11px] leading-none"
               >
                 ×
               </button>
@@ -778,7 +881,7 @@ export default function ChatInput({
               <div key={i} className="flex items-center gap-1.5 text-xs rounded px-2 py-1 hover:bg-nova-hover transition-colors">
                 <span className="flex-1 min-w-0 truncate">{msg.content || t('chat.imageOnly')}</span>
                 {msg.attachments?.length ? (
-                  <span className="shrink-0 text-[10px] text-nova-text-muted">🖼 {msg.attachments.length}</span>
+                  <span className="shrink-0 text-[11px] text-nova-text-muted">🖼 {msg.attachments.length}</span>
                 ) : null}
                 <button
                   onClick={() => sendQueuedNow(activeSessionId, i)}
@@ -875,11 +978,74 @@ export default function ChatInput({
           </div>
         )}
 
+        {/* 语音转写设置卡：只配一个 OpenAI 兼容端点即可（本地 whisper server
+            也算）。首次点麦克风且未配置时自动展开，不再弹「不支持」的死路。 */}
+        {showVoiceSetup && (
+          <div className="mb-2 rounded-xl border border-nova-border bg-nova-surface p-3 text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-nova-text-primary">{t('chat.voiceSetupTitle')}</span>
+              <button
+                onClick={() => setShowVoiceSetup(false)}
+                aria-label={t('chat.voiceSetupClose')}
+                className="w-5 h-5 rounded flex items-center justify-center text-nova-text-muted hover:bg-nova-hover hover:text-nova-text-primary"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-nova-text-muted leading-relaxed">
+              {voiceSource === 'builtin'
+                ? t('chat.voiceActiveBuiltin')
+                : voiceSource === 'local'
+                  ? t('chat.voiceActiveLocal')
+                  : isSttConfigured(sttDraft)
+                    ? t('chat.voiceActiveManual')
+                    : t('chat.voiceActiveAuto')}
+            </p>
+
+            {([
+              ['endpoint', t('chat.voiceEndpoint'), t('chat.voiceEndpointHint')],
+              ['apiKey', t('chat.voiceApiKey'), t('chat.voiceApiKeyHint')],
+              ['model', t('chat.voiceModel'), 'whisper-1'],
+              ['language', t('chat.voiceLanguage'), 'zh'],
+            ] as const).map(([field, label, hint]) => (
+              <label key={field} className="block">
+                <span className="text-nova-text-secondary">{label}</span>
+                <input
+                  value={sttDraft[field]}
+                  onChange={(e) => setSttDraft((prev) => ({ ...prev, [field]: e.target.value }))}
+                  placeholder={hint}
+                  spellCheck={false}
+                  className="mt-1 w-full rounded-md border border-nova-border bg-nova-input-bg px-2 py-1 text-nova-text-primary outline-none focus:border-nova-accent"
+                />
+              </label>
+            ))}
+
+            <p className="text-nova-text-muted leading-relaxed">{t('chat.voiceImeTip')}</p>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => { setSttDraft({ ...DEFAULT_STT_CONFIG }); saveSttConfig({ ...DEFAULT_STT_CONFIG }); setShowVoiceSetup(false) }}
+                className="px-2 py-1 rounded-md text-nova-text-muted hover:bg-nova-hover hover:text-nova-text-primary"
+              >
+                {t('chat.voiceReset')}
+              </button>
+              <button
+                onClick={() => { saveSttConfig(sttDraft); setShowVoiceSetup(false) }}
+                className="px-2.5 py-1 rounded-md bg-nova-accent text-white"
+              >
+                {t('chat.voiceSave')}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="chat-input-box overflow-hidden">
           {/* Attachment / context buttons row (above textarea) */}
           <div className="flex gap-0.5 px-2 pt-2">
             <button
               onClick={handleAddFile}
+              aria-label={t('chat.addFile')}
               className="p-1 text-nova-text-muted hover:text-nova-text-primary rounded transition-colors hover:bg-nova-hover shrink-0"
               title={t('chat.addFile')}
             >
@@ -889,6 +1055,7 @@ export default function ChatInput({
             </button>
             <button
               onClick={() => imageInputRef.current?.click()}
+              aria-label={t('chat.attachImage')}
               className="p-1 text-nova-text-muted hover:text-nova-text-primary rounded transition-colors hover:bg-nova-hover shrink-0"
               title={t('chat.attachImage')}
             >
@@ -913,7 +1080,9 @@ export default function ChatInput({
             />
           </div>
 
-          {/* Auto-grow textarea */}
+          {/* Auto-grow textarea. 默认三行：单行输入框在宽面板里显得局促，长
+              提示词一开始就只能看到一行。rows 同时是 auto-grow 的下限——
+              resize 用 scrollHeight 撑高，空内容时取的就是 rows 高度。 */}
           <textarea
             ref={textareaRef}
             value={input}
@@ -921,34 +1090,82 @@ export default function ChatInput({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={targetMode ? t('chat.targetModePlaceholder') : t('chat.inputPlaceholder')}
-            rows={1}
+            rows={3}
             disabled={!activeConfigGroupId}
             data-ai-input
-            className="w-full bg-transparent resize-none text-nova-text-primary text-sm outline-none max-h-[200px] placeholder:text-nova-text-muted disabled:opacity-50 px-3 pt-2 pb-1"
+            className="w-full bg-transparent resize-none text-nova-text-primary text-sm outline-none max-h-[200px] min-h-[72px] placeholder:text-nova-text-muted disabled:opacity-50 px-3 pt-2 pb-1"
           />
 
           {/* Footer: hints left, voice + send/stop right */}
           <div className="flex items-center justify-between px-2 pb-2 pt-1">
-            <div className="flex items-center gap-1.5 text-[10px] text-nova-text-muted">
-              {queuedHint && (
-                <>
-                  <span className="w-px h-3 bg-nova-border" />
-                  <span className="text-nova-accent">{t('chat.queuedHint')}</span>
-                </>
+            {/* 左侧提示位：空闲时给出发送/换行快捷键，排队时切换为排队状态。
+                两者互斥，避免「排队中」左侧挂一条没有前文的竖分隔线。 */}
+            <div className="flex items-center gap-1.5 text-[11px] text-nova-text-muted min-w-0">
+              {queuedHint ? (
+                <span className="text-nova-accent truncate">{t('chat.queuedHint')}</span>
+              ) : (
+                <span className="truncate hidden sm:inline">{t('chat.ctrlEnterSend')}</span>
               )}
             </div>
             <div className="flex items-center gap-2">
+              {/* Context usage — always visible, one click to the breakdown.
+                  Sits left of the mic so the primary action stays rightmost. */}
+              {contextUsage && (
+                <div className="relative" ref={usagePopoverRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowUsagePopover((v) => !v)}
+                    aria-label={t('context.usage.aria', {
+                      percent: contextUsage.percent,
+                      used: contextUsage.used.toLocaleString(),
+                      window: contextUsage.window.toLocaleString(),
+                    })}
+                    aria-expanded={showUsagePopover}
+                    title={t('context.usage.tip')}
+                    className={`flex items-center gap-1 h-7 px-1.5 rounded-full transition-colors hover:bg-nova-hover ${
+                      contextUsage.level === 'critical'
+                        ? 'text-error-text'
+                        : contextUsage.level === 'warning'
+                          ? 'text-warning-text'
+                          : 'text-nova-text-muted'
+                    }`}
+                  >
+                    <ContextUsageRing percent={contextUsage.percent} level={contextUsage.level} size={14} stroke={2} />
+                    <span className="font-mono text-[11px] tabular-nums">{contextUsage.percent}%</span>
+                    <span className="font-mono text-[10px] tabular-nums opacity-60 hidden xl:inline">
+                      {formatTokenCount(contextUsage.used)} / {formatTokenCount(contextUsage.window)}
+                    </span>
+                  </button>
+                  {showUsagePopover && (
+                    <ContextBreakdownPopover
+                      usage={contextUsage}
+                      placement="above"
+                      align="right"
+                      onClose={() => setShowUsagePopover(false)}
+                    />
+                  )}
+                </div>
+              )}
               <button
-                onClick={toggleVoiceInput}
-                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${listening ? 'bg-red-500/20 text-red-400' : 'bg-nova-hover text-nova-text-muted hover:bg-nova-border hover:text-nova-text-primary'}`}
-                title={t('chat.voiceInput')}
+                onClick={() => void toggleVoiceInput()}
+                disabled={voiceBusy}
+                aria-label={t('chat.voiceInput')}
+                aria-pressed={listening}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors disabled:opacity-60 ${listening ? 'bg-error/20 text-error animate-pulse' : 'bg-nova-hover text-nova-text-muted hover:bg-nova-border hover:text-nova-text-primary'}`}
+                title={listening ? t('chat.voiceRecording') : voiceBusy ? t('chat.voiceTranscribing') : t('chat.voiceInput')}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
-                </svg>
+                {voiceBusy ? (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                    <line x1="8" y1="23" x2="16" y2="23" />
+                  </svg>
+                )}
               </button>
               {/* 运行中「结束」常驻：之前一打字它就变成「发送」，等于把中止能力
                   藏起来了（想停手必须先清空输入框）。现在两者并存 —— 有草稿时

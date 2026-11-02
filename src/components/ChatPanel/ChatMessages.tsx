@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
-import { useChatStore, estimateContextTokens } from '@/stores/chatStore'
+import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
+import { useChatStore } from '@/stores/chatStore'
 import { useEditorStore } from '@/stores/editorStore'
 import ChatMessage from './ChatMessage'
 import ThinkingSection from './ThinkingSection'
 import { StreamingMarkdown } from '../Common/MarkdownRenderer'
 import projectLogo from '@/assets/ourcode-logo.png'
 import { useI18n } from '@/i18n/useI18n'
-import { lookupModelMetadata } from '@/types'
+import { useContextUsage } from '@/hooks/useContextUsage'
+import ContextUsageRing from '@/components/Common/ContextUsageRing'
 import type { ChatMessage as ChatMessageType } from '@/types'
 import MSIcon from '@/components/Common/icons/MSIcon'
 
@@ -75,21 +76,32 @@ export default function ChatMessages() {
   // reading an earlier message must never get yanked down by new output.
   const isNearBottomRef = useRef(true)
 
-  // Context truncation warning — real API usage from the last response as the
-  // baseline + a rough estimate for messages added since (Claude Code-style),
-  // so the percentage tracks what the model actually receives.
-  const tokenWarning = useMemo(() => {
-    if (!activeSession) return null
-    const totalTokens = estimateContextTokens(activeSession)
-    // 权威的上下文窗口来自 shared/constants 的 MODEL_METADATA（内部做前缀匹配），
-    // 去掉 provider 前缀（a/b 形式）后查询；未收录的模型回退 128K。
-    const modelId = (activeSession.model || '').split('/').pop() || ''
-    const contextWindow = lookupModelMetadata(modelId)?.contextWindow || 128000
-    const usage = totalTokens / contextWindow
-    if (usage > 0.9) return { level: 'critical' as const, percent: Math.round(usage * 100), totalTokens, contextWindow }
-    if (usage > 0.7) return { level: 'warning' as const, percent: Math.round(usage * 100), totalTokens, contextWindow }
-    return null
-  }, [activeSession])
+  // Context warning banner — SAME view model the composer ring and the status
+  // bar read (hooks/useContextUsage), so the three can never disagree. It only
+  // appears once the window is genuinely tight (80% = the compaction trigger,
+  // not an arbitrary 70%), and at 95% it offers the one action that helps.
+  const contextUsage = useContextUsage()
+  const createSession = useChatStore((s) => s.createSession)
+  const showContextBanner = !!contextUsage && (contextUsage.level === 'warning' || contextUsage.level === 'critical')
+  const startFreshSession = useCallback(() => {
+    const session = useChatStore.getState().sessions.find((x) => x.id === useChatStore.getState().activeSessionId)
+    if (!session) return
+    createSession(session.configGroupId, session.projectPath)
+  }, [createSession])
+
+  // 跨天分隔：只在「本轮所在日期 ≠ 上一轮所在日期」时插入一条，长会话里
+  // 一眼就能定位到某天；同一天连续多轮不重复挂标签。
+  const startOfDay = (ts: number) => {
+    const d = new Date(ts)
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  }
+  const formatDay = (ts: number) => {
+    const diff = Math.round((startOfDay(Date.now()) - startOfDay(ts)) / 86_400_000)
+    if (diff === 0) return t('chat.dayToday')
+    if (diff === 1) return t('chat.dayYesterday')
+    const d = new Date(ts)
+    return t('chat.dayFormat', { month: d.getMonth() + 1, day: d.getDate() })
+  }
 
   // Auto-scroll to the latest message when entering a session, when the
   // conversation grows, or while streaming. Crucially NOT when the user
@@ -317,6 +329,8 @@ export default function ChatMessages() {
 
   if (!activeSession) return null
 
+  // min-h-0: 与底部决策卡同处一个 flex 列时，消息区必须能被压到 0 再靠自身
+  // 滚动，否则决策卡一出现就会把消息区顶出可视范围。
   return (
     <div
       ref={scrollRef}
@@ -334,23 +348,29 @@ export default function ChatMessages() {
           setShowScrollToBottom(!isNearBottomRef.current)
         }
       }}
-      className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4 relative"
+      className="flex-1 min-h-0 overflow-y-auto px-6 py-4 relative"
     >
+      {/* 阅读宽度约束 —— 超过 --chat-content-max（默认 80rem ≈ 1280px）后居中
+          留白。这个上限只是「超宽屏别再拉长」的兜底，不是排版段宽：IDE 面板本
+          身就不宽，用 48rem 那类正文档宽会白扔半个窗口。气泡、欢迎态、工具栏、
+          回到最新按钮全部收进这一列，两条对齐轴线保持同一内容宽度；窄面板下自
+          动退化为 100% 宽，不产生横向滚动。 */}
+      <div className="mx-auto w-full max-w-[var(--chat-content-max)] flex flex-col gap-4 min-h-full">
       {/* Batch select toolbar — only in history-edit mode */}
       {editEnabled && visibleMessages.length > 0 && (
         <div className="flex items-center gap-2">
           <button
             onClick={() => { setIsSelectMode(!isSelectMode); setSelectedIds(new Set()) }}
-            className={`px-2 py-1 text-[10px] rounded transition-colors ${isSelectMode ? 'bg-nova-accent/20 text-nova-accent' : 'bg-nova-hover text-nova-text-muted hover:text-nova-text-secondary'}`}
+            className={`px-2 py-1 text-[11px] rounded transition-colors ${isSelectMode ? 'bg-nova-accent/20 text-nova-accent' : 'bg-nova-hover text-nova-text-muted hover:text-nova-text-secondary'}`}
           >
             {isSelectMode ? t('chat.cancelSelect') : t('chat.multiSelect')}
           </button>
           {isSelectMode && selectedIds.size > 0 && (
             <>
-              <span className="text-[10px] text-nova-text-muted">{t('chat.selectedCount', { count: selectedIds.size })}</span>
+              <span className="text-[11px] text-nova-text-muted">{t('chat.selectedCount', { count: selectedIds.size })}</span>
               <button
                 onClick={handleBatchDelete}
-                className="px-2 py-1 text-[10px] bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
+                className="px-2 py-1 text-[11px] bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
               >
                 {t('chat.deleteSelected')}
               </button>
@@ -359,19 +379,34 @@ export default function ChatMessages() {
         </div>
       )}
 
-      {/* Context truncation warning — amber gradient banner (critical stays red) */}
-      {tokenWarning && (
-        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs shrink-0 ${
-          tokenWarning.level === 'critical'
-            ? 'bg-red-500/10 border border-red-500/30 text-red-400'
-            : 'banner-warning'
-        }`}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span className="font-medium">{t('chat.tokenWarning', {
-            percent: tokenWarning.percent,
-            used: (tokenWarning.totalTokens / 1000).toFixed(1),
-            total: (tokenWarning.contextWindow / 1000).toFixed(0),
-          })}</span>
+      {/* Context window banner — amber at 80% (the compaction trigger), red at
+          95%. Only the critical state asks for an action: starting a fresh chat. */}
+      {showContextBanner && contextUsage && (
+        <div
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs shrink-0 ${
+            contextUsage.level === 'critical'
+              ? 'bg-error-10 border border-error-30 text-error-text'
+              : 'banner-warning'
+          }`}
+          role="status"
+        >
+          <ContextUsageRing percent={contextUsage.percent} level={contextUsage.level} size={14} stroke={2} />
+          <span className="font-medium min-w-0">
+            {t('chat.tokenWarning', {
+              percent: contextUsage.percent,
+              used: (contextUsage.used / 1000).toFixed(1),
+              total: (contextUsage.window / 1000).toFixed(0),
+            })}
+          </span>
+          {contextUsage.level === 'critical' && (
+            <button
+              type="button"
+              onClick={startFreshSession}
+              className="ml-auto shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium text-error-text bg-[var(--surface-popover)] border border-error-30 hover:bg-error-10 transition-colors"
+            >
+              {t('context.usage.banner.newSession')}
+            </button>
+          )}
         </div>
       )}
 
@@ -386,17 +421,50 @@ export default function ChatMessages() {
             <div className="text-xs text-nova-text-muted mt-1.5 max-w-[280px] leading-relaxed">
               {t('chat.welcomeDesc')}
             </div>
+            {/* 起点建议：空面板最需要「我现在能做什么」。点击只填词，不直接发，
+                给用户改的余地；键盘可达，焦点环走全局 focus-visible。 */}
+            <div className="flex flex-col gap-2 mt-5 w-full max-w-[420px]">
+              {(['chat.starter1', 'chat.starter2', 'chat.starter3'] as const).map((key) => (
+                <button
+                  key={key}
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent('ourcode:fill-input', { detail: { text: t(key) } }),
+                    )
+                  }
+                  className="text-left text-xs px-3 py-2 rounded-lg border border-nova-border bg-nova-surface/60 text-nova-text-secondary hover:border-nova-accent/50 hover:bg-nova-hover hover:text-nova-text-primary transition-colors"
+                >
+                  {t(key)}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       {turns.map((turn, index) => {
+        const turnAt = turn.kind === 'user' ? turn.message.createdAt : turn.messages[0].createdAt
+        const prevTurn = index > 0 ? turns[index - 1] : null
+        const prevAt = prevTurn
+          ? prevTurn.kind === 'user'
+            ? prevTurn.message.createdAt
+            : prevTurn.messages[0].createdAt
+          : null
+        const daySeparator =
+          prevAt === null || startOfDay(prevAt) !== startOfDay(turnAt) ? (
+            <div className="flex items-center gap-3 py-1" role="separator" aria-label={formatDay(turnAt)}>
+              <span className="h-px flex-1 bg-nova-border" aria-hidden />
+              <span className="text-[11px] text-nova-text-muted shrink-0">{formatDay(turnAt)}</span>
+              <span className="h-px flex-1 bg-nova-border" aria-hidden />
+            </div>
+          ) : null
         if (turn.kind === 'user') {
           // Find the real index in the unfiltered messages array for drag-drop
           const originalIndex = messageIndex.get(turn.message.id) ?? -1
           return (
+            <Fragment key={turn.message.id}>
+            {daySeparator}
             <div
-              key={turn.message.id}
               onDragOver={editEnabled ? (e) => handleDragOver(originalIndex, e) : undefined}
               onDrop={editEnabled ? (e) => handleDrop(originalIndex, e) : undefined}
               className={`chat-msg-row relative group/row transition-all ${
@@ -421,6 +489,7 @@ export default function ChatMessages() {
                 onToggleSelect={toggleSelect}
               />
             </div>
+            </Fragment>
           )
         }
 
@@ -432,8 +501,9 @@ export default function ChatMessages() {
         // 会话文件改动汇总只挂最后一条 assistant 消息（动作工具栏上方）。
         const isLastTurn = index === turns.length - 1
         return (
+          <Fragment key={`turn-${firstId}`}>
+          {daySeparator}
           <div
-            key={`turn-${firstId}`}
             onDragOver={editEnabled ? (e) => handleDragOver(originalIndex, e) : undefined}
             onDrop={editEnabled ? (e) => handleDrop(originalIndex, e) : undefined}
             className={`chat-msg-row relative group/row transition-all ${
@@ -469,6 +539,7 @@ export default function ChatMessages() {
               />
             </div>
           </div>
+          </Fragment>
         )
       })}
 
@@ -533,6 +604,7 @@ export default function ChatMessages() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
@@ -600,7 +672,7 @@ function LiveStreamBlock({
             <span className="font-semibold text-[13px] text-nova-text-primary">OurCode AI</span>
             <span className="flex items-center gap-1 text-nova-accent">
               <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse-soft inline-block" />
-              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-nova-hover border border-nova-border">
+              <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-nova-hover border border-nova-border">
                 {t('chat.thinking')}…{runElapsed > 0 ? ` ${runElapsed}s` : ''}
               </span>
             </span>
@@ -610,7 +682,7 @@ function LiveStreamBlock({
             stream's 10-min idle timeout aborts if nothing arrives) */}
         {idleSeconds >= 60 && (
           <div
-            className="flex items-center gap-1 text-nova-text-muted font-mono text-[10px] px-1.5 py-0.5 rounded bg-nova-hover border border-nova-border mb-1.5 w-fit"
+            className="flex items-center gap-1 text-nova-text-muted font-mono text-[11px] px-1.5 py-0.5 rounded bg-nova-hover border border-nova-border mb-1.5 w-fit"
             title={t('chat.idleWarning')}
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
@@ -622,9 +694,12 @@ function LiveStreamBlock({
         )}
         {/* Thinking streams collapsed — the "思考中…" pulse line shows the
             model is working without flooding the transcript with its raw
-            monologue; click to peek. Committed turns collapse into the
-            AgentProcessBlock below. */}
-        {stream?.thinking && <ThinkingSection thinking={stream.thinking} streaming />}
+            monologue; click to peek. The elapsed seconds keep the collapsed
+            row alive (a bare dot row reads as "frozen" during long reasoning).
+            Committed turns collapse into the AgentProcessBlock below. */}
+        {stream?.thinking && (
+          <ThinkingSection thinking={stream.thinking} streaming elapsedSeconds={runElapsed} />
+        )}
         {stream?.content ? (
           <div className="text-sm text-nova-text-primary leading-relaxed">
             <StreamingMarkdown content={stream.content} />
@@ -634,9 +709,9 @@ function LiveStreamBlock({
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-nova-text-muted text-sm">
               <div className="flex gap-1">
-                <span className="w-1.5 h-1.5 rounded-full animate-think-bounce" style={{ background: '#838485' }} />
-                <span className="w-1.5 h-1.5 rounded-full animate-think-bounce" style={{ background: '#838485', animationDelay: '0.2s' }} />
-                <span className="w-1.5 h-1.5 rounded-full animate-think-bounce" style={{ background: '#838485', animationDelay: '0.4s' }} />
+                <span className="w-1.5 h-1.5 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)' }} />
+                <span className="w-1.5 h-1.5 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)', animationDelay: '0.2s' }} />
+                <span className="w-1.5 h-1.5 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)', animationDelay: '0.4s' }} />
               </div>
               <span>{t('chat.thinking')}</span>
             </div>

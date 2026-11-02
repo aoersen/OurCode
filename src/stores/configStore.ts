@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { ApiConfigGroup, ModelInfo, ModelParams, CustomModel, DEFAULT_MODEL_PARAMS, lookupModelMetadata } from '@/types'
+import { getCatalogModel } from '@shared/modelCatalog'
 import { fetchModels as llmFetchModels, sendLLMRequest } from '@/services/llm/LLMClient'
 import { buildChatUrl, buildModelsUrl, resolveFormat } from '@/services/llm/endpoints'
 import { v4 as uuidv4 } from 'uuid'
@@ -63,14 +64,25 @@ function enrichModel(id: string, _provider: string): ModelInfo {
   const favorites = useConfigStore.getState().favoriteModelIds
   const custom = useConfigStore.getState().customModels.find((c) => c.id === id)
   const meta = lookupModelMetadata(id)
+  const catalog = getCatalogModel(id)
+  const customVision = custom?.vision
+    ?? (custom?.inputModalities ? custom.inputModalities.includes('image') : undefined)
+  const customFunctionCall = custom?.functionCall
+    ?? (custom?.capabilities ? custom.capabilities.includes('tool_call') : undefined)
   return {
     id,
     name: custom?.name || id,
     isFree: id.includes('free') || id.includes('gpt-3.5') || id.includes('llama') || id.includes('mistral') || id.includes('gemma'),
     isFavorite: favorites.includes(id),
-    contextWindow: custom?.contextWindow || meta?.contextWindow,
-    vision: custom?.vision ?? meta?.vision,
-    functionCall: custom?.functionCall ?? meta?.functionCall,
+    // User override → curated policy table → generated vendor catalog.
+    contextWindow: custom?.contextWindow || meta?.contextWindow || catalog?.contextWindow,
+    maxOutputTokens: custom?.maxOutputTokens || catalog?.maxOutputTokens,
+    inputModalities: custom?.inputModalities ?? catalog?.inputModalities,
+    outputModalities: custom?.outputModalities ?? catalog?.outputModalities,
+    capabilities: custom?.capabilities ?? catalog?.capabilities,
+    reasoningLevels: custom?.reasoningLevels ?? catalog?.reasoningLevels,
+    vision: customVision ?? meta?.vision ?? catalog?.inputModalities.includes('image'),
+    functionCall: customFunctionCall ?? meta?.functionCall ?? catalog?.capabilities.includes('tool_call'),
   }
 }
 
@@ -139,6 +151,8 @@ export interface ConfigState {
   setModelParams: (params: Partial<ModelParams>) => void
   toggleFavorite: (modelId: string) => void
   addCustomModel: (model: Omit<CustomModel, 'id' | 'createdAt'>) => void
+  /** Insert or update a model config by id (used by the model config editor). */
+  upsertCustomModel: (model: Omit<CustomModel, 'createdAt'> & { createdAt?: number }) => void
   removeCustomModel: (modelId: string) => void
 
   /** Test a saved config group by id */
@@ -361,6 +375,33 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
       return { customModels: updated }
     })
     // Re-fetch to merge
+    get().fetchModels()
+  },
+
+  upsertCustomModel: (modelData) => {
+    const id = (modelData.id || modelData.name || '').trim()
+    if (!id) return
+    const model: CustomModel = {
+      ...modelData,
+      id,
+      name: (modelData.name || id).trim(),
+      createdAt: modelData.createdAt ?? Date.now(),
+    }
+    set((s) => {
+      const existing = s.customModels.find((m) => m.id === id)
+      const updated = existing
+        ? s.customModels.map((m) => (m.id === id ? { ...m, ...model, createdAt: m.createdAt } : m))
+        : [...s.customModels, model]
+      localStorage.setItem('customModels', JSON.stringify(updated))
+      return { customModels: updated }
+    })
+    // Refresh the merged model list so the picker shows the new spec without
+    // waiting for a model-list API round trip.
+    set((s) => ({
+      models: s.models.some((m) => m.id === id)
+        ? s.models.map((m) => (m.id === id ? enrichModel(id, m.id) : m))
+        : s.models,
+    }))
     get().fetchModels()
   },
 

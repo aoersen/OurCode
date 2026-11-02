@@ -1,13 +1,22 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
-import { useChatStore, estimateContextTokens } from '@/stores/chatStore'
+import { useChatStore } from '@/stores/chatStore'
+import { useContextUsage } from '@/hooks/useContextUsage'
+import ContextUsageRing from '@/components/Common/ContextUsageRing'
+import ContextBreakdownPopover from '@/components/ChatPanel/ContextBreakdownPopover'
+import { formatTokenCount } from '@/services/llm/contextUsage'
 import { useConfigStore, setLastModelForGroup } from '@/stores/configStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useProblemsStore } from '@/stores/problemsStore'
 import { useUpdateStore } from '@/stores/updateStore'
+import { useNoLimitsStore } from '@/stores/noLimitsStore'
+import { describeNoLimits, isNoLimitsActive } from '@/services/noLimits/policy'
 import { useI18n } from '@/i18n/useI18n'
 
 export default function StatusBar() {
+  // no-limits（能力取自 dsh-purge）：默认关闭，开启时在状态栏亮一个指示器。
+  const noLimitsConfig = useNoLimitsStore((s) => s.config)
+  const noLimitsActive = isNoLimitsActive(noLimitsConfig)
   // Targeted selectors — the previous whole-store subscriptions re-rendered the
   // bar on every editorStore/configStore change (each cursor move, keystroke…).
   const activeFilePath = useEditorStore((s) => s.activeFilePath)
@@ -137,15 +146,19 @@ export default function StatusBar() {
       if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
         setShowModelPicker(false)
       }
+      if (usageMenuRef.current && !usageMenuRef.current.contains(e.target as Node)) {
+        setShowUsagePopover(false)
+      }
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
 
-  // Total tokens for active session — real API usage baseline + estimate for
-  // messages added since (Claude Code-style), matching what the model actually
-  // receives rather than the raw stored history.
-  const totalTokens = activeSession ? estimateContextTokens(activeSession) : 0
+  // Context usage for the active session — one view model shared with the
+  // composer ring and the warning banner (see hooks/useContextUsage).
+  const contextUsage = useContextUsage()
+  const [showUsagePopover, setShowUsagePopover] = useState(false)
+  const usageMenuRef = useRef<HTMLDivElement>(null)
   // The chat loop resolves the runtime model from the session's OWN config
   // group (session.model || sessionGroup.defaultModel) — the global active
   // group can diverge from it (startup restore, manual group switch), which
@@ -186,7 +199,7 @@ export default function StatusBar() {
                   <button
                     key={branch}
                     className={`w-full text-left px-3 py-1.5 text-xs hover:bg-nova-accent/15 flex items-center gap-2 ${
-                      branch === gitBranch ? 'text-white' : 'text-nova-text-secondary'
+                      branch === gitBranch ? 'text-nova-accent font-medium' : 'text-nova-text-secondary'
                     }`}
                     onClick={() => handleCheckout(branch)}
                   >
@@ -235,6 +248,19 @@ export default function StatusBar() {
 
       {/* Right side */}
       <div className="flex items-center gap-3 ml-auto">
+        {/* no-limits 指示器：只在开启时出现，点开设置里的开关分区 */}
+        {noLimitsActive && (
+          <button
+            type="button"
+            onClick={() => useUIStore.getState().openSettings({ tab: 'features' })}
+            title={describeNoLimits(noLimitsConfig)}
+            className="flex items-center gap-1 px-1.5 rounded text-nova-accent hover:bg-nova-accent/15"
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+            no-limits
+          </button>
+        )}
+
         {/* Auto-update indicator */}
         {updateState !== 'idle' && (
           <span
@@ -278,7 +304,7 @@ export default function StatusBar() {
                     <button
                       key={enc}
                       className={`w-full text-left px-3 py-1.5 text-xs hover:bg-nova-accent/15 ${
-                        activeFileEncoding?.toUpperCase() === enc ? 'text-white' : 'text-nova-text-secondary'
+                        activeFileEncoding?.toUpperCase() === enc ? 'text-nova-accent font-medium' : 'text-nova-text-secondary'
                       }`}
                       onClick={() => {
                         // Re-encode this file with the chosen encoding on next save
@@ -311,7 +337,11 @@ export default function StatusBar() {
               title={t('statusBar.switchConfigGroup')}
             >
               <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: activeConfigGroup?.color || '#3b82f6' }} />
-              <span className="truncate">{activeConfigGroup?.name || t('statusBar.notConfigured')}</span>
+              <span className="truncate">
+                {activeConfigGroup
+                  ? activeConfigGroup.name?.trim() || t('statusBar.unnamedGroup')
+                  : t('statusBar.notConfigured')}
+              </span>
             </button>
             {showConfigMenu && (
               <div className="absolute bottom-full right-0 mb-1 glass-panel rounded-lg py-1 min-w-[160px] z-50 max-h-[240px] overflow-y-auto">
@@ -319,12 +349,14 @@ export default function StatusBar() {
                   <button
                     key={g.id}
                     className={`w-full text-left px-3 py-1.5 text-xs hover:bg-nova-accent/15 flex items-center gap-2 ${
-                      g.id === activeConfigGroupId ? 'text-white' : 'text-nova-text-secondary'
+                      g.id === activeConfigGroupId ? 'text-nova-accent font-medium' : 'text-nova-text-secondary'
                     }`}
                     onClick={() => { setActiveConfigGroup(g.id); setShowConfigMenu(false) }}
                   >
-                    {g.id === activeConfigGroupId && <span>✓</span>}
-                    <span className="truncate">{g.name}</span>
+                    {/* 固定宽度勾位：不加空位时「✓」会把文字挤成两列，看起来像
+                        两条不同缩进的列表。 */}
+                    <span className="w-3 shrink-0 text-[10px]">{g.id === activeConfigGroupId ? '✓' : ''}</span>
+                    <span className="truncate">{g.name?.trim() || t('statusBar.unnamedGroup')}</span>
                   </button>
                 ))}
               </div>
@@ -348,7 +380,7 @@ export default function StatusBar() {
                 style={{ background: model ? '#4ade80' : 'rgba(148,163,184,0.5)' }}
               />
               <span className="truncate max-w-[140px]">
-                {modelInfo?.alias || model.split('/').pop() || t('chat.selectModel')}
+                {modelInfo?.alias?.trim() || model.split('/').pop() || t('chat.selectModel')}
               </span>
               <span className="text-[11px] opacity-50">▾</span>
             </button>
@@ -358,7 +390,9 @@ export default function StatusBar() {
                 {activeConfigGroup && (
                   <div className="flex items-center gap-1.5 px-3 py-1.5 mb-1 border-b" style={{ borderColor: 'var(--border)' }}>
                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: activeConfigGroup.color || '#3b82f6' }} />
-                    <span className="text-[10px] font-semibold text-nova-text-secondary truncate flex-1">{activeConfigGroup.name}</span>
+                    <span className="text-[10px] font-semibold text-nova-text-secondary truncate flex-1">
+                      {activeConfigGroup.name?.trim() || t('statusBar.unnamedGroup')}
+                    </span>
                     {models.length > 0 && (
                       <span className="text-[11px] text-nova-text-muted shrink-0">
                         {t('statusBar.modelsCount', { count: models.length })}
@@ -434,7 +468,7 @@ export default function StatusBar() {
                       >
                         {m.id === model && <span className="text-[10px]">✓</span>}
                         {m.isFavorite && <span className="text-[10px]">⭐</span>}
-                        <span className="truncate">{m.alias || m.id.split('/').pop() || m.id}</span>
+                        <span className="truncate">{m.alias?.trim() || m.id.split('/').pop() || m.id}</span>
                       </button>
                     ))}
               </div>
@@ -442,11 +476,41 @@ export default function StatusBar() {
           </div>
         )}
 
-        {/* Total tokens in active session */}
-        {totalTokens > 0 && (
-          <span className="opacity-70" title={t('statusBar.tokenUsage')}>
-            {totalTokens.toLocaleString()} tokens
-          </span>
+        {/* Context usage — always-visible ring + percentage. Click opens the
+            breakdown; the raw token count alone never told anyone whether they
+            were near the window limit. */}
+        {contextUsage && (
+          <div className="relative" ref={usageMenuRef}>
+            <button
+              type="button"
+              className="flex items-center gap-1 opacity-90 hover:opacity-100 cursor-pointer px-1.5 py-0.5 rounded hover:bg-nova-hover"
+              onClick={() => setShowUsagePopover((v) => !v)}
+              aria-label={t('context.usage.aria', {
+                percent: contextUsage.percent,
+                used: contextUsage.used.toLocaleString(),
+                window: contextUsage.window.toLocaleString(),
+              })}
+              title={t('context.usage.tip')}
+            >
+              <ContextUsageRing percent={contextUsage.percent} level={contextUsage.level} size={12} stroke={2} />
+              <span
+                className={`font-mono tabular-nums ${contextUsage.level === 'critical' ? 'text-error-text' : contextUsage.level === 'warning' ? 'text-warning-text' : ''}`}
+              >
+                {contextUsage.percent}%
+              </span>
+              <span className="font-mono tabular-nums opacity-70 hidden lg:inline">
+                {formatTokenCount(contextUsage.used)}/{formatTokenCount(contextUsage.window)}
+              </span>
+            </button>
+            {showUsagePopover && (
+              <ContextBreakdownPopover
+                usage={contextUsage}
+                placement="above"
+                align="right"
+                onClose={() => setShowUsagePopover(false)}
+              />
+            )}
+          </div>
         )}
 
         {/* App version — click to check for updates */}

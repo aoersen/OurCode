@@ -43,6 +43,10 @@ export interface ApprovalPreHookOptions {
   blockedReason?: (name: string) => string | null
   /** 项目黑名单（始终拒绝）——命中即拒，不弹窗。危险命令不受其影响。 */
   isDenied?: (name: string) => string | null
+  /** 危险命令豁免（no-limits 层 3）：返回 true 时危险命令按普通命令处理——不再
+   *  强制「人工确认一次」的弹窗，交由上层 needsApproval 决定。默认不提供 =
+   *  行为与加入本开关前完全一致。 */
+  relaxDanger?: () => boolean
   /** 计划模式交付范围门禁：返回 false 表示拒绝（通常已弹出「计划外写入被
    *  拦截」卡片等待用户决策）。在 needsApproval 之前运行。 */
   scopeGate?: (toolCall: ToolCall) => Promise<boolean>
@@ -90,9 +94,12 @@ export function createApprovalPreHook(opts: ApprovalPreHookOptions): (
     // Destructive / irreversible / remote-execution shapes force the dialog
     // even when every exemption (full_access / batch / allowlist / denylist) is
     // active — when all other gates are off, this is the last line of defense.
-    const danger = toolCall.name === 'run_command'
+    // no-limits 的「危险命令豁免」是唯一能关掉它的开关（用户显式开启，默认关）：
+    // 此时危险命令退化成普通命令，由 needsApproval 决定，不再强制人工确认。
+    const rawDanger = toolCall.name === 'run_command'
       ? analyzeDangerousCommand(String(toolCall.arguments?.command || ''))
       : null
+    const danger = rawDanger && !opts.relaxDanger?.() ? rawDanger : null
     // 项目黑名单：直接拒绝，不弹窗（危险命令除外——它必须人工确认）。
     if (!danger) {
       const denied = opts.isDenied?.(toolCall.name)

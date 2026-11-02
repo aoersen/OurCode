@@ -65,6 +65,11 @@
   font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --bg: #f6f7fb;
   --surface: #ffffff;
+  /* Sunken panel (code preview / file list / deliverables box) and popover
+     surface (token badge tooltip). Named so dialogs stop hardcoding
+     `bg-[#f8fafc] dark:bg-white/5` and `dark:border-t-[#1b2130]`. */
+  --surface-sunken: #f8fafc;
+  --surface-popover: #ffffff;
   --sidebar: #ffffff;
   --card: rgba(255, 255, 255, 0.75);
   --editor-bg: #ffffff;
@@ -107,12 +112,27 @@
   --warning: #d97706;
   --success: #16a34a;
   --error: #dc2626;
+  /* Text-safe status colors: the vivid values above are tuned for strokes/dots
+     (they only need 3:1), but at 11–12px on a pale tinted banner they drop below
+     AA. These are the same hues darkened to clear 4.5:1 on white, on the page
+     background and on their own 10% tint — use them for status TEXT and for the
+     2px usage ring (which also needs ≥3:1 on the status bar's translucent bg). */
+  --warning-text: #92400e;
+  --success-text: #047857;
+  --error-text: #b91c1c;
   --error-container: #fee2e2;
   --primary-container: #e8f0ff;
   --bubble-user: #f1f5f9;
   --bubble-user-hover: #e2e8f0;
   --grad-brand: linear-gradient(135deg, #0ea5e9, #6366f1, #a855f7);
   --grad-avatar: linear-gradient(135deg, #60a5fa, #8b5cf6);
+
+  /* Conversation reading measure — the message column stops growing past this
+     and centers itself. 80rem (1280px) is a wide ceiling on purpose: an IDE
+     side panel is already narrow, so a typographic 48rem just wasted half of a
+     wide window. This only kicks in on genuinely wide panels; narrow ones stay
+     full-width. Lower it here to tighten prose, raise it to fill the panel. */
+  --chat-content-max: 80rem;
 
   /* Radius / elevation / backdrop — airy glass, soft diffuse shadows */
   --radius-sm: 6px;
@@ -136,6 +156,8 @@
 :root.dark {
   --bg: #0f1420;
   --surface: #151a26;
+  --surface-sunken: rgba(255, 255, 255, 0.05);
+  --surface-popover: #1b2130;
   --sidebar: #151a26;
   --card: rgba(21, 26, 38, 0.8);
   --editor-bg: #10151f;
@@ -175,6 +197,10 @@
   --warning: #e5ba7d;
   --success: #34d399;
   --error: #f48771;
+  /* Already light enough on dark surfaces — the text variants are the same hue. */
+  --warning-text: var(--warning);
+  --success-text: var(--success);
+  --error-text: var(--error);
   --error-container: rgba(244, 135, 113, 0.14);
   --primary-container: #1d3a66;
   --bubble-user: #1d3a66;
@@ -1287,7 +1313,9 @@ textarea[data-ai-input] {
 .banner-warning {
   background: linear-gradient(90deg, rgba(217, 119, 6, 0.12) 0%, rgba(217, 119, 6, 0.02) 100%);
   border: 1px solid color-mix(in srgb, var(--yellow, #d97706) 22%, transparent);
-  color: var(--yellow, #d97706);
+  /* --warning (#d97706) only reaches 4.2:1 on this tint — too low for 12px body
+     text. --warning-text is the same hue at AA (≥4.5:1). */
+  color: var(--warning-text, #b45309);
 }
 .banner-queue {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent, #0058bc) 8%, transparent) 0%, color-mix(in srgb, var(--accent, #0058bc) 1%, transparent) 100%);
@@ -1362,3 +1390,33 @@ textarea[data-ai-input] {
     -webkit-backdrop-filter: blur(4px) saturate(120%);
   }
 }
+
+/* ── 键盘焦点可见性 ───────────────────────────────────────────────────────
+   全应用兜底：桌面 IDE 里 20+ 处按钮用 outline-none 抹掉了默认焦点环，键盘
+   用户 Tab 过去看不到落点。:where() 特异性为 0，不覆盖任何已有的 focus 样式，
+   只在组件自身没写 focus-visible 时补一个 2px accent 环。 */
+:where(button, a[href], [role='button'], [role='tab'], [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid var(--accent, #0058bc);
+  outline-offset: 2px;
+}
+
+/* 输入框自身的 outline 由外层 .chat-input-box:focus-within 接管，但键盘焦点
+   仍需要一个独立可见的落点：只在内联编辑/搜索类的裸 input 上补环。
+
+   聊天输入框的 textarea（data-ai-input）必须排除：它铺满容器宽度、左右边被
+   圆角边框吃掉，2px outline 只剩上下两条横线挂在输入框中间——聚焦时像被划了
+   两道分割线。焦点可见性由容器的 accent 边框 + 光晕提供。 */
+:where(input:not([type='checkbox']):not([type='radio']), textarea:not([data-ai-input])):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #0058bc) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* ── 触屏 / 无 hover 设备 ─────────────────────────────────────────────────
+   消息动作栏（复制 / 重新生成 / 分支 …）平时靠 group-hover 才显出，触屏没有
+   hover 就等于全部不可达。这里在 hover:none 的设备上让它常显。 */
+@media (hover: none) {
+  .chat-actions {
+    opacity: 1 !important;
+  }
+}
+

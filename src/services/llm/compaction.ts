@@ -13,28 +13,15 @@
  */
 
 import { ApiConfigGroup, LLMToolCall } from '@/types'
-import { lookupModelMetadata } from '@shared/constants'
-import { useConfigStore } from '@/stores/configStore'
 import { sendLLMRequest } from './LLMClient'
+import { DEFAULT_CONTEXT_WINDOW, getContextWindow } from './modelDefaults'
 
 /** Marker prefix of the summary system message injected into requests. */
 export const SUMMARY_MARKER = '[上下文压缩]'
 
-/** Fallback context window when the model has no metadata entry (tokens). */
-export const DEFAULT_CONTEXT_WINDOW = 128_000
-
-/**
- * Resolve a model's context window (tokens), most-specific first:
- *  user-defined custom model window → static metadata table → default.
- * Mirrors configStore.enrichModel's priority so compaction and the history
- * trim agree with what the UI shows — a custom Ollama model with an 8k window
- * must compact at 8k, not wait for the 128k default.
- */
-export function getContextWindow(modelId: string): number {
-  const custom = useConfigStore.getState().customModels.find((m) => m.id === modelId)
-  const meta = lookupModelMetadata(modelId)
-  return custom?.contextWindow || meta?.contextWindow || DEFAULT_CONTEXT_WINDOW
-}
+// Re-exported for callers/tests that historically imported them from here;
+// resolution itself now lives in modelDefaults so every consumer agrees.
+export { DEFAULT_CONTEXT_WINDOW, getContextWindow }
 /** Trigger threshold: compact when the estimate exceeds this fraction of the
  *  model's context window (same 80% headroom trimHistoryForContext uses). */
 export const DEFAULT_COMPACTION_RATIO = 0.8

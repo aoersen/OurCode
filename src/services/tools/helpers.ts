@@ -8,6 +8,7 @@ import { getActiveToolContext } from './ToolExecutor'
 import { v4 as uuidv4 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import type { ToolImageResult } from './types'
+import type { WebSearchInput } from '@shared/webTools'
 import { parseImageDataUrl } from '@/utils/imageAttach'
 import {
   branchPushState,
@@ -685,50 +686,142 @@ export async function runGit(args: string[], cwd?: string): Promise<string> {
   return `Error: ${result.error || 'git 命令失败'}`
 }
 
-/** Web search via DuckDuckGo HTML (no API key required) */
-export async function webSearch(query: string): Promise<string> {
-  const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query)
-  const res = await window.electronAPI.webFetch(url, { timeoutMs: 20000 })
-  if (!res.ok || !res.text) {
-    return `Web search failed: ${res.error || `HTTP ${res.status}`}`
+/**
+ * Web search through the configured provider chain (DeepSeek → SearXNG →
+ * DuckDuckGo). Network work is in the main process; this only resolves
+ * settings and formats the normalized result for the model.
+ */
+export async function webSearch(args: {
+  query: string
+  count?: number
+  question?: string
+  site?: string
+  lang?: string
+  after?: string
+  before?: string
+}): Promise<string> {
+  const query = String(args.query || '').trim()
+  if (!query) return 'Web search failed: query 不能为空'
+  const [{ resolveWebToolsConfig }, { formatWebSearchResult }] = await Promise.all([
+    import('@/services/web/config'),
+    import('@/services/web/format'),
+  ])
+  const cfg = resolveWebToolsConfig()
+  const input: WebSearchInput = {
+    query,
+    count: args.count,
+    question: args.question,
+    site: args.site,
+    lang: args.lang,
+    after: args.after,
+    before: args.before,
+    provider: cfg.searchProvider,
+    deepseek: cfg.deepseek,
+    searxng: cfg.searxng,
   }
-  const blocks = res.text.split(/<div[^>]*class="[^"]*result[^"]*"/i)
-  const results: string[] = []
-  for (const block of blocks.slice(1, 9)) {
-    const hrefMatch = /href="([^"]+)"/.exec(block)
-    const titleMatch = /class="result__a"[^>]*>([\s\S]*?)<\/a>/i.exec(block)
-    const snippetMatch = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i.exec(block)
-    const href = hrefMatch ? stripHtml(decodeEntities(hrefMatch[1])) : ''
-    const title = titleMatch ? stripHtml(titleMatch[1]) : ''
-    const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : ''
-    if (title) {
-      results.push(`- ${title}${href ? `\n  URL: ${href}` : ''}${snippet ? `\n  ${snippet}` : ''}`)
-    }
+  try {
+    const result = await window.electronAPI.webSearch(input)
+    return formatWebSearchResult(query, result)
+  } catch (error: any) {
+    return `Web search failed: ${error?.message || 'unknown error'}`
   }
-  return results.length > 0
-    ? `Web search results for "${query}":\n${results.join('\n')}`
-    : `No results found for "${query}"`
 }
 
-/** Fetch a URL and return its readable text content. With an optional `prompt`
- *  the page is answered by an LLM instead (bounded input/output); on any
- *  failure — no API config, no default model, empty or errored answer — it
- *  degrades to the raw text, so read_url never breaks on a missing key.
- *  `sessionId` 用于把配置组/模型解析到「发起调用的那个会话」——用全局活动组
- *  会把会话组 B 的模型名发到活动组 A 的端点 → 400 "Unsupported model"。 */
-export async function readUrl(url: string, prompt?: string, sessionId?: string): Promise<string> {
-  const res = await window.electronAPI.webFetch(url, { timeoutMs: 20000, maxBytes: 2 * 1024 * 1024 })
+const MAX_PAGE_CHARS = 12_000
+
+interface LocalPage {
+  ok: boolean
+  title: string
+  text: string
+  error?: string
+}
+
+/** Local fetch + readable extraction. The main process enforces SSRF rules
+ *  (and the persisted private-network opt-in) on its own. */
+async function fetchLocalPage(url: string): Promise<LocalPage> {
+  const res = await window.electronAPI.webFetch(url, {
+    timeoutMs: 20_000,
+    maxBytes: 2 * 1024 * 1024,
+  })
   if (!res.ok || !res.text) {
-    return `Failed to fetch ${url}: ${res.error || `HTTP ${res.status}`}`
+    return { ok: false, title: '', text: '', error: res.error || `HTTP ${res.status ?? '未知'}` }
   }
-  const text = stripHtml(res.text)
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  const { extractReadable } = await import('@/services/web/extract')
+  const page = extractReadable(res.text, res.finalUrl || url, res.contentType || '')
+  return { ok: true, title: page.title, text: page.text }
+}
+
+/**
+ * Fetch a URL as readable text/Markdown.
+ *
+ * `auto` prefers the local extractor (free, fast) and upgrades to DeepSeek
+ * Fetch when the page is a JS shell, blocked, or extraction returns almost
+ * nothing. With an optional `prompt`, the page is answered by an LLM instead
+ * (bounded input/output); on any failure it degrades to the raw text so
+ * read_url never breaks on a missing key.
+ *
+ * `sessionId` 用于把配置组/模型解析到「发起调用的那个会话」——用全局活动组
+ * 会把会话组 B 的模型名发到活动组 A 的端点 → 400 "Unsupported model"。
+ */
+export async function readUrl(url: string, prompt?: string, sessionId?: string): Promise<string> {
+  const target = String(url || '').trim()
+  if (!target) return 'Failed to fetch: URL 不能为空'
+  const { resolveWebToolsConfig } = await import('@/services/web/config')
+  const cfg = resolveWebToolsConfig()
+
+  if (cfg.fetchProvider === 'deepseek' && !cfg.deepseek.apiKey) {
+    return `Failed to fetch ${target}: 未配置 DeepSeek API Key，无法使用托管抓取`
+  }
+
+  // "仅 DeepSeek" should not fetch the page twice; auto/local go local-first.
+  const local: LocalPage = cfg.fetchProvider === 'deepseek'
+    ? { ok: false, title: '', text: '' }
+    : await fetchLocalPage(target)
+  let title = local.title
+  let text = local.text
+  let source: 'local' | 'deepseek' = 'local'
+  let hostedError = ''
+
+  const shouldTryHosted = cfg.fetchProvider === 'deepseek'
+    || (cfg.fetchProvider === 'auto' && !!cfg.deepseek.apiKey && (!local.ok || text.length < 800))
+
+  if (shouldTryHosted && cfg.deepseek.apiKey) {
+    try {
+      const hosted = await window.electronAPI.webFetchHosted({
+        url: target,
+        apiKey: cfg.deepseek.apiKey,
+        baseUrl: cfg.deepseek.baseUrl,
+      })
+      if (hosted.ok && hosted.content?.trim()) {
+        const hostedText = hosted.content.trim()
+        // Explicit DeepSeek wins; auto only upgrades a weak local result.
+        if (cfg.fetchProvider === 'deepseek' || !local.ok || hostedText.length > text.length * 0.5) {
+          title = hosted.title || title
+          text = hostedText
+          source = 'deepseek'
+        }
+      } else {
+        hostedError = hosted.error || 'DeepSeek Fetch 失败'
+      }
+    } catch (error: any) {
+      hostedError = error?.message || 'DeepSeek Fetch 失败'
+    }
+  }
+
+  if (source === 'local' && !local.ok) {
+    const hostedNote = hostedError ? `（DeepSeek: ${hostedError}）` : ''
+    return `Failed to fetch ${target}: ${local.error || hostedError || 'unknown error'}${local.error ? hostedNote : ''}`
+  }
+
+  const clean = text.trim()
+  if (!clean) {
+    return `Failed to fetch ${target}: 页面没有可提取的正文${hostedError ? `（DeepSeek: ${hostedError}）` : ''}`
+  }
   if (!prompt) {
-    return `Content of ${url}:\n\n${text.slice(0, 8000)}`
+    const suffix = source === 'deepseek' ? ' (via DeepSeek Fetch)' : ''
+    return `Content of ${target}${title ? ` — ${title}` : ''}${suffix}:\n\n${clean.slice(0, MAX_PAGE_CHARS)}`
   }
-  return extractWithLLM(url, prompt, text, sessionId)
+  return extractWithLLM(target, prompt, clean.slice(0, 15 * 1024), sessionId)
 }
 
 /** LLM extraction for read_url with a prompt — same non-streaming pattern as
@@ -796,25 +889,6 @@ async function extractWithLLM(url: string, prompt: string, pageText: string, ses
     return `Content of ${url}:\n\n${pageText.slice(0, 8000)}`
   }
   return `回答（由 AI 从 ${url} 提取）:\n\n${answer}`
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#39;/g, "'")
 }
 
 function formatSize(bytes: number): string {

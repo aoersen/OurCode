@@ -60,7 +60,7 @@ export default function MemoryAddModal({
               <span className="text-lg">🧠</span>
               <div>
                 <strong className="text-sm text-nova-text-primary">{t('chat.addMemory')}</strong>
-                <div className="text-[10px] text-nova-text-muted">{t('chat.memoryAddHint')}</div>
+                <div className="text-[11px] text-nova-text-muted">{t('chat.memoryAddHint')}</div>
               </div>
             </div>
             <button onClick={onClose} className="text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover p-1 rounded transition-colors">
@@ -122,7 +122,7 @@ export default function MemoryAddModal({
                     ))}
                   </select>
                 ) : (
-                  <span className="text-[10px] text-yellow-400">未打开项目，无法选择项目作用域</span>
+                  <span className="text-[11px] text-yellow-400">未打开项目，无法选择项目作用域</span>
                 )}
               </div>
             )}
@@ -136,7 +136,7 @@ export default function MemoryAddModal({
               </div>
             )}
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-nova-text-muted">Ctrl+Enter 快速保存</span>
+              <span className="text-[11px] text-nova-text-muted">Ctrl+Enter 快速保存</span>
               <div className="flex items-center gap-2">
                 <button
                   onClick={onClose}
@@ -147,7 +147,7 @@ export default function MemoryAddModal({
                 <button
                   onClick={handleSave}
                   disabled={!canSave}
-                  className="px-4 py-1.5 text-xs font-medium text-white bg-[#2563eb] hover:opacity-90 disabled:opacity-40 rounded-lg transition-opacity flex items-center gap-1.5"
+                  className="px-4 py-1.5 text-xs font-medium text-white bg-nova-accent hover:opacity-90 disabled:opacity-40 rounded-lg transition-opacity flex items-center gap-1.5"
                 >
                   {saving ? (
                     <>

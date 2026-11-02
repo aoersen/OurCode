@@ -33,6 +33,18 @@ describe('friendlyNetworkError', () => {
   it('keeps real HTTP / provider errors as-is', () => {
     expect(friendlyNetworkError('获取模型列表失败 (404): Not Found')).toBe('获取模型列表失败 (404): Not Found')
   })
+
+  it('maps cert errors to the bypass hint and keeps the raw reason', () => {
+    const msg = friendlyNetworkError('net::ERR_CERT_AUTHORITY_INVALID')
+    expect(msg).toContain('跳过证书校验')
+    expect(msg).toContain('ERR_CERT_AUTHORITY_INVALID')
+  })
+
+  it('separates a TLS handshake failure (wrong port / not HTTPS) from a cert error', () => {
+    const msg = friendlyNetworkError('net::ERR_SSL_PROTOCOL_ERROR')
+    expect(msg).toContain('TLS 握手失败')
+    expect(msg).not.toContain('跳过证书校验')
+  })
 })
 
 describe('llmFetch', () => {

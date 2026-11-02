@@ -38,6 +38,11 @@ import {
 import { SpillStore } from './services/spill-store'
 import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
 import { CheckpointRepo } from './services/checkpoint-repo'
+import { ensureWhisperServer, stopWhisperServer, whisperStatus } from './services/whisperRuntime'
+import { nodeTlsFetch } from './services/node-tls-fetch'
+import { fetchPage } from './services/web-safety'
+import { fetchHosted, searchWeb } from './services/web-tools'
+import type { HostedFetchInput, WebSearchInput } from '../shared/webTools'
 import { v4 as uuidv4 } from 'uuid'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { UsageEvent, BrowserAction, BrowserActOptions } from '../shared/types'
@@ -2012,80 +2017,185 @@ function registerIpcHandlers(): void {
     return process.env[name] || ''
   })
 
-  // ───────────────────── Web fetch (web_search / read_url tools) ─────────────────────
-  // Only http(s) URLs may be fetched (no file://, no arbitrary schemes), with a
-  // hard size cap so a hostile endpoint cannot balloon main-process memory.
-  const MAX_WEB_BYTES = 2 * 1024 * 1024
+  // Local whisper servers (whisper.cpp / faster-whisper / asr-webservice) run on
+  // the user's machine with arbitrary CORS behaviour, so the renderer cannot
+  // probe them. A 2xx/4xx answer means something is listening; only network
+  // errors and 5xx count as "not there".
+  ipcMain.handle('speech:probe', async (_event, urls: unknown) => {
+    const list = Array.isArray(urls) ? urls.filter((u): u is string => typeof u === 'string') : []
+    const hits: string[] = []
+    await Promise.all(
+      list.map(async (url) => {
+        let parsed: URL
+        try {
+          parsed = new URL(url)
+        } catch {
+          return
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return
+        try {
+          const res = await net.fetch(parsed.toString(), {
+            method: 'GET',
+            signal: AbortSignal.timeout(1500),
+          })
+          if (res.status < 500) hits.push(url)
+        } catch { /* 端口没人监听 —— 正常情况 */ }
+      }),
+    )
+    // 端口顺序即优先级（8080 是 whisper.cpp 的默认端口）
+    return hits.sort((a, b) => list.indexOf(a) - list.indexOf(b))
+  })
 
-  ipcMain.handle('web:fetch', async (_event, url: string, options?: { timeoutMs?: number; maxBytes?: number }) => {
-    let parsed: URL
+  // ───────────────────── Speech-to-text (mic → text) ─────────────────────
+  // Whisper endpoints cap uploads around 25MB; anything larger is a runaway
+  // recording, not a sentence the user meant to dictate.
+  const MAX_STT_BYTES = 25 * 1024 * 1024
+
+  /** multipart 上传 + 统一解析 {text} / {result} / 纯文本三种返回。 */
+  const postSpeechForm = async (
+    url: string,
+    headers: Record<string, string>,
+    form: FormData,
+    timeoutMs: number,
+  ): Promise<{ ok: boolean; text?: string; error?: string }> => {
     try {
-      parsed = new URL(url)
-    } catch {
-      return { ok: false, error: '无效的 URL' }
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return { ok: false, error: '仅支持 http/https URL' }
-    }
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), options?.timeoutMs || 15000)
-    try {
-      const res = await net.fetch(parsed.toString(), {
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: { 'user-agent': 'OurCode-ide/0.1', 'accept': 'text/html,text/plain,*/*' },
+      const res = await net.fetch(url, {
+        method: 'POST',
+        headers,
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs),
       })
-      const sizeLimit = options?.maxBytes || MAX_WEB_BYTES
-      const contentLength = Number(res.headers.get('content-length') || 0)
-      if (contentLength > sizeLimit) {
-        // Cancel the body before returning so the connection isn't left draining.
-        await res.body?.cancel().catch(() => {})
-        return { ok: false, status: res.status, error: `响应超过大小上限 (${sizeLimit} bytes)` }
+      const raw = await res.text()
+      if (!res.ok) {
+        return { ok: false, error: `转写失败 HTTP ${res.status}: ${raw.slice(0, 300)}` }
       }
-      // Stream the body and stop at sizeLimit — the old code awaited the whole
-      // arrayBuffer() first, so a lying/missing content-length made a malicious
-      // endpoint download fully into memory before the cap was enforced.
-      if (!res.body) {
-        return {
-          ok: res.ok,
-          status: res.status,
-          contentType: res.headers.get('content-type') || '',
-          finalUrl: res.url || parsed.toString(),
-          text: '',
-        }
-      }
-      const reader = res.body.getReader()
-      const chunks: Buffer[] = []
-      let total = 0
+      let transcript = raw
       try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const chunk = Buffer.from(value)
-          total += chunk.length
-          if (total > sizeLimit) {
-            await reader.cancel().catch(() => {})
-            return { ok: false, status: res.status, error: `响应超过大小上限 (${sizeLimit} bytes)` }
-          }
-          chunks.push(chunk)
-        }
-      } finally {
-        reader.releaseLock()
+        const json = JSON.parse(raw) as { text?: unknown; result?: unknown }
+        transcript = String(json.text ?? json.result ?? '')
+      } catch { /* 纯文本端点 */ }
+      return { ok: true, text: transcript }
+    } catch (error: unknown) {
+      const err = error as { name?: string; message?: string }
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        return { ok: false, error: `转写请求超时（${Math.round(timeoutMs / 1000)}s）` }
       }
-      const buf = Buffer.concat(chunks)
-      return {
-        ok: res.ok,
-        status: res.status,
-        contentType: res.headers.get('content-type') || '',
-        finalUrl: res.url || parsed.toString(),
-        text: buf.toString('utf-8').slice(0, sizeLimit),
-      }
-    } catch (error: any) {
-      const aborted = controller.signal.aborted
-      return { ok: false, error: aborted ? '请求超时' : (error.message || '网络请求失败') }
-    } finally {
-      clearTimeout(timer)
+      return { ok: false, error: err?.message || '转写请求失败' }
     }
+  }
+
+  // Renderer 先用它决定端点链（内置引擎存在就直接用，不必问客户任何事）。
+  // 只读文件系统，不拉起进程 —— 点击前调用不会产生开销。
+  ipcMain.handle('speech:engine', () => whisperStatus())
+
+  // The renderer records with MediaRecorder and posts the base64 audio here;
+  // this process forwards it either to the bundled whisper.cpp server or to an
+  // OpenAI-compatible /audio/transcriptions endpoint. It cannot be a
+  // renderer-side fetch for two reasons: CORS (local whisper servers rarely send
+  // permissive headers) and the API key, which must never reach the sandboxed page.
+  ipcMain.handle(
+    'speech:transcribe',
+    async (
+      _event,
+      payload: {
+        engine?: 'builtin' | 'endpoint'
+        endpoint?: string
+        apiKey?: string
+        model?: string
+        language?: string
+        audioBase64?: string
+        mime?: string
+      },
+    ) => {
+      const bytes = Buffer.from(String(payload?.audioBase64 || ''), 'base64')
+      if (bytes.length === 0) return { ok: false, error: '没有录到音频' }
+      if (bytes.length > MAX_STT_BYTES) {
+        return { ok: false, error: `录音超过 ${Math.round(MAX_STT_BYTES / 1024 / 1024)}MB 上限` }
+      }
+
+      // Whisper 端点按扩展名/Content-Type 判格式，别把 webm 写成 .wav。
+      const mime = String(payload?.mime || 'audio/webm')
+      const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm'
+      const language = String(payload?.language || '').trim()
+
+      // ① 内置引擎：本机 whisper.cpp server。它的端点是 /inference（不是
+      //    OpenAI 兼容路径），字段也不带 model —— 模型在启动时就指定了。
+      if (payload?.engine === 'builtin') {
+        const rt = await ensureWhisperServer()
+        if (!rt) {
+          const why = whisperStatus().error
+          return { ok: false, error: why || '内置语音引擎不可用' }
+        }
+        const form = new FormData()
+        form.append('file', new Blob([bytes], { type: mime }), `speech.${ext}`)
+        form.append('response_format', 'json')
+        if (language) form.append('language', language)
+        // 首次请求含模型加载（small 约 1~3s），给足时间
+        return await postSpeechForm(rt.inferenceUrl, {}, form, 180_000)
+      }
+
+      // ② 客户自己配的 / 从 LLM 配置推导出来的 OpenAI 兼容端点
+      let parsed: URL
+      try {
+        parsed = new URL(String(payload?.endpoint || ''))
+      } catch {
+        return { ok: false, error: 'STT 端点无效（需要完整的 http/https URL）' }
+      }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return { ok: false, error: 'STT 端点仅支持 http/https' }
+      }
+
+      const form = new FormData()
+      form.append('file', new Blob([bytes], { type: mime }), `speech.${ext}`)
+      form.append('model', String(payload?.model || 'whisper-1'))
+      form.append('response_format', 'json')
+      if (language) form.append('language', language)
+
+      const headers: Record<string, string> = {}
+      const apiKey = String(payload?.apiKey || '').trim()
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+      return await postSpeechForm(parsed.toString(), headers, form, 120_000)
+    },
+  )
+
+  // ───────────────────── Web tools (web_search / read_url) ─────────────────────
+  // Network work lives in the main process: no CORS, one place for keys, and a
+  // single SSRF-checked fetch path. `fetchPage` only allows http(s), re-checks
+  // every redirect hop, refuses private/link-local hosts and caps the body.
+  ipcMain.handle('web:fetch', async (_event, url: string, options?: { timeoutMs?: number; maxBytes?: number }) => {
+    if (typeof url !== 'string' || !url) return { ok: false, error: '无效的 URL' }
+    const timeoutMs = Math.min(Math.max(Number(options?.timeoutMs) || 15_000, 1_000), 60_000)
+    const maxBytes = Math.min(Math.max(Number(options?.maxBytes) || 2 * 1024 * 1024, 64 * 1024), 8 * 1024 * 1024)
+    // The private-network escape hatch is a persisted user preference, never a
+    // renderer-supplied flag: a compromised renderer must not be able to point
+    // read_url at localhost or the cloud metadata endpoint.
+    const allowPrivate = store.getPreferences().webFetchAllowPrivate === true
+    const result = await fetchPage(url, {
+      timeoutMs,
+      maxBytes,
+      allowPrivate,
+    })
+    return {
+      ok: result.ok,
+      status: result.status,
+      contentType: result.contentType,
+      finalUrl: result.finalUrl,
+      text: result.text,
+      error: result.error,
+    }
+  })
+
+  ipcMain.handle('web:search', async (_event, input: WebSearchInput) => {
+    if (!input || typeof input !== 'object') {
+      return { ok: false, provider: null, results: [], warnings: [], error: '无效的搜索请求' }
+    }
+    return searchWeb(input)
+  })
+
+  ipcMain.handle('web:fetchHosted', async (_event, input: HostedFetchInput) => {
+    if (!input || typeof input !== 'object') return { ok: false, error: '无效的抓取请求' }
+    return fetchHosted(input)
   })
 
   // ───────────────────── LLM HTTP bridge (chat / model lists) ─────────────────────
@@ -2141,6 +2251,56 @@ function registerIpcHandlers(): void {
     // gateways (Spring Boot) reject with 415 Unsupported Media Type.
     const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')
     if (req.body && !hasContentType) headers['content-type'] = 'application/json'
+
+    // TLS-bypass requests run on the Node stack, NOT net.fetch. Chromium caches a
+    // failed certificate verification per host inside the network service and no
+    // Electron API flushes it — once a host has failed once, the verify proc is
+    // never consulted again for it in this session, so «跳过证书校验» could not
+    // recover without an app restart. Node re-handshakes per request, so
+    // rejectUnauthorized:false always takes effect.
+    if (draftBypass) {
+      // nodeTlsFetch owns the idle timeout (re-armed per chunk) — the wall-clock
+      // timer created above would kill a long healthy stream.
+      clearTimeout(timer)
+      try {
+        const result = await nodeTlsFetch({
+          url: parsed.toString(),
+          method: req.method,
+          headers,
+          body: req.body,
+          stream: !!req.stream,
+          timeoutMs: req.timeoutMs || 120_000,
+          rejectUnauthorized: false,
+          signal: controller.signal,
+          onHeaders: (head) => {
+            if (req.stream && !event.sender.isDestroyed()) {
+              event.sender.send('llm:httpHeaders', { id: req.id, ok: head.status >= 200 && head.status < 300, ...head })
+            }
+          },
+          onChunk: (chunk) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('llm:httpChunk', { id: req.id, data: Buffer.from(chunk).toString('base64') })
+            }
+          },
+        })
+        if (req.stream) {
+          if (!event.sender.isDestroyed()) event.sender.send('llm:httpDone', { id: req.id })
+          return { ok: result.ok }
+        }
+        return { ok: result.ok, status: result.status, statusText: result.statusText, headers: result.headers, text: result.text }
+      } catch (error: any) {
+        const aborted = controller.signal.aborted
+        const message = aborted ? '请求超时或已取消' : (error?.message || '网络请求失败')
+        if (req.stream && !event.sender.isDestroyed()) {
+          event.sender.send('llm:httpError', { id: req.id, message })
+        }
+        return { ok: false, error: message }
+      } finally {
+        clearTimeout(timer)
+        llmControllers.delete(req.id)
+        tlsDraftHosts.delete(parsed.hostname)
+      }
+    }
 
     try {
       const res = await net.fetch(parsed.toString(), {
@@ -3387,6 +3547,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  stopWhisperServer()
   browserClose()
   claw?.shutdownNow()
   store.close()

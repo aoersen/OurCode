@@ -192,7 +192,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
       {plan && (
         <div className="border-t border-nova-border/60 px-3 pt-2 pb-2.5">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
               {t('agent.miniPanelPlan')}
             </span>
             <button
@@ -235,7 +235,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
       {total > 0 && (
         <div className="border-t border-nova-border/60 px-3 pt-2 pb-2.5">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
               {t('agent.miniPanelTasks')}
             </span>
             <span className="ml-auto font-mono text-[11px] text-success">{done}/{total}</span>
@@ -266,10 +266,10 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
       {subagents.length > 0 && (
         <div className="border-t border-nova-border/60 px-3 pt-2 pb-2.5">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
               {t('agent.miniPanelAgents')}
             </span>
-            <span className="ml-auto w-[16px] h-[16px] rounded-full bg-success-10 text-success flex items-center justify-center font-mono text-[10px] font-bold">
+            <span className="ml-auto w-[16px] h-[16px] rounded-full bg-success-10 text-success flex items-center justify-center font-mono text-[11px] font-bold">
               {subagents.length}
             </span>
           </div>
@@ -285,7 +285,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
                     <SubagentStatusIcon status={sa.status} />
                     <span className="min-w-0 flex-1 truncate text-[12px] text-nova-text-primary">{sa.name}</span>
                     <span
-                      className={`shrink-0 text-[10px] ${
+                      className={`shrink-0 text-[11px] ${
                         sa.status === 'running'
                           ? 'text-nova-accent'
                           : sa.status === 'done'
@@ -323,7 +323,7 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
                           ))}
                         </div>
                       )}
-                      <div className="pt-0.5 border-t border-nova-border/50 text-[10px] text-nova-text-muted font-mono">
+                      <div className="pt-0.5 border-t border-nova-border/50 text-[11px] text-nova-text-muted font-mono">
                         {t('chat.subagentToolCalls', { n: sa.toolCallCount })}
                         {sa.tokenCount > 0 && <> · {t('chat.subagentTokens', { n: sa.tokenCount })}</>}
                       </div>

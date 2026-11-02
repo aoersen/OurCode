@@ -42,7 +42,10 @@ export default function InlineDecisionArea() {
   if (!hasAny || !activeSessionId) return null
 
   return (
-    <div className="shrink-0 px-6 pt-2 pb-1 flex flex-col gap-2">
+    /* max-h-[78vh] + overflow-y-auto：决策卡（问题/审批/计划外写入…）再多也
+       最多占 78% 面板高度，剩下的高度一定留给上方消息区，用户永远能往上翻
+       历史；卡片内部各自还有自己的滚动/折叠。 */
+    <div className="shrink-0 px-6 pt-2 pb-1 flex flex-col gap-2 max-h-[78vh] overflow-y-auto">
       <ToolApprovalDialog />
       <BatchApprovalDialog />
       <ScopeBlockDialog />

@@ -47,6 +47,12 @@ module.exports = {
         warning: 'var(--warning, #d97706)',
         success: 'var(--success, #16a34a)',
         error: 'var(--error, #dc2626)',
+        // Text-safe status colors (≥4.5:1 at 11–12px on pale tints and on the
+        // app background). Use `text-warning-text` etc. for TEXT; keep the vivid
+        // `--warning/--success/--error` for rings, dots and borders (3:1).
+        'warning-text': 'var(--warning-text, #b45309)',
+        'success-text': 'var(--success-text, #047857)',
+        'error-text': 'var(--error-text, #b91c1c)',
         'error-container': 'var(--error-container, #fee2e2)',
         'primary-container': 'var(--primary-container, #e8f0ff)',
         // Translucent status/primary tints — literal color-mix values so

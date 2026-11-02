@@ -1,14 +1,19 @@
 import { useState, useMemo } from 'react'
 import { useConfigStore } from '@/stores/configStore'
-import { lookupModelMetadata } from '@/types'
+import { getCatalogModel } from '@shared/modelCatalog'
+import { getKnownContextWindow } from '@/services/llm/modelDefaults'
 
 interface ModelCompareViewProps {
   onClose: () => void
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
-  openai: '#10a37f', anthropic: '#d47757', google: '#4285f4', deepseek: '#4f46e5', groq: '#f97316', other: '#2563eb',
+  openai: '#10a37f', anthropic: '#d47757', google: '#4285f4', deepseek: '#4f46e5', groq: '#f97316', other: 'var(--accent)',
 }
+
+/** 半透明同色底：token 色不能用 `#rrggbb` + alpha 后缀拼接（`var(--accent)20`
+ *  不是合法颜色），统一走 color-mix。 */
+const tint = (color: string, percent: number) => `color-mix(in srgb, ${color} ${percent}%, transparent)`
 
 function getProviderFromModelId(modelId: string): string {
   const lower = modelId.toLowerCase()
@@ -75,11 +80,13 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
     if (selectedModels.length === 0) return
     let text = '模型对比\n' + '='.repeat(40) + '\n\n'
     for (const id of selectedModels) {
-      const meta = lookupModelMetadata(id)
+      const spec = getCatalogModel(id)
+      const ctx = getKnownContextWindow(id)
       const pricing = getPricing(id)
       text += `**${id}** (${getProviderFromModelId(id)})\n`
-      text += `  上下文: ${meta?.contextWindow ? Math.round(meta.contextWindow / 1000) + 'K' : 'N/A'}\n`
-      text += `  视觉: ${meta?.vision ? '✓' : '✗'} | 函数调用: ${meta?.functionCall ? '✓' : '✗'}\n`
+      text += `  上下文: ${ctx ? Math.round(ctx / 1000) + 'K' : 'N/A'}\n`
+      text += `  视觉: ${spec?.inputModalities.includes('image') ? '✓' : '✗'} | 函数调用: ${spec?.capabilities.includes('tool_call') ? '✓' : '✗'}\n`
+      text += `  输出上限: ${spec?.maxOutputTokens ? Math.round(spec.maxOutputTokens / 1000) + 'K' : 'N/A'}\n`
       text += `  输入: ${pricing.input} | 输出: ${pricing.output}\n\n`
     }
     navigator.clipboard.writeText(text)
@@ -95,7 +102,7 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
               <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
             </svg>
             <h2 className="text-sm font-semibold text-nova-text-primary">模型对比</h2>
-            <span className="text-[10px] text-nova-text-muted">最多 4 个模型</span>
+            <span className="text-[11px] text-nova-text-muted">最多 4 个模型</span>
           </div>
           <div className="flex items-center gap-2">
             {selectedModels.length > 1 && (
@@ -125,7 +132,7 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                           <button key={m.id} onClick={() => toggleModel(m.id)}
                             className="w-full text-left px-2.5 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-hover rounded transition-colors flex items-center gap-2">
                             <div className="w-5 h-5 rounded flex items-center justify-center text-[11px] font-bold shrink-0"
-                              style={{ background: `${PROVIDER_COLORS[getProviderFromModelId(m.id)] || '#2563eb'}20`, color: PROVIDER_COLORS[getProviderFromModelId(m.id)] || '#2563eb' }}>
+                              style={{ background: tint(PROVIDER_COLORS[getProviderFromModelId(m.id)] || 'var(--accent)', 13), color: PROVIDER_COLORS[getProviderFromModelId(m.id)] || 'var(--accent)' }}>
                               {getProviderFromModelId(m.id).charAt(0).toUpperCase()}
                             </div>
                             <span className="truncate">{m.id.split('/').pop() || m.id}</span>
@@ -158,13 +165,13 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                     return (
                       <th key={id} className="px-3 py-2.5 text-left min-w-[160px]">
                         <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0"
-                            style={{ background: `${PROVIDER_COLORS[provider] || '#2563eb'}20`, color: PROVIDER_COLORS[provider] || '#2563eb' }}>
+                          <div className="w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold shrink-0"
+                            style={{ background: tint(PROVIDER_COLORS[provider] || 'var(--accent)', 13), color: PROVIDER_COLORS[provider] || 'var(--accent)' }}>
                             {provider.charAt(0).toUpperCase()}
                           </div>
                           <div className="min-w-0">
                             <div className="font-semibold text-nova-text-primary truncate">{id.split('/').pop() || id}</div>
-                            <div className="text-[10px] text-nova-text-muted">{provider}</div>
+                            <div className="text-[11px] text-nova-text-muted">{provider}</div>
                           </div>
                           <button onClick={() => removeModel(id)}
                             className="ml-auto text-nova-text-muted hover:text-red-400 transition-colors p-0.5">
@@ -184,8 +191,8 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                     const p = getProviderFromModelId(id)
                     return (
                       <td key={id} className="px-3 py-2.5">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
-                          style={{ background: `${PROVIDER_COLORS[p] || '#2563eb'}15`, color: PROVIDER_COLORS[p] || '#2563eb' }}>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+                          style={{ background: tint(PROVIDER_COLORS[p] || 'var(--accent)', 8), color: PROVIDER_COLORS[p] || 'var(--accent)' }}>
                           {p}
                         </span>
                       </td>
@@ -197,8 +204,7 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                 <tr className="border-b border-nova-border/50 hover:bg-nova-hover/20">
                   <td className="px-4 py-2.5 text-nova-text-muted font-medium">上下文窗口</td>
                   {selectedModels.map((id) => {
-                    const meta = lookupModelMetadata(id)
-                    const ctx = meta?.contextWindow
+                    const ctx = getKnownContextWindow(id)
                     return (
                       <td key={id} className="px-3 py-2.5">
                         <span className={`font-mono text-nova-text-primary ${ctx && ctx >= 131072 ? 'text-green-400' : ''}`}>
@@ -228,10 +234,10 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                 <tr className="border-b border-nova-border/50 hover:bg-nova-hover/20">
                   <td className="px-4 py-2.5 text-nova-text-muted font-medium">视觉能力</td>
                   {selectedModels.map((id) => {
-                    const meta = lookupModelMetadata(id)
+                    const spec = getCatalogModel(id)
                     return (
                       <td key={id} className="px-3 py-2.5">
-                        {meta?.vision ? (
+                        {spec?.inputModalities.includes('image') ? (
                           <span className="text-green-400 flex items-center gap-1"><span>✓</span> 支持</span>
                         ) : (
                           <span className="text-nova-text-muted flex items-center gap-1"><span>✗</span> 不支持</span>
@@ -245,10 +251,10 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
                 <tr className="border-b border-nova-border/50 hover:bg-nova-hover/20">
                   <td className="px-4 py-2.5 text-nova-text-muted font-medium">函数调用</td>
                   {selectedModels.map((id) => {
-                    const meta = lookupModelMetadata(id)
+                    const spec = getCatalogModel(id)
                     return (
                       <td key={id} className="px-3 py-2.5">
-                        {meta?.functionCall ? (
+                        {spec?.capabilities.includes('tool_call') ? (
                           <span className="text-green-400 flex items-center gap-1"><span>✓</span> 支持</span>
                         ) : (
                           <span className="text-nova-text-muted flex items-center gap-1"><span>✗</span> 不支持</span>
@@ -291,7 +297,7 @@ export default function ModelCompareView({ onClose }: ModelCompareViewProps) {
 
             {/* Summary cards at bottom */}
             <div className="p-4 border-t border-nova-border">
-              <div className="text-[10px] text-nova-text-muted mb-2">💡 提示：点击「复制对比」可将对比结果复制到剪贴板，或直接在下方查看详情</div>
+              <div className="text-[11px] text-nova-text-muted mb-2">💡 提示：点击「复制对比」可将对比结果复制到剪贴板，或直接在下方查看详情</div>
             </div>
           </div>
         ) : (

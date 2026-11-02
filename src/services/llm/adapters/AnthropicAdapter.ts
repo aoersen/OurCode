@@ -313,6 +313,9 @@ export class AnthropicAdapter implements LLMAdapter {
         }
       }
 
+      // Per-model config overrides (reasoning param mapping) win over defaults.
+      Object.assign(body, req.extraBody)
+
       return { body, messages }
     }
 

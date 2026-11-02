@@ -154,4 +154,29 @@ describe('createApprovalPreHook', () => {
     expect(r).toEqual({ allow: true })
     expect(onDialog).not.toHaveBeenCalled()
   })
+
+  // no-limits 层 3（危险命令豁免）—— 默认不提供 relaxDanger，行为与接入前一致；
+  // 用户显式开启后才把危险命令降级成普通命令。
+  it('relaxDanger lets a dangerous command through without a dialog', async () => {
+    const onDialog = vi.fn(async () => true)
+    const hook = makeHook({ needsApproval: () => false, relaxDanger: () => true, onDialog })
+    const dangerous = { id: 'n1', name: 'run_command', arguments: { command: 'rm -rf /' } } as ToolCall
+    const r = await hook(dangerous, { sessionId: 's1' })
+    expect(r).toEqual({ allow: true })
+    expect(onDialog).not.toHaveBeenCalled()
+  })
+
+  it('relaxDanger only demotes danger — a tool still needing approval gets a normal dialog', async () => {
+    const onDialog = vi.fn(async () => true)
+    const hook = makeHook({ needsApproval: () => true, relaxDanger: () => true, onDialog })
+    const dangerous = { id: 'n2', name: 'run_command', arguments: { command: 'rm -rf /' } } as ToolCall
+    const r = await hook(dangerous, { sessionId: 's1' })
+    expect(r).toEqual({ allow: true })
+    expect(onDialog).toHaveBeenCalledTimes(1)
+    // 降级后是普通审批卡（不再是「只能允许一次」的危险卡片，也不带危险提示）
+    const [tcArg, preview, dangerousFlag] = onDialog.mock.calls[0]
+    expect((tcArg as ToolCall).id).toBe('n2')
+    expect(preview as string).not.toContain('⚠️ 危险命令')
+    expect(dangerousFlag).toBe(false)
+  })
 })

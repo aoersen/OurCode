@@ -101,6 +101,7 @@ export async function buildCacheKey(req: LLMRequest, provider: string): Promise<
     req.maxTokens ?? 0,
     req.thinking ? 1 : 0,
     req.reasoningEffort || '',
+    stableStringify(req.extraBody || {}),
     stableStringify(req.tools || []),
     systemHash,
     stableStringify(visibleMessages),

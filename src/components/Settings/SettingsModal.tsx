@@ -6,11 +6,13 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useShortcutStore, ShortcutPreset } from '@/stores/shortcutStore'
 import { useUpdateStore } from '@/stores/updateStore'
-import { ApiConfigGroup, ModelInfo, CustomModel } from '@/types'
+import { ApiConfigGroup, ModelInfo, CustomModel, UserPreferences } from '@/types'
 import {
   resolveFormat, FORMAT_META, PROVIDER_REGISTRY, getProviderMeta,
   EndpointFormat,
 } from '@/services/llm/endpoints'
+import { toFullConfigGroup } from '@/services/llm/configDraft'
+import { resolveWebToolsConfig } from '@/services/web/config'
 import { listCatalogProviders, getCatalogProvider, getCatalogModel, MODEL_CATALOG_META, type CatalogWireFormat } from '@shared/modelCatalog'
 import ModelConfigDialog from './ModelConfigDialog'
 import McpConfigSection from './McpConfigSection'
@@ -169,6 +171,27 @@ export default function SettingsModal() {
   const [testError, setTestError] = useState<string | null>(null)
   const [testSteps, setTestSteps] = useState<ConnectionStep[]>([])
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
+  const [webTest, setWebTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'error'; message: string }>({
+    state: 'idle',
+    message: '',
+  })
+  // Text fields are drafts saved on blur: saving on every keystroke races the
+  // async preference write and can drop a neighbouring field's edit.
+  const [webDraft, setWebDraft] = useState({ apiKey: '', baseUrl: '', searxngUrl: '' })
+
+  useEffect(() => {
+    if (!isSettingsOpen) return
+    setWebDraft({
+      apiKey: preferences.webSearchDeepseekApiKey || '',
+      baseUrl: preferences.webSearchDeepseekBaseUrl || '',
+      searxngUrl: preferences.webSearchSearxngUrl || '',
+    })
+    setWebTest({ state: 'idle', message: '' })
+    // Refresh the drafts when the modal opens; preference changes are made by
+    // these same fields, so re-syncing on every preference write would fight
+    // the user's cursor position.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSettingsOpen])
 
   // Model management state (per editor session)
   const [editorModels, setEditorModels] = useState<ModelInfo[]>([])
@@ -221,6 +244,37 @@ export default function SettingsModal() {
     const url = updateFeedUrl.trim()
     await savePreferences({ updateFeedUrl: url })
     await window.electronAPI.setUpdateFeedUrl(url)
+  }
+
+  const testWebSearch = async () => {
+    setWebTest({ state: 'running', message: '正在测试…' })
+    try {
+      // Flush the text drafts first: reading preferences before the async write
+      // lands would test the previous key/URL.
+      await savePreferences({
+        webSearchDeepseekApiKey: webDraft.apiKey,
+        webSearchDeepseekBaseUrl: webDraft.baseUrl,
+        webSearchSearxngUrl: webDraft.searxngUrl,
+      })
+      const cfg = resolveWebToolsConfig()
+      const res = await window.electronAPI.webSearch({
+        query: 'DeepSeek Search API',
+        count: 3,
+        provider: cfg.searchProvider,
+        deepseek: cfg.deepseek,
+        searxng: cfg.searxng,
+      })
+      if (res.ok && res.results.length > 0) {
+        const via = res.merged && res.providers?.length
+          ? `multi (${res.providers.join(' + ')})`
+          : res.provider
+        setWebTest({ state: 'ok', message: `${via} · ${res.results.length} 条结果` })
+      } else {
+        setWebTest({ state: 'error', message: (res.error || '没有结果').slice(0, 300) })
+      }
+    } catch (error: any) {
+      setWebTest({ state: 'error', message: (error?.message || '测试失败').slice(0, 300) })
+    }
   }
 
   if (!isSettingsOpen) return null
@@ -281,22 +335,10 @@ export default function SettingsModal() {
     }
   }
 
-  /** Build a full ApiConfigGroup from the editor draft (for testing / model fetch). */
-  function toFullGroup(group: Partial<ApiConfigGroup>): ApiConfigGroup {
-    return {
-      id: group.id || 'draft',
-      name: group.name || '未命名配置',
-      baseUrl: (group.baseUrl || '').trim(),
-      apiKey: (group.apiKey || '').trim(),
-      systemPrompt: group.systemPrompt || '',
-      defaultModel: (group.defaultModel || '').trim(),
-      provider: (group.provider || 'openai') as ApiConfigGroup['provider'],
-      apiFormat: group.apiFormat,
-      customHeaders: group.customHeaders || {},
-      createdAt: group.createdAt ?? Date.now(),
-      updatedAt: Date.now(),
-    }
-  }
+  /** Build a full ApiConfigGroup from the editor draft (for testing / model fetch).
+   *  Single source of truth lives in services/llm/configDraft so no field (notably
+   *  skipTlsVerify) can be dropped on the way to the request path. */
+  const toFullGroup = toFullConfigGroup
 
   const handleSaveGroup = async () => {
     if (!editingGroup) return
@@ -1180,6 +1222,122 @@ export default function SettingsModal() {
             </SettingsSelect>
           }
         />
+      </SettingsSection>
+
+      <SettingsSection
+        title="联网工具"
+        description="web_search / read_url 的检索与抓取后端。DeepSeek Search/Fetch 按成功请求计费（约 5 元/1000 次）；DuckDuckGo 兜底无需 Key。"
+      >
+        <SettingRow
+          label="搜索后端"
+          desc="自动：无 Key 时并行聚合 Bing + Brave + DuckDuckGo；有 DeepSeek Key 时优先 DeepSeek"
+          right={
+            <SettingsSelect
+              label="搜索后端"
+              value={preferences.webSearchProvider || 'auto'}
+              onChange={(e) => savePreferences({
+                webSearchProvider: e.target.value as NonNullable<UserPreferences['webSearchProvider']>,
+              })}
+            >
+              <option value="auto">自动（推荐）</option>
+              <option value="multi">多源聚合</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="searxng">SearXNG</option>
+              <option value="bing">Bing（无 Key）</option>
+              <option value="brave">Brave（无 Key）</option>
+              <option value="duckduckgo">DuckDuckGo</option>
+            </SettingsSelect>
+          }
+        />
+        <SettingRow
+          label="DeepSeek API Key"
+          desc="留空则复用官方 DeepSeek 配置组的 Key；仅保存在本机"
+          right={
+            <SettingsInput
+              label="DeepSeek API Key"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              className="w-[260px]"
+              placeholder="sk-…"
+              value={webDraft.apiKey}
+              onChange={(e) => setWebDraft((draft) => ({ ...draft, apiKey: e.target.value }))}
+              onBlur={() => savePreferences({ webSearchDeepseekApiKey: webDraft.apiKey })}
+            />
+          }
+        />
+        <SettingRow
+          label="DeepSeek Base URL"
+          desc="默认 https://api.deepseek.com；使用代理时填写代理地址（可带 /v1）"
+          right={
+            <SettingsInput
+              label="DeepSeek Base URL"
+              className="w-[260px]"
+              spellCheck={false}
+              placeholder="https://api.deepseek.com"
+              value={webDraft.baseUrl}
+              onChange={(e) => setWebDraft((draft) => ({ ...draft, baseUrl: e.target.value }))}
+              onBlur={() => savePreferences({ webSearchDeepseekBaseUrl: webDraft.baseUrl })}
+            />
+          }
+        />
+        <SettingRow
+          label="SearXNG 地址"
+          desc="自建实例地址；需在 settings.yml 的 search.formats 中开启 json"
+          right={
+            <SettingsInput
+              label="SearXNG 地址"
+              className="w-[260px]"
+              spellCheck={false}
+              placeholder="http://127.0.0.1:8080"
+              value={webDraft.searxngUrl}
+              onChange={(e) => setWebDraft((draft) => ({ ...draft, searxngUrl: e.target.value }))}
+              onBlur={() => savePreferences({ webSearchSearxngUrl: webDraft.searxngUrl })}
+            />
+          }
+        />
+        <SettingRow
+          label="网页抓取后端"
+          desc="自动：本地正文抽取优先，失败或正文过短时回退 DeepSeek Fetch"
+          right={
+            <SettingsSelect
+              label="网页抓取后端"
+              value={preferences.webFetchProvider || 'auto'}
+              onChange={(e) => savePreferences({
+                webFetchProvider: e.target.value as NonNullable<UserPreferences['webFetchProvider']>,
+              })}
+            >
+              <option value="auto">自动（推荐）</option>
+              <option value="local">仅本地抽取</option>
+              <option value="deepseek">仅 DeepSeek Fetch</option>
+            </SettingsSelect>
+          }
+        />
+        <SettingRow
+          label="允许访问内网地址"
+          desc="仅影响 read_url 的本地抓取；开启后存在 SSRF 风险，默认关闭"
+          right={
+            <SettingsSwitch
+              label="允许访问内网地址"
+              checked={preferences.webFetchAllowPrivate === true}
+              onChange={(v) => savePreferences({ webFetchAllowPrivate: v })}
+            />
+          }
+        />
+        <SettingRow
+          label="连接测试"
+          desc="用当前配置搜索一次，验证 Key 或地址是否可用"
+          right={
+            <SettingsButton onClick={() => void testWebSearch()} disabled={webTest.state === 'running'}>
+              {webTest.state === 'running' ? '测试中…' : '测试搜索'}
+            </SettingsButton>
+          }
+        />
+        {webTest.state !== 'idle' ? (
+          <p className={`${T_META} py-2 ${webTest.state === 'ok' ? 'text-success' : webTest.state === 'error' ? 'text-error' : ''}`}>
+            {webTest.message}
+          </p>
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="文件浏览器" description="文件树的可见范围。">

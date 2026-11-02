@@ -11,6 +11,7 @@ import { useConfigStore } from '@/stores/configStore'
 import { useProblemsStore } from '@/stores/problemsStore'
 import { useRecentFilesStore } from '@/stores/recentFilesStore'
 import { useDebugStore } from '@/stores/debugStore'
+import { toggleNoLimits } from '@/stores/noLimitsStore'
 import { t } from '@/i18n'
 
 /** Trigger a Monaco command on the focused editor. */
@@ -142,4 +143,12 @@ export function registerCoreCommands(): void {
   })
   registerCommand({ id: 'exportChatMarkdown', title: t('commands.exportChatMarkdown'), category: t('commands.catChat'), run: () => exportActiveSession('markdown') })
   registerCommand({ id: 'exportChatJson', title: t('commands.exportChatJson'), category: t('commands.catChat'), run: () => exportActiveSession('json') })
+  // no-limits（能力取自 dsh-purge）：命令面板里一键开关，默认关闭时就是把它打开。
+  registerCommand({
+    id: 'toggleNoLimits', title: t('commands.toggleNoLimits'), category: t('commands.catChat'),
+    run: () => {
+      const on = toggleNoLimits()
+      useUIStore.getState().showNotification(on ? t('noLimits.notifyOn') : t('noLimits.notifyOff'), on ? 'warning' : 'info')
+    },
+  })
 }

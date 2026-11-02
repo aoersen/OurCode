@@ -76,6 +76,8 @@ export class OpenAIAdapter implements LLMAdapter {
     if (req.thinking) {
       body.reasoning_effort = normalizeReasoningEffort(req.reasoningEffort)
     }
+    // Per-model config overrides (reasoning param mapping) win over defaults.
+    Object.assign(body, req.extraBody)
 
     const response = await llmFetch(url, {
       method: 'POST',

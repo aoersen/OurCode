@@ -825,31 +825,47 @@ export function createToolRegistry(): Tool[] {
       name: 'web_search',
       description:
         'Search the web for up-to-date information (docs, error messages, APIs, news). ' +
-        'Returns a list of result titles, URLs and snippets.',
+        'Results are reranked by the provider and include publication dates, authority scores ' +
+        'and model-ready summaries. Supports site/language/date filters. ' +
+        'Works without an API key and can merge results from multiple sources (Bing, Brave, DuckDuckGo).',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'The search query' },
+          query: { type: 'string', description: 'The search query (keep it concise; site: operators are supported)' },
+          count: { type: 'number', description: 'Number of results, 1-20 (default 8)' },
+          question: { type: 'string', description: 'Optional original user question; improves query understanding' },
+          site: { type: 'string', description: 'Restrict to domain(s), e.g. "github.com" or "github.com huggingface.co"' },
+          lang: { type: 'string', description: 'Language filter, e.g. zh, en' },
+          after: { type: 'string', description: 'Only pages published after this year/date (YYYY or YYYY-MM-DD)' },
+          before: { type: 'string', description: 'Only pages published before this year/date (YYYY or YYYY-MM-DD)' },
         },
         required: ['query'],
       },
       execute: async (args) => {
         const { webSearch } = await import('@/services/tools/helpers')
-        return webSearch(args.query)
+        return webSearch({
+          query: String(args.query || ''),
+          count: args.count !== undefined ? Number(args.count) : undefined,
+          question: typeof args.question === 'string' ? args.question : undefined,
+          site: typeof args.site === 'string' ? args.site : undefined,
+          lang: typeof args.lang === 'string' ? args.lang : undefined,
+          after: typeof args.after === 'string' ? args.after : undefined,
+          before: typeof args.before === 'string' ? args.before : undefined,
+        })
       },
       timeoutMs: 45_000,
     },
     {
       name: 'read_url',
       description:
-        'Fetch and read the text content of a URL (http/https). ' +
-        'Useful for reading documentation pages, API references or the web-search result pages. ' +
+        'Fetch a URL and return its readable Markdown content (navigation/ads removed). ' +
+        'Falls back to a hosted extractor for JS-heavy or blocked pages. ' +
         'Pass an optional prompt (a specific question) to have the page answered with an LLM ' +
         'instead of returning the raw text; if extraction fails the raw text is returned instead.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'The URL to fetch' },
+          url: { type: 'string', description: 'The URL to fetch (http/https, public address)' },
           prompt: { type: 'string', description: 'Optional specific question to answer from the page (LLM extraction)' },
         },
         required: ['url'],

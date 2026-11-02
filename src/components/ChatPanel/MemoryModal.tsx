@@ -102,7 +102,7 @@ export default function MemoryModal({ onClose, currentProjectPath }: { onClose: 
             <span className="text-lg">🧠</span>
             <div>
               <strong className="text-sm text-nova-text-primary">{t('chat.memory')}</strong>
-              <div className="text-[10px] text-nova-text-muted">
+              <div className="text-[11px] text-nova-text-muted">
                 {memories.length} 条记忆 · {globalMemories.length} 全局 · {tabCounts.project} 项目
               </div>
             </div>
@@ -169,7 +169,7 @@ export default function MemoryModal({ onClose, currentProjectPath }: { onClose: 
                 >
                   <span>{tab.icon}</span>
                   <span>{tab.label}</span>
-                  <span className="text-[10px] opacity-60">({tabCounts[tab.key]})</span>
+                  <span className="text-[11px] opacity-60">({tabCounts[tab.key]})</span>
                 </button>
               ))}
             </div>
@@ -204,8 +204,8 @@ export default function MemoryModal({ onClose, currentProjectPath }: { onClose: 
               {filterTab === 'all' && activeViewPath && viewedProjectMemories.length > 0 && (
                 <div className="mb-1">
                   <div className="flex items-center gap-1.5 mb-1.5 px-1">
-                    <span className="text-[10px]">📁</span>
-                    <span className="text-[10px] font-semibold text-nova-text-muted uppercase tracking-wider">{projectName(activeViewPath)}</span>
+                    <span className="text-[11px]">📁</span>
+                    <span className="text-[11px] font-semibold text-nova-text-muted uppercase tracking-wider">{projectName(activeViewPath)}</span>
                   </div>
                   {viewedProjectMemories.filter((m) => !searchQuery || m.content.toLowerCase().includes(searchQuery.toLowerCase())).map((m) => (
                     <MemoryCard key={m.id} memory={m} onDelete={deleteMemory} formatDate={formatDate} isProject projectPath={activeViewPath} shortenPath={shortenPath} />
@@ -217,8 +217,8 @@ export default function MemoryModal({ onClose, currentProjectPath }: { onClose: 
               {filterTab === 'all' && globalMemories.length > 0 && (
                 <div className="mb-1">
                   <div className="flex items-center gap-1.5 mb-1.5 px-1">
-                    <span className="text-[10px]">🌐</span>
-                    <span className="text-[10px] font-semibold text-nova-text-muted uppercase tracking-wider">全局记忆</span>
+                    <span className="text-[11px]">🌐</span>
+                    <span className="text-[11px] font-semibold text-nova-text-muted uppercase tracking-wider">全局记忆</span>
                   </div>
                   {globalMemories.filter((m) => !searchQuery || m.content.toLowerCase().includes(searchQuery.toLowerCase())).map((m) => (
                     <MemoryCard key={m.id} memory={m} onDelete={deleteMemory} formatDate={formatDate} />
@@ -231,7 +231,7 @@ export default function MemoryModal({ onClose, currentProjectPath }: { onClose: 
                 <div>
                   <button
                     onClick={() => setShowOtherProjects(!showOtherProjects)}
-                    className="flex items-center gap-1.5 px-1 py-1 text-[10px] font-semibold text-nova-text-muted uppercase tracking-wider hover:text-nova-text-secondary transition-colors w-full text-left"
+                    className="flex items-center gap-1.5 px-1 py-1 text-[11px] font-semibold text-nova-text-muted uppercase tracking-wider hover:text-nova-text-secondary transition-colors w-full text-left"
                   >
                     <span>{showOtherProjects ? '▾' : '▸'}</span>
                     <span>📂</span>
@@ -242,7 +242,7 @@ export default function MemoryModal({ onClose, currentProjectPath }: { onClose: 
                     if (projMemories.length === 0) return null
                     return (
                       <div key={projPath} className="ml-4 mb-1">
-                        <div className="text-[10px] text-nova-text-muted px-1 py-0.5 truncate">{shortenPath(projPath)}</div>
+                        <div className="text-[11px] text-nova-text-muted px-1 py-0.5 truncate">{shortenPath(projPath)}</div>
                         {projMemories.map((m) => (
                           <MemoryCard key={m.id} memory={m} onDelete={deleteMemory} formatDate={formatDate} isProject projectPath={projPath} shortenPath={shortenPath} />
                         ))}
@@ -297,7 +297,7 @@ function MemoryCard({ memory, onDelete, formatDate, isProject, projectPath, shor
   return (
     <div className="flex items-start gap-2 rounded-xl border border-nova-border bg-nova-card/60 px-3 py-2.5 group hover:border-nova-accent/40 hover:shadow-sm transition-all mb-1.5">
       <span
-        className={`mt-0.5 text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium ${
+        className={`mt-0.5 text-[11px] px-1.5 py-0.5 rounded-full shrink-0 font-medium ${
           isProject ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'
         }`}
       >
@@ -308,13 +308,13 @@ function MemoryCard({ memory, onDelete, formatDate, isProject, projectPath, shor
           {isLong && !expanded ? memory.content.slice(0, 120) + '...' : memory.content}
         </p>
         <div className="flex items-center gap-2 mt-1">
-          <span className="text-[10px] text-nova-text-muted">{formatDate(memory.createdAt)}</span>
+          <span className="text-[11px] text-nova-text-muted">{formatDate(memory.createdAt)}</span>
           {isProject && projectPath && shortenPath && (
-            <span className="text-[10px] text-nova-text-muted truncate">{shortenPath(projectPath)}</span>
+            <span className="text-[11px] text-nova-text-muted truncate">{shortenPath(projectPath)}</span>
           )}
           {isLong && (
             <button onClick={() => setExpanded(!expanded)}
-              className="text-[10px] text-nova-accent hover:underline">
+              className="text-[11px] text-nova-accent hover:underline">
               {expanded ? '收起' : '展开'}
             </button>
           )}

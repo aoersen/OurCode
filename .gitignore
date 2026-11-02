@@ -64,3 +64,11 @@ docs/
 
 # WeChat Agent sandbox (dev: created next to the app in the repo root)
 wechat-agent/
+
+# Bundled whisper.cpp binaries + models (pulled by `npm run fetch-whisper`; too large for git)
+resources/whisper/bin/
+resources/whisper/models/*.bin
+resources/whisper/.whisper-bin.zip
+
+# scratch downloads / test audio
+.tmp/

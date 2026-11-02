@@ -81,7 +81,7 @@ export default function BatchApprovalDialog() {
             <span className="text-nova-text-secondary text-[12px] min-w-0 flex-1 whitespace-pre-line break-words">
               {previews?.[index] || JSON.stringify(tc.arguments || {})}
             </span>
-            <label className="ml-auto flex items-center gap-1 text-[10px] text-nova-text-muted cursor-pointer select-none shrink-0">
+            <label className="ml-auto flex items-center gap-1 text-[11px] text-nova-text-muted cursor-pointer select-none shrink-0">
               <input
                 type="checkbox"
                 checked={alwaysAllow.has(tc.name)}

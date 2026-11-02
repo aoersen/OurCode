@@ -55,7 +55,7 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
         <div className="flex items-center gap-2 mb-3 text-nova-text-primary">
           <MSIcon name="checklist" className="text-[18px] leading-none" />
           <h3 className="text-sm font-semibold">{t('agent.todoList')}</h3>
-          <span className="ml-auto text-[10px] font-medium text-nova-text-muted shrink-0">
+          <span className="ml-auto text-[11px] font-medium text-nova-text-muted shrink-0">
             {t('agent.doneCount', { done: todos.filter((x) => x.status === 'completed').length, total: todos.length })}
           </span>
         </div>
@@ -75,7 +75,7 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
             >
               <TodoStatusIcon status={todo.status} />
               <span className="min-w-0 flex-1 leading-snug">{todo.content}</span>
-              <span className="text-[10px] shrink-0 opacity-70 text-nova-text-muted">
+              <span className="text-[11px] shrink-0 opacity-70 text-nova-text-muted">
                 {t(STATUS_LABEL_KEY[todo.status])}
               </span>
             </div>
@@ -124,7 +124,7 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
       <ol className="space-y-1.5">
         {steps.map((step, i) => (
           <li key={i} className="flex gap-2 text-xs">
-            <span className="shrink-0 w-4 h-4 rounded-full bg-accent-20 text-nova-accent text-[10px] flex items-center justify-center font-medium">
+            <span className="shrink-0 w-4 h-4 rounded-full bg-accent-20 text-nova-accent text-[11px] flex items-center justify-center font-medium">
               {i + 1}
             </span>
             <div className="min-w-0">
@@ -209,8 +209,8 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
       <div className="px-4 py-3 flex flex-col gap-2.5">
         {renderSteps()}
         {/* 最终产物（批准后唯一可写范围）——未声明则提示 fail closed */}
-        <div className="bg-[#f8fafc] dark:bg-white/5 rounded-lg p-2.5 border border-nova-border flex flex-col gap-1">
-          <span className="text-[10px] font-semibold tracking-wider text-nova-text-muted">
+        <div className="bg-[var(--surface-sunken)] rounded-lg p-2.5 border border-nova-border flex flex-col gap-1">
+          <span className="text-[11px] font-semibold tracking-wider text-nova-text-muted">
             {t('agent.planDeliverables')}
           </span>
           {(session.planDeliverables || []).length > 0 ? (
@@ -220,7 +220,7 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
           ) : (
             <span className="text-[11px] text-nova-text-muted">{t('agent.planNoDeliverables')}</span>
           )}
-          <span className="flex items-center gap-1 text-[10px] text-nova-text-muted">
+          <span className="flex items-center gap-1 text-[11px] text-nova-text-muted">
             <MSIcon name="sync" className="text-[11px] leading-none" />
             {t('agent.planDeliverablesLockHint')}
           </span>

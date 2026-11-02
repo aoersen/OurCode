@@ -69,6 +69,8 @@ export class OllamaAdapter implements LLMAdapter {
     if (req.tools && req.tools.length > 0) {
       body.tools = req.tools
     }
+    // Per-model config overrides (reasoning param mapping) win over defaults.
+    Object.assign(body, req.extraBody)
 
     const response = await llmFetch(url, {
       method: 'POST',

@@ -48,7 +48,7 @@ export default function SubAgentProgressBlock({ toolCallId }: { toolCallId: stri
         <span className="font-mono text-[12px] text-nova-text-primary font-medium shrink-0">{progress.name}</span>
         <span className="text-[11px] text-nova-text-muted shrink-0">{t('chat.subagentTitle')}</span>
         {statusIcon}
-        <span className="ml-auto shrink-0 font-mono text-[10px] text-nova-text-muted">
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-nova-text-muted">
           {t('chat.subagentToolCalls', { n: progress.toolCallCount })}
           {progress.tokenCount > 0 && <> · {t('chat.subagentTokens', { n: progress.tokenCount })}</>}
         </span>

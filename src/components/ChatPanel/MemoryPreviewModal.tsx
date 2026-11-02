@@ -57,7 +57,7 @@ export default function MemoryPreviewModal({
             <span className="text-lg">🧠</span>
             <div>
               <strong className="text-sm text-nova-text-primary">{t('chat.memoryPreviewTitle')}</strong>
-              <div className="text-[10px] text-nova-text-muted">{t('chat.memoryPreviewHint')}</div>
+              <div className="text-[11px] text-nova-text-muted">{t('chat.memoryPreviewHint')}</div>
             </div>
           </div>
           <button onClick={onCancel} className="text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover p-1 rounded transition-colors">
@@ -105,7 +105,7 @@ export default function MemoryPreviewModal({
               </button>
             </div>
             {scope === 'project' && projectName && (
-              <span className="text-[10px] text-nova-text-muted truncate min-w-0">
+              <span className="text-[11px] text-nova-text-muted truncate min-w-0">
                 {t('chat.memoryScopeInProject', { project: projectName })}
               </span>
             )}
@@ -129,7 +129,7 @@ export default function MemoryPreviewModal({
             <button
               onClick={handleSave}
               disabled={!canSave}
-              className="px-4 py-1.5 text-xs font-medium text-white bg-[#2563eb] hover:opacity-90 disabled:opacity-40 rounded-lg transition-opacity flex items-center gap-1.5"
+              className="px-4 py-1.5 text-xs font-medium text-white bg-nova-accent hover:opacity-90 disabled:opacity-40 rounded-lg transition-opacity flex items-center gap-1.5"
             >
               {saving ? (
                 <>

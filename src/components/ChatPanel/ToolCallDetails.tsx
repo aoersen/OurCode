@@ -14,7 +14,7 @@ export default function ToolCallDetails({ toolCall, result }: ToolCallDetailsPro
 
   return (
     <div className="border border-nova-border rounded-lg overflow-hidden bg-nova-surface/40">
-      <div className="px-2.5 pt-1.5 text-[10px] uppercase tracking-wider text-nova-text-muted font-semibold">
+      <div className="px-2.5 pt-1.5 text-[11px] uppercase tracking-wider text-nova-text-muted font-semibold">
         {t('tool.params')}
       </div>
       <pre className="px-2.5 pb-1.5 pt-0.5 text-[12px] font-mono text-nova-text-secondary whitespace-pre-wrap break-all leading-[1.55] max-h-32 overflow-y-auto">
@@ -23,13 +23,13 @@ export default function ToolCallDetails({ toolCall, result }: ToolCallDetailsPro
       {result && (
         <>
           <div className="px-2.5 pt-1.5 flex items-center justify-between border-t border-nova-border/60">
-            <span className="text-[10px] uppercase tracking-wider text-nova-text-muted font-semibold">
+            <span className="text-[11px] uppercase tracking-wider text-nova-text-muted font-semibold">
               {t('tool.result')}
             </span>
             <button
               onClick={() => { navigator.clipboard.writeText(result.result).catch(() => { /* ignore */ }) }}
               title={t('common.copy')}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-nova-hover border border-nova-border text-nova-text-muted hover:text-nova-text-primary hover:border-nova-accent/40 transition-colors"
+              className="text-[11px] px-1.5 py-0.5 rounded bg-nova-hover border border-nova-border text-nova-text-muted hover:text-nova-text-primary hover:border-nova-accent/40 transition-colors"
             >
               {t('common.copy')}
             </button>

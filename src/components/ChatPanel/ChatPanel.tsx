@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ChatMessages from './ChatMessages'
 import AgentStatusMiniPanel from './AgentStatusMiniPanel'
 import AgentTraceView from './AgentTraceView'
@@ -20,11 +20,25 @@ import { resolveThinkingLevel } from '@/types'
 import MSIcon from '@/components/Common/icons/MSIcon'
 import Button from '@/components/Common/Button'
 import { isComposingEvent } from '@/utils/composition'
+import { getReasoningLevels } from '@/services/llm/modelDefaults'
 
+/** Thinking-level menu entries; the visible subset follows the model config. */
+const THINKING_LEVEL_OPTIONS = [
+  { value: 'off', label: 'chat.thinkingLevelOff', hint: 'chat.thinkingLevelOffHint' },
+  { value: 'low', label: 'chat.thinkingLevelLow', hint: 'chat.thinkingLevelLowHint' },
+  { value: 'medium', label: 'chat.thinkingLevelMedium', hint: 'chat.thinkingLevelMediumHint' },
+  { value: 'high', label: 'chat.thinkingLevelHigh', hint: 'chat.thinkingLevelHighHint' },
+  { value: 'max', label: 'chat.thinkingLevelMax', hint: 'chat.thinkingLevelMaxHint' },
+] as const
+
+/** Icon-only header action. `title` doubles as the accessible name: title alone
+ *  is not a reliable a11y name (inconsistent SR support, no tooltip on touch),
+ *  so it is mirrored into aria-label. */
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
+      aria-label={title}
       className="w-7 h-7 flex items-center justify-center rounded-md text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
       title={title}
     >
@@ -109,6 +123,13 @@ export default function ChatPanel() {
   const updateSessionParams = useChatStore((s) => s.updateSessionParams)
   const activeConfigGroupId = useConfigStore((s) => s.activeConfigGroupId)
   const models = useConfigStore((s) => s.models)
+  const customModels = useConfigStore((s) => s.customModels)
+  // Per-model config restricts which thinking levels the menu offers; a value
+  // already saved in the session stays visible even if it is no longer listed.
+  const availableThinkingLevels = useMemo(
+    () => (activeSession ? getReasoningLevels(activeSession.model, customModels) : []),
+    [activeSession, customModels],
+  )
   const activeConfigGroup = useConfigStore((s) => s.configGroups.find((g) => g.id === s.activeConfigGroupId))
   // The session's OWN config group — the chat loop resolves the runtime model
   // from session.configGroupId, so the pill must follow it, not the globally
@@ -131,6 +152,7 @@ export default function ChatPanel() {
   // 目标模式开关已迁至「一人公司」（左侧 3D 办公室视图）；此处保留只读状态，
   // 用于模式栏在目标模式运行期间隐藏 auto_edit/plan 审批选项。
   const targetMode = activeSession?.targetMode === true
+  const currentThinkingLevel = activeSession ? resolveThinkingLevel(activeSession.modelParams) : 'off'
   // Same resolution as the agent loop (`session.model || group.defaultModel`) —
   // previously the pill fell back to nothing when session.model was empty,
   // showing "选择模型" while the conversation actually ran on the default model.
@@ -183,14 +205,14 @@ export default function ChatPanel() {
                     OurCode AI
                   </strong>
                   {activeConfigGroup ? (
-                    <span className="inline-flex items-center gap-1 text-[10px] text-green-500 shrink-0">
+                    <span className="inline-flex items-center gap-1 text-[11px] text-green-500 shrink-0">
                       <span className="w-1 h-1 rounded-full bg-green-500 animate-pulse-dot" />
                       {t('chat.connected')}
                     </span>
                   ) : (
                     <button
                       onClick={() => openSettings()}
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] text-nova-text-muted bg-nova-hover hover:text-nova-text-primary border border-nova-border shrink-0 transition-colors"
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] text-nova-text-muted bg-nova-hover hover:text-nova-text-primary border border-nova-border shrink-0 transition-colors"
                       title={t('chat.notConfigured')}
                     >
                       <span className="w-1 h-1 rounded-full bg-gray-500" />
@@ -206,7 +228,7 @@ export default function ChatPanel() {
                     </>
                   )}
                 </div>
-                <span className="text-[10px] text-nova-text-muted block truncate">
+                <span className="text-[11px] text-nova-text-muted block truncate">
                   {activeConfigGroup ? activeConfigGroup.name : t('chat.selectModelHint')}
                 </span>
               </div>
@@ -270,21 +292,21 @@ export default function ChatPanel() {
                       >
                         <button
                           onClick={() => { setShowArena(true); setShowMoreMenu(false) }}
-                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
+                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-nova-text-primary flex items-center gap-2 transition-colors"
                         >
                           <MSIcon name="compare_arrows" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.arenaCompare')}
                         </button>
                         <button
                           onClick={() => { setShowWorkflows(true); setShowMoreMenu(false) }}
-                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
+                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-nova-text-primary flex items-center gap-2 transition-colors"
                         >
                           <MSIcon name="sync" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.workflows')}
                         </button>
                         <button
                           onClick={() => { openMemoryManager(); setShowMoreMenu(false) }}
-                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
+                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-nova-text-primary flex items-center gap-2 transition-colors"
                         >
                           <MSIcon name="memory" className="text-[15px] leading-none text-nova-text-muted" />
                           {t('chat.memory')}
@@ -292,7 +314,7 @@ export default function ChatPanel() {
                         <div className="h-px bg-nova-border my-1" />
                         <button
                           onClick={() => { openSettings(); setShowMoreMenu(false) }}
-                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white flex items-center gap-2 transition-colors"
+                          className="w-full text-left px-3 py-1.5 text-xs text-nova-text-secondary hover:bg-nova-accent/15 hover:text-nova-text-primary flex items-center gap-2 transition-colors"
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
@@ -339,7 +361,7 @@ export default function ChatPanel() {
                     模型仍可能自行输出）；最高档在支持预算的 provider
                     （Anthropic/Gemini）上调满 16384 token。 */}
                 <select
-                  value={resolveThinkingLevel(activeSession.modelParams)}
+                  value={currentThinkingLevel}
                   onChange={(e) =>
                     updateSessionParams(activeSession.id, { thinkingLevel: e.target.value as 'off' | 'low' | 'medium' | 'high' | 'max' })
                   }
@@ -347,11 +369,11 @@ export default function ChatPanel() {
                   title={t('chat.thinkingLevelLabel')}
                   style={{ backgroundImage: 'none' }}
                 >
-                  <option value="off" title={t('chat.thinkingLevelOffHint')}>{t('chat.thinkingLevelOff')}</option>
-                  <option value="low" title={t('chat.thinkingLevelLowHint')}>{t('chat.thinkingLevelLow')}</option>
-                  <option value="medium" title={t('chat.thinkingLevelMediumHint')}>{t('chat.thinkingLevelMedium')}</option>
-                  <option value="high" title={t('chat.thinkingLevelHighHint')}>{t('chat.thinkingLevelHigh')}</option>
-                  <option value="max" title={t('chat.thinkingLevelMaxHint')}>{t('chat.thinkingLevelMax')}</option>
+                  {THINKING_LEVEL_OPTIONS
+                    .filter((o) => o.value === currentThinkingLevel || availableThinkingLevels.includes(o.value))
+                    .map((o) => (
+                      <option key={o.value} value={o.value} title={t(o.hint)}>{t(o.label)}</option>
+                    ))}
                 </select>
                 {/* 编辑方式 —— 四档权限模式（手动确认/自动编辑/计划/完全访问）。
                     弹出菜单展示图标 + 一句话说明；Shift+Tab 可循环切换。

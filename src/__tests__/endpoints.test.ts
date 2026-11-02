@@ -23,6 +23,40 @@ describe('buildChatUrl — openai (chat completions)', () => {
   })
 })
 
+describe('buildChatUrl — vendor base URLs from the catalog', () => {
+  it('appends /chat/completions to versioned roots other than /v1', () => {
+    expect(buildChatUrl('https://open.bigmodel.cn/api/paas/v4', 'openai'))
+      .toBe('https://open.bigmodel.cn/api/paas/v4/chat/completions')
+    expect(buildChatUrl('https://ark.cn-beijing.volces.com/api/v3', 'openai'))
+      .toBe('https://ark.cn-beijing.volces.com/api/v3/chat/completions')
+    expect(buildChatUrl('https://qianfan.baidubce.com/v2', 'openai'))
+      .toBe('https://qianfan.baidubce.com/v2/chat/completions')
+  })
+
+  it('understands /v1/openai and bare /openai roots', () => {
+    expect(buildChatUrl('https://api.deepinfra.com/v1/openai', 'openai'))
+      .toBe('https://api.deepinfra.com/v1/openai/chat/completions')
+    expect(buildChatUrl('https://api.longcat.chat/openai', 'openai'))
+      .toBe('https://api.longcat.chat/openai/v1/chat/completions')
+    expect(buildChatUrl('https://api.novita.ai/openai', 'openai'))
+      .toBe('https://api.novita.ai/openai/v1/chat/completions')
+  })
+
+  it('keeps hosts that serve chat completions at the root', () => {
+    expect(buildChatUrl('https://api.perplexity.ai', 'openai'))
+      .toBe('https://api.perplexity.ai/chat/completions')
+    expect(buildChatUrl('https://models.inference.ai.azure.com', 'openai'))
+      .toBe('https://models.inference.ai.azure.com/chat/completions')
+  })
+
+  it('derives model-list URLs with the same root rules', () => {
+    expect(buildModelsUrl('https://open.bigmodel.cn/api/paas/v4', 'openai'))
+      .toBe('https://open.bigmodel.cn/api/paas/v4/models')
+    expect(buildModelsUrl('https://api.longcat.chat/openai', 'openai'))
+      .toBe('https://api.longcat.chat/openai/v1/models')
+  })
+})
+
 describe('buildChatUrl — responses', () => {
   it('appends /responses when base already ends with /v1', () => {
     expect(buildChatUrl('https://api.openai.com/v1', 'responses')).toBe('https://api.openai.com/v1/responses')

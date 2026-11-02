@@ -12,6 +12,12 @@ import { useMemoryStore } from './memoryStore'
 import { useUIStore } from './uiStore'
 import { getLastModelForGroup } from './configStore'
 import { TARGET_MODE_INSTRUCTION } from './targetModeInstruction'
+import { readNoLimitsConfig, getNoLimitsPresetText } from './noLimitsStore'
+import {
+  resolveNoLimitsLayers,
+  composeNoLimitsPrompt,
+  type NoLimitsSessionKind,
+} from '@/services/noLimits/policy'
 import { refreshBudgetLimit, projectBudgetExceeded, getProjectBudgetUsage, resetProjectBudget } from '@/services/targetMode/budget'
 import { ensureInitialized, resetTargetModeState, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
 import {
@@ -29,7 +35,9 @@ import { parseLLMError } from '@/services/llm/errors'
 import { classifyLLMError, isSilentContextOverflow } from '@/services/llm/classify'
 import { redactSecrets } from '@/services/llm/redact'
 import { maybeCompact, runSummarizer, buildSummaryBlock, getContextWindow, DEFAULT_COMPACTION_RATIO } from '@/services/llm/compaction'
+import { resolveRequestMaxTokens, getReasoningParamMap } from '@/services/llm/modelDefaults'
 import { djb2Hash, toolSignature, rememberRequestSignature, getPreviousSignature, analyzeCacheBreak, recordCacheRead, hasSeenCacheRead } from '@/services/llm/cacheDiagnostics'
+import { rememberStablePrefixTokens } from '@/services/llm/contextBreakdown'
 import { ToolExecutor, configureToolOutput, configureSecretRedaction } from '@/services/tools'
 import { ToolCall, ToolResult } from '@/services/tools/types'
 import { writeToolPaths } from '@/services/tools/writePaths'
@@ -981,6 +989,9 @@ export interface ChatState {
   // Core functionality
   sendMessage: (sessionId: string, content: string, contextFiles?: string[], attachments?: MessageAttachment[], opts?: { workspacePath?: string; extraSystemText?: string }) => Promise<void>
   regenerateFromMessage: (sessionId: string, msgId: string) => Promise<void>
+  /** Retry after an error card without rewinding the turn: removes only the
+   *  error message and re-runs on the existing committed history. */
+  retryFailedRequest: (sessionId: string, messageId: string) => Promise<void>
   stopGeneration: (sessionId: string) => void
 
   // Branch: fork the conversation into a new session (see implementation)
@@ -1007,7 +1018,9 @@ export interface ChatState {
 // AND double-counted English (englishWords × 1.3 PLUS every char × 0.5), so a
 // single agent conversation with a few file reads could show 70–80% of a 200K
 // window that the real request never reached.
-function estimateTokens(text: string): number {
+// Exported for the context-usage breakdown (contextUsage.ts) — the panel must
+// split summary/history with the SAME estimator the request path uses.
+export function estimateTokens(text: string): number {
   const chineseChars = (text.match(/[一-鿿]/g) || []).length
   // CJK ≈ 1.2 tokens/char; everything else (English, code, JSON, punctuation,
   // whitespace) ≈ 3.3 chars/token.
@@ -3415,6 +3428,26 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     }
   },
 
+  retryFailedRequest: async (sessionId, messageId) => {
+    const session = get().sessions.find((s) => s.id === sessionId)
+    if (!session || get().runningSessionIds.includes(sessionId)) return
+    const failed = session.messages.find((m) => m.id === messageId)
+    if (!failed?.error) return
+
+    // Remove ONLY the error card. Regenerate rewinds to the last user message,
+    // which on a long agent turn would throw away every committed round
+    // (thinking, tool calls, partial answers) before the retry even starts.
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === sessionId
+          ? { ...sess, messages: reindexMessages(sess.messages.filter((m) => m.id !== messageId)), updatedAt: Date.now() }
+          : sess
+      ),
+    }))
+    await get().saveSession(sessionId)
+    await runAgentLoop(sessionId)
+  },
+
   stopGeneration: (sessionId) => {
     // Stop ONLY the given session's generation — parallel conversations must
     // never be stopped by acting on a different session's button.
@@ -3959,6 +3992,12 @@ async function runAgentLoop(
   // One-person-company sessions (office / target mode / role worker) use the
   // default-allow + checkpoint model — never approval dialogs.
   const company = isCompanySession(session)
+  // no-limits（从 dsh-purge 接进来的破甲能力）：总开关默认关闭，三层（提示词 /
+  // 免审批 / 危险命令豁免）各自独立。一人公司会话与角色员工带硬边界，no-limits
+  // 对它们一律不生效（resolveNoLimitsLayers 内部折叠）。权限判定每次实时读取，
+  // 用户在运行中关掉开关，下一轮立刻恢复原来的审批行为。
+  const noLimitsKind: NoLimitsSessionKind = company ? 'company' : session.workerRole ? 'worker' : 'chat'
+  const noLimitsLayers = () => resolveNoLimitsLayers(readNoLimitsConfig(), noLimitsKind)
   // Freeze the inbound sequence together with the session snapshot: this run's
   // request is built from `session` (messages added later are NOT in it), so a
   // report delivered after this point must trigger exactly one follow-up run.
@@ -4238,12 +4277,25 @@ async function runAgentLoop(
         }
       }
     } else {
-      const planningPhase = !company && (session.projectEditMode || DEFAULT_PROJECT_EDIT_MODE) === 'plan' && !opts?.planApproved
+      const planningPhase = !company && !noLimitsLayers().permissions &&
+        (session.projectEditMode || DEFAULT_PROJECT_EDIT_MODE) === 'plan' && !opts?.planApproved
       stableSystemPrompt += planningPhase ? PLAN_MODE_INSTRUCTION : AGENT_MODE_INSTRUCTION
     }
   }
   if (opts?.extraSystemText) {
     stableSystemPrompt += '\n\n' + opts.extraSystemText
+  }
+  // no-limits 层 1：破甲提示词覆盖。追加在稳定前缀的最后一段——前面内容逐字节
+  // 不变，provider 的前缀缓存照旧命中；总开关关闭时这里不追加任何内容，最终系统
+  // 提示词与接入前完全一致。公司/员工会话由 policy 折叠为不注入。
+  {
+    const noLimitsConfig = readNoLimitsConfig()
+    const noLimitsPrompt = composeNoLimitsPrompt(
+      noLimitsConfig,
+      noLimitsKind,
+      getNoLimitsPresetText(noLimitsConfig),
+    )
+    if (noLimitsPrompt) stableSystemPrompt += '\n\n' + noLimitsPrompt
   }
 
   let model = (session.model || configGroup.defaultModel || '').trim()
@@ -4506,6 +4558,9 @@ async function runAgentLoop(
     // Company sessions are default-allow; the companyVerdict hook rejects the
     // only unrecoverable cases (outside workspace / remote) without a dialog.
     if (company) return false
+    // no-limits 层 2（免审批）：等效完全访问——所有操作直接执行，不弹审批卡。
+    // 计划模式的只读期同样被压掉（见 isPlanReadOnly）。
+    if (noLimitsLayers().permissions) return false
     if (agentMode !== 'agent') return toolExecutor.requiresApproval(name)
     // Read the CURRENT edit mode live — the anti-flail question can switch
     // it mid-run, and approval rules must follow.
@@ -4525,7 +4580,7 @@ async function runAgentLoop(
   // 已被 PLAN_TOOLS 过滤）。执行期（planApproved）的 file_write 范围由
   // scopeGate 拦截。live 读取——防空转提问可能在运行中切换模式。
   const isPlanReadOnly = () =>
-    agentMode === 'agent' && !opts?.planApproved &&
+    agentMode === 'agent' && !opts?.planApproved && !noLimitsLayers().permissions &&
     (useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE) === 'plan'
 
   const scopeGate = async (tc: ToolCall): Promise<boolean> => {
@@ -4561,6 +4616,9 @@ async function runAgentLoop(
     needsApproval,
     getPreview: (tc) => toolExecutor.getPreview(tc),
     isAborted: () => abortController.signal.aborted,
+    // no-limits 层 3（危险命令豁免）：仅在免审批同时开启时生效；默认不提供开关，
+    // 危险命令照旧强制人工确认。
+    relaxDanger: () => noLimitsLayers().dangerGuard,
     blockedReason: (name) =>
       isPlanReadOnly() && kindOf(name) !== 'read' && kindOf(name) !== 'interactive'
         ? '计划模式只读，已拒绝该写入'
@@ -4778,7 +4836,7 @@ async function runAgentLoop(
       // plan-mode anti-flail question can switch the edit mode mid-run and it
       // takes effect on the very next round.
       const projectEditMode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode || DEFAULT_PROJECT_EDIT_MODE
-      const usePlanTools = agentMode === 'agent' && projectEditMode === 'plan' && !opts?.planApproved && !targetMode && !company
+      const usePlanTools = agentMode === 'agent' && projectEditMode === 'plan' && !opts?.planApproved && !targetMode && !company && !noLimitsLayers().permissions
       // 角色员工（M4）：工具边界 = 角色定义的 guard（tools 白名单 + 读写路径），
       // 与子智能体同机制——员工只能碰自己角色允许的工具。
       const workerToolFilter = workerGuard ? (name: string) => workerGuard!.toolAllowed(name) : undefined
@@ -4801,6 +4859,9 @@ async function runAgentLoop(
       const prevSignature = getPreviousSignature(sessionId)
       rememberRequestSignature(sessionId, requestSignature)
       const stablePrefixEstTokens = estimateTokens(stable) + estimateTokens(JSON.stringify(toolDefinitions))
+      // Feed the context-usage panel: "system + tools" is only knowable here,
+      // and the UI must never rebuild the prompt just to draw a breakdown.
+      rememberStablePrefixTokens(sessionId, stablePrefixEstTokens)
 
       // 统一思考档位（thinkingLevel）派生请求参数：max 在支持档位的 provider
       // 上调满（Anthropic/Gemini 16384 预算），不支持的归一为 high。
@@ -4816,12 +4877,15 @@ async function runAgentLoop(
         })),
         stream: true,
         temperature: session.modelParams.temperature,
-        maxTokens: session.modelParams.maxTokens,
+        // Per-session value wins; otherwise the model config's saved output cap.
+        maxTokens: resolveRequestMaxTokens(model, session.modelParams.maxTokens),
         topP: session.modelParams.topP,
         frequencyPenalty: session.modelParams.frequencyPenalty,
         presencePenalty: session.modelParams.presencePenalty,
         thinking: thinkingLevel !== 'off',
         reasoningEffort: thinkingLevel !== 'off' ? thinkingLevel : undefined,
+        // Model config's per-level mapping (e.g. DeepSeek reasoning_effort).
+        extraBody: getReasoningParamMap(model, thinkingLevel),
         tools: toolDefinitions,
       }
 
@@ -5785,10 +5849,16 @@ async function runAgentLoop(
       }))
       chatStore.addMessage(sessionId, {
         role: 'assistant',
-        content: chatError.message,
+        // Keep whatever streamed before the failure. When nothing streamed,
+        // fall back to the friendly text so a reload still shows what happened
+        // (the structured error card itself is not persisted). The card always
+        // renders the friendly text while it is live.
+        content: stream?.content?.trim() ? stream.content : chatError.message,
+        thinking: stream?.thinking || undefined,
         error: chatError,
         runId,
       })
+      clearStream()
       if (runId) {
         useChatStore.getState().setRunStatus(runId, 'error', { lastError: chatError.message })
       }

@@ -116,7 +116,7 @@ export default function WorkflowModal({ onClose }: { onClose: () => void }) {
             <span className="text-lg">🔁</span>
             <div>
               <strong className="text-sm text-nova-text-primary">{t('chat.workflowManage')}</strong>
-              <div className="text-[10px] text-nova-text-muted">{t('chat.workflowSubtitle')} · {workflows.length} 个工作流</div>
+              <div className="text-[11px] text-nova-text-muted">{t('chat.workflowSubtitle')} · {workflows.length} 个工作流</div>
             </div>
           </div>
           <button onClick={onClose} className="text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover p-1 rounded transition-colors">
@@ -145,7 +145,7 @@ export default function WorkflowModal({ onClose }: { onClose: () => void }) {
                 >
                   <span>{cat.icon}</span>
                   <span>{cat.label}</span>
-                  {count > 0 && <span className="text-[10px] opacity-60">({count})</span>}
+                  {count > 0 && <span className="text-[11px] opacity-60">({count})</span>}
                 </button>
               )
             })}
@@ -193,7 +193,7 @@ export default function WorkflowModal({ onClose }: { onClose: () => void }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="text-xs font-semibold text-nova-text-primary">{w.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
+                      <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
                         style={{ background: `${catColor}15`, color: catColor }}>
                         {CATEGORIES.find((c) => c.key === category)?.label || '其他'}
                       </span>
@@ -201,7 +201,7 @@ export default function WorkflowModal({ onClose }: { onClose: () => void }) {
                     {w.description && (
                       <div className="text-[11px] text-nova-text-muted mb-1 truncate">{w.description}</div>
                     )}
-                    <pre className="text-[10px] text-nova-text-secondary whitespace-pre-wrap break-all max-h-12 overflow-hidden opacity-70 leading-relaxed">{w.prompt}</pre>
+                    <pre className="text-[11px] text-nova-text-secondary whitespace-pre-wrap break-all max-h-12 overflow-hidden opacity-70 leading-relaxed">{w.prompt}</pre>
                   </div>
 
                   {/* Actions */}
@@ -265,7 +265,7 @@ export default function WorkflowModal({ onClose }: { onClose: () => void }) {
             className="w-full px-3 py-2 text-sm bg-nova-bg border border-nova-border rounded-lg outline-none focus:border-nova-accent/60 text-nova-text-primary placeholder:text-nova-text-muted resize-none"
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-nova-text-muted">
+            <span className="text-[11px] text-nova-text-muted">
               提示词中可使用 {'{selection}'} 引用选中的代码
             </span>
             <div className="flex items-center gap-2">

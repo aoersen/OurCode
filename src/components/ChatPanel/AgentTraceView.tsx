@@ -44,7 +44,7 @@ export default function AgentTraceView() {
       {/* 头部：标题 + 统计 */}
       <div className="shrink-0 px-3 pt-2 pb-1.5 border-b border-nova-border flex flex-col gap-0.5">
         <h2 className="text-[14px] font-semibold leading-tight text-nova-text-primary">{t('agent.trace')}</h2>
-        <span className="font-mono text-[10px] leading-tight text-nova-text-muted">
+        <span className="font-mono text-[11px] leading-tight text-nova-text-muted">
           {t('agent.traceStats', { records: entries.length, errors })}
         </span>
       </div>
@@ -77,7 +77,7 @@ function TraceRow({ index, entry }: { index: number; entry: TraceEntry }) {
       <div className="flex items-start px-2 py-1">
         {/* 序号 */}
         <span
-          className={`w-5 text-right text-[10px] tabular-nums shrink-0 pt-[2px] mr-2.5 ${
+          className={`w-5 text-right text-[11px] tabular-nums shrink-0 pt-[2px] mr-2.5 ${
             isError ? 'text-error opacity-70' : 'text-nova-text-muted'
           }`}
         >
@@ -162,7 +162,7 @@ function RowContent({ entry, isError }: { entry: TraceEntry; isError: boolean })
           <span className={isError ? 'text-error' : 'text-nova-text-muted'}> · {summary}</span>
         )}
         {entry.result?.durationMs != null && (
-          <span className={`text-[10px] ml-1 ${isError ? 'text-error opacity-70' : 'text-nova-text-muted'}`}>
+          <span className={`text-[11px] ml-1 ${isError ? 'text-error opacity-70' : 'text-nova-text-muted'}`}>
             ({formatMs(entry.result.durationMs)})
           </span>
         )}

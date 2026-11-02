@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useChatStore } from '@/stores/chatStore'
@@ -24,6 +25,24 @@ function runEditorCommand(command: string): void {
   editor?.trigger('menu', command, null)
 }
 
+/** Dropdown geometry: keep the panel inside the viewport, never clipped. */
+const MENU_MIN_WIDTH = 200
+const MENU_GAP = 4
+const MENU_EDGE_PADDING = 8
+/**
+ * The dropdown is portalled to <body> and positioned fixed, so it must sit
+ * above every in-window layer. Content panels top out at z-10 (office
+ * overlay) / z-6 (terminal, problems); modals use z-[100]–z-[300].
+ */
+const MENU_Z_INDEX = 1000
+
+interface MenuBox {
+  left: number
+  top: number
+  minWidth: number
+  maxHeight: number
+}
+
 export default function TitleBar() {
   // All actions (stable refs) — a whole-store subscription would re-render the
   // title bar on every uiStore change (notifications, drag-resize, ...).
@@ -46,7 +65,12 @@ export default function TitleBar() {
 
   const [activeMenu, setActiveMenu] = useState<string | null>(null)
   const [menuItemIndex, setMenuItemIndex] = useState(0)
+  const [menuBox, setMenuBox] = useState<MenuBox | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  // The dropdown lives in a portal (see the render below), so the outside-click
+  // check needs the panel's own node as well as the menu bar's.
+  const menuPanelRef = useRef<HTMLDivElement>(null)
+  const menuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
 
   // Track this window's own maximize state (per-window events from main)
   useEffect(() => {
@@ -54,15 +78,55 @@ export default function TitleBar() {
     return window.electronAPI.onMaximized((v) => useUIStore.getState().setMaximized(v))
   }, [])
 
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setActiveMenu(null)
-      }
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+  /** Anchor the fixed dropdown under its button, clamped to the viewport. */
+  const positionMenu = useCallback((label: string) => {
+    const button = menuButtonRefs.current[label]
+    if (!button) return
+    const rect = button.getBoundingClientRect()
+    const top = rect.bottom + MENU_GAP
+    const maxLeft = window.innerWidth - MENU_MIN_WIDTH - MENU_EDGE_PADDING
+    setMenuBox({
+      left: Math.max(MENU_EDGE_PADDING, Math.min(rect.left, Math.max(MENU_EDGE_PADDING, maxLeft))),
+      top,
+      minWidth: MENU_MIN_WIDTH,
+      // Short windows scroll inside the panel instead of having the tail of the
+      // menu (保存/偏好设置…) fall outside the window and read as "cut off".
+      maxHeight: Math.max(160, window.innerHeight - top - MENU_EDGE_PADDING),
+    })
   }, [])
+
+  const openMenu = useCallback((label: string) => {
+    positionMenu(label)
+    setActiveMenu(label)
+    setMenuItemIndex(0)
+  }, [positionMenu])
+
+  // Close on any mousedown outside the menu bar AND outside the portalled panel.
+  useEffect(() => {
+    if (!activeMenu) return
+    const handlePointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null
+      if (!target) return
+      if (menuRef.current?.contains(target)) return
+      if (menuPanelRef.current?.contains(target)) return
+      setActiveMenu(null)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [activeMenu])
+
+  // Keep the fixed panel glued to its button when the window resizes/zooms or
+  // anything scrolls underneath it.
+  useEffect(() => {
+    if (!activeMenu) return
+    const reposition = () => positionMenu(activeMenu)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [activeMenu, positionMenu])
 
   const handleMinimize = useCallback(() => window.electronAPI.minimize(), [])
   const handleMaximize = useCallback(() => window.electronAPI.maximize(), [])
@@ -256,8 +320,11 @@ export default function TitleBar() {
   ]
 
   const handleMenuClick = (menuLabel: string) => {
-    setActiveMenu(activeMenu === menuLabel ? null : menuLabel)
-    setMenuItemIndex(0)
+    if (activeMenu === menuLabel) {
+      setActiveMenu(null)
+      return
+    }
+    openMenu(menuLabel)
   }
 
   const handleItemClick = (item: MenuItem) => {
@@ -336,19 +403,43 @@ export default function TitleBar() {
               role="menuitem"
               aria-haspopup="menu"
               aria-expanded={activeMenu === menu.label}
+              ref={(node) => { menuButtonRefs.current[menu.label] = node }}
               className={`my-2 h-7 px-2.5 rounded-full text-xs transition-colors ${
                 activeMenu === menu.label
                   ? 'bg-nova-accent/15 text-nova-text-primary'
                   : 'text-nova-text-secondary hover:text-nova-text-primary hover:bg-nova-hover'
               }`}
               onClick={() => handleMenuClick(menu.label)}
-              onMouseEnter={() => activeMenu && setActiveMenu(menu.label)}
+              onMouseEnter={() => {
+                if (activeMenu && activeMenu !== menu.label) openMenu(menu.label)
+              }}
             >
               {menu.label}
             </button>
 
-            {activeMenu === menu.label && (
-              <div className="absolute top-full left-0 glass-panel rounded-lg py-1 min-w-[200px] z-[100] animate-fade-in" role="menu">
+            {/*
+              The dropdown is portalled to <body> and positioned `fixed`.
+              Rendered inline it sat inside the title bar's own paint slot, so
+              sibling panels that come later in the DOM (sidebar / chat /
+              terminal / office overlay) could cover it — and any ancestor with
+              `overflow-hidden` or a backdrop-filter stacking context could clip
+              it. At the top level it can never be covered or clipped.
+            */}
+            {activeMenu === menu.label && menuBox && createPortal(
+              <div
+                ref={menuPanelRef}
+                role="menu"
+                data-titlebar-menu=""
+                className="fixed glass-panel rounded-lg py-1 overflow-y-auto animate-fade-in"
+                style={{
+                  left: menuBox.left,
+                  top: menuBox.top,
+                  minWidth: menuBox.minWidth,
+                  maxHeight: menuBox.maxHeight,
+                  zIndex: MENU_Z_INDEX,
+                }}
+                onKeyDown={handleMenuKeyDown}
+              >
                 {menu.items.map((item, index) =>
                   item.separator ? (
                     <div key={index} className="h-px bg-nova-border my-1" role="separator" />
@@ -361,7 +452,7 @@ export default function TitleBar() {
                           ? 'text-nova-text-muted cursor-default'
                           : index === menuItemIndex
                             ? 'bg-nova-accent/15 text-nova-text-primary'
-                            : 'text-nova-text-secondary hover:bg-nova-accent/15 hover:text-white'
+                            : 'text-nova-text-secondary hover:bg-nova-accent/15 hover:text-nova-text-primary'
                       }`}
                       onClick={() => handleItemClick(item)}
                       onMouseEnter={() => setMenuItemIndex(index)}
@@ -374,7 +465,8 @@ export default function TitleBar() {
                     </button>
                   )
                 )}
-              </div>
+              </div>,
+              document.body,
             )}
           </div>
         ))}

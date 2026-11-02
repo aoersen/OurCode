@@ -196,7 +196,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
           )}
         </div>
         {searchQuery && (
-          <div className="text-[10px] text-nova-text-muted mt-1">
+          <div className="text-[11px] text-nova-text-muted mt-1">
             {t('chat.foundSessions', { count: filteredSessions.length })}
           </div>
         )}
@@ -252,12 +252,12 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
                       )}
                       {session.title}
                     </div>
-                    <div className="text-[10px] text-nova-text-muted mt-0.5">
+                    <div className="text-[11px] text-nova-text-muted mt-0.5">
                       {formatDate(sessionLastUserActivity(session))} · {t('chat.messageCount', { count: messageCount })}
                       {session.archivedAt && t('chat.archivedSuffix')}
                     </div>
                     {matchSnippet && (
-                      <div className="text-[10px] text-nova-text-muted mt-0.5 truncate italic">
+                      <div className="text-[11px] text-nova-text-muted mt-0.5 truncate italic">
                         ...{matchSnippet}...
                       </div>
                     )}
@@ -290,7 +290,7 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
         <div className="shrink-0 px-2 py-1.5 border-t border-nova-border">
           <button
             onClick={() => setShowArchived(!showArchived)}
-            className={`w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-full text-[10px] transition-colors ${
+            className={`w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-full text-[11px] transition-colors ${
               showArchived
                 ? 'text-nova-accent bg-nova-accent/10'
                 : 'text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover'

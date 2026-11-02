@@ -11,6 +11,9 @@ interface ThinkingSectionProps {
   /** 流式进行中：收起状态下显示「思考中…」脉冲提示而不是首行预览，
    *  避免把内心独白刷屏给用户看；点击仍可展开查看。 */
   streaming?: boolean
+  /** 运行已耗秒数（仅流式中使用）—— 收起时跟着脉动点一起显示，
+   *  让用户看得出还在推进，而不是一条静止的空行。 */
+  elapsedSeconds?: number
 }
 
 /**
@@ -18,7 +21,7 @@ interface ThinkingSectionProps {
  * （思考 → 文字 → 工具 → 思考 → 文字 → 工具）。
  * 收起时只留「💭 思考 + 首行预览」，展开后显示完整思考文本。
  */
-export default function ThinkingSection({ thinking, defaultExpanded = false, streaming = false }: ThinkingSectionProps) {
+export default function ThinkingSection({ thinking, defaultExpanded = false, streaming = false, elapsedSeconds = 0 }: ThinkingSectionProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded)
   const t = useI18n()
   // 用户是否手动点过折叠头/收起按钮 —— 点过之后一切以用户为准，不再自动开合。
@@ -62,10 +65,15 @@ export default function ThinkingSection({ thinking, defaultExpanded = false, str
           <MSIcon name="psychology" className="text-[15px] leading-none shrink-0" />
           <span className="text-[11px] uppercase tracking-[0.05em] font-semibold shrink-0">{t('chat.thinkingTitle')}</span>
           {streaming && !isExpanded && (
-            <span className="inline-flex gap-0.5 shrink-0" aria-hidden>
-              <span className="w-1 h-1 rounded-full animate-think-bounce" style={{ background: '#838485' }} />
-              <span className="w-1 h-1 rounded-full animate-think-bounce" style={{ background: '#838485', animationDelay: '0.2s' }} />
-              <span className="w-1 h-1 rounded-full animate-think-bounce" style={{ background: '#838485', animationDelay: '0.4s' }} />
+            <span className="inline-flex items-center gap-1 shrink-0" aria-hidden>
+              <span className="inline-flex gap-0.5">
+                <span className="w-1 h-1 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)' }} />
+                <span className="w-1 h-1 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)', animationDelay: '0.2s' }} />
+                <span className="w-1 h-1 rounded-full animate-think-bounce" style={{ background: 'var(--text-muted)', animationDelay: '0.4s' }} />
+              </span>
+              {elapsedSeconds > 0 && (
+                <span className="text-[11px] font-mono normal-case tracking-normal">{elapsedSeconds}s</span>
+              )}
             </span>
           )}
         </span>

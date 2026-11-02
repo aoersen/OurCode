@@ -96,8 +96,8 @@ export default function ToolStepRow({ toolCall, result, rejected, suspended = fa
   const pillCls = expanded
     ? 'border-nova-accent/40 bg-nova-hover'
     : isPending
-      ? 'border-[#e2e8f0] bg-primary-container/50 hover:border-nova-accent/30'
-      : 'border-[#e2e8f0] bg-white dark:bg-nova-surface dark:border-white/10 hover:border-[#cbd5e1] dark:hover:border-white/20'
+      ? 'border-nova-border bg-primary-container/50 hover:border-nova-accent/30'
+      : 'border-nova-border bg-white dark:bg-nova-surface dark:border-white/10 hover:border-nova-accent/40 dark:hover:border-white/20'
 
   return (
     <div className="flex flex-col gap-1">

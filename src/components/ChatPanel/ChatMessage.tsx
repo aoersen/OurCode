@@ -179,10 +179,10 @@ function TokenUsagePopover({ run, model, placement = 'below' }: { run: AgentRun;
           toolbar button sits at the message bottom, so it opens upward) */}
       <div className={`absolute left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] ${
         placement === 'above'
-          ? '-bottom-[5px] border-t-[6px] border-t-white/90 dark:border-t-[#1b2130] border-b-transparent'
-          : '-top-[5px] border-b-[6px] border-b-white/90 dark:border-b-[#1b2130] border-t-transparent'
+          ? '-bottom-[5px] border-t-[6px] border-t-[var(--surface-popover)] border-b-transparent'
+          : '-top-[5px] border-b-[6px] border-b-[var(--surface-popover)] border-t-transparent'
       }`} />
-      <div className="bg-white/90 dark:bg-[#1b2130]/95 backdrop-blur-xl border border-glass-border dark:border-white/10 rounded-xl shadow-[0_8px_40px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_40px_rgba(0,0,0,0.4)] p-5 flex flex-col gap-4">
+      <div className="bg-[var(--surface-popover)] backdrop-blur-xl border border-glass-border dark:border-white/10 rounded-xl shadow-[0_8px_40px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_40px_rgba(0,0,0,0.4)] p-5 flex flex-col gap-4">
         {/* Title row */}
         <div className="flex justify-between items-center">
           <span className="text-[13px] font-extrabold text-nova-text-primary">{t('chat.usage.title')}</span>
@@ -319,6 +319,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
   const continueGeneration = useChatStore((s) => s.continueGeneration)
   const checkpoints = useChatStore((s) => s.checkpoints)
   const revertCheckpoint = useChatStore((s) => s.revertCheckpoint)
+  const retryFailedRequest = useChatStore((s) => s.retryFailedRequest)
   const condenseMemory = useMemoryStore((s) => s.condenseMemory)
 
   // ── Agent status for assistant header ──
@@ -368,6 +369,12 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
   }
 
   const handleRegenerate = () => {
+    // An error card's "重新生成"/"重试" must not rewind the whole turn — on a
+    // long agent run that would delete every committed round before retrying.
+    if (message.error) {
+      void retryFailedRequest(sessionId, message.id)
+      return
+    }
     // 这条回复改动过文件时改为内嵌确认（回退 / 保留）—— 确认卡吸底展示在
     // 消息区最底部、模式栏（目标模式按钮）上方，不再弹窗；未改动文件则直接
     // 重新生成。确认与执行（回退 / 保留并重新生成）由 RegenerateConfirmDialog
@@ -466,7 +473,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
   // 已编辑指示 + 正文/编辑态 —— 聚合模式与逐条模式共用，但顺序不同：
   // 聚合模式下最终回答位于「思考与执行过程」折叠块下方。
   const editedIndicator = message.editedAt && (
-    <div className="text-[10px] text-nova-text-muted italic">{t('chat.edited')}</div>
+    <div className="text-[11px] text-nova-text-muted italic">{t('chat.edited')}</div>
   )
   const contentBlock = isEditing ? (
     <div>
@@ -557,16 +564,38 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
             {/* 完成的 run：头部行展示 token 用量（细竖线分隔，mono 小字）——
                 运行中/等待批准时不显示，避免跳动 */}
             {run && !isLive && !isWaitingPlan && runTokens > 0 && (
-              <span className="flex items-center gap-1.5 font-mono text-[10px] text-nova-text-muted">
+              <span className="flex items-center gap-1.5 font-mono text-[11px] text-nova-text-muted">
                 <span className="w-px h-3 bg-nova-border/60 shrink-0" aria-hidden />
                 {formatTokens(runTokens)} {t('statusBar.tokens')}
               </span>
             )}
           </div>
         )}
-        {/* Structured LLM error → friendly error card (never raw JSON text) */}
+        {/* Structured LLM error → friendly error card (never raw JSON text).
+            Keep the turn's earlier rounds visible: an agent turn can contain
+            dozens of committed assistant/tool messages before the failing
+            round, and rendering only the card made it look like the whole
+            transcript had been deleted. */}
         {message.error ? (
-          <ErrorCard error={message.error} onRetry={handleRegenerate} />
+          <div className="flex flex-col gap-2">
+            {turnMessages && turnMessages.length > 1 && (
+              <AgentProcessBlock
+                messages={turnMessages.slice(0, -1)}
+                sessionId={sessionId}
+                defaultExpanded={false}
+              />
+            )}
+            {message.thinking && <ThinkingSection thinking={message.thinking} />}
+            {/* Partial output of the failing round. When no text was streamed,
+                content holds the friendly error message and the card shows it
+                — don't render it twice. */}
+            {message.content && message.content !== message.error.message && (
+              <div className="text-sm leading-relaxed">
+                <MarkdownRenderer content={message.content} />
+              </div>
+            )}
+            <ErrorCard error={message.error} onRetry={() => retryFailedRequest(sessionId, message.id)} />
+          </div>
         ) : (
           <>
             {isUser ? (
@@ -656,8 +685,9 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
                       </div>
                     )}
                     {/* mockup「Action Bar」：hairline 顶部分隔线 + ghost 按钮，
-                       与正文隔开；hover 显现避免每屏 7 个动作的噪音。 */}
-                    <div className={`flex flex-wrap items-center gap-1 mt-4 pt-3 border-t border-nova-border opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'justify-end' : 'justify-start'}`}>
+                       与正文隔开；hover 显现避免每屏 7 个动作的噪音。
+                       focus-within：键盘 Tab 进按钮时必须看得见工具栏。 */}
+                    <div className={`chat-actions flex flex-wrap items-center gap-1 mt-4 pt-3 border-t border-nova-border opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity ${isUser ? 'justify-end' : 'justify-start'}`}>
                     {isExhausted && (
                       <GhostButton onClick={() => continueGeneration(sessionId)} title={t('chat.continueRun')} accent>
                         ▶ {t('chat.continueRun')}
@@ -729,7 +759,7 @@ function ChatMessageInner({ message, sessionId, isSelectMode, isSelected, onTogg
                             setUsageOpen(nextOpen)
                           }}
                           title={usageOpen ? t('chat.usage.hint') : t('chat.usage.viewHint')}
-                          className="flex items-center gap-1 font-mono text-[10px] px-2 py-1 rounded-md bg-nova-hover border border-nova-border text-nova-text-muted hover:border-nova-accent/40 hover:text-nova-text-primary transition-colors cursor-pointer"
+                          className="flex items-center gap-1 font-mono text-[11px] px-2 py-1 rounded-md bg-nova-hover border border-nova-border text-nova-text-muted hover:border-nova-accent/40 hover:text-nova-text-primary transition-colors cursor-pointer"
                         >
                           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <circle cx="12" cy="12" r="9" />
@@ -794,7 +824,7 @@ function LiveElapsedBadge({ startedAt }: { startedAt: number }) {
   }, [])
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000))
   return (
-    <span className="font-mono text-[10px] text-nova-text-muted" title={t('agent.elapsed', { seconds: elapsed })}>
+    <span className="font-mono text-[11px] text-nova-text-muted" title={t('agent.elapsed', { seconds: elapsed })}>
       {formatDuration(elapsed)}
     </span>
   )

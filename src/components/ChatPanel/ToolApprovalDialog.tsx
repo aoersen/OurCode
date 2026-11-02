@@ -59,7 +59,7 @@ export default function ToolApprovalDialog() {
 
       {/* 正文：说明 + 调用参数预览 / diff 预览 */}
       <div className="px-4 py-3 flex flex-col gap-2.5">
-        <div className="bg-[#f8fafc] dark:bg-white/5 rounded-lg p-3 border border-nova-border font-mono text-[12px] text-nova-text-secondary whitespace-pre-wrap max-h-40 overflow-y-auto">
+        <div className="bg-[var(--surface-sunken)] rounded-lg p-3 border border-nova-border font-mono text-[12px] text-nova-text-secondary whitespace-pre-wrap max-h-40 overflow-y-auto">
           {preview}
         </div>
 

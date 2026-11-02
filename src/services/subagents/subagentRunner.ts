@@ -16,6 +16,7 @@
  */
 import { v4 as uuidv4 } from 'uuid'
 import { sendLLMRequest } from '@/services/llm/LLMClient'
+import { getReasoningParamMap, resolveRequestMaxTokens } from '@/services/llm/modelDefaults'
 import { ToolExecutor } from '@/services/tools'
 import type { ToolCall, ToolResult } from '@/services/tools/types'
 import { captureCheckpoint } from '@/services/checkpointService'
@@ -359,13 +360,14 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
         })),
         stream: true,
         temperature: def.temperature ?? session?.modelParams.temperature ?? 0.2,
-        maxTokens: session?.modelParams.maxTokens ?? 0,
+        maxTokens: resolveRequestMaxTokens(model, session?.modelParams.maxTokens ?? 0),
         topP: session?.modelParams.topP ?? 1.0,
         frequencyPenalty: session?.modelParams.frequencyPenalty ?? 0,
         presencePenalty: session?.modelParams.presencePenalty ?? 0,
         // 思考档位统一从 thinkingLevel 派生（无会话时按默认 off/关闭）。
         thinking: thinkingLevel !== 'off',
         reasoningEffort: thinkingLevel !== 'off' ? thinkingLevel : undefined,
+        extraBody: getReasoningParamMap(model, thinkingLevel),
         tools: toolDefinitions,
       }
 

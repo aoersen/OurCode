@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { AgentTerminalRun, ClawChannelConfig, ClawChannelId, TerminalRunSnapshot } from '../shared/types'
+import type { HostedFetchInput, HostedFetchResult, WebSearchInput, WebSearchResult } from '../shared/webTools'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -236,9 +237,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   wireLogDeleteSession: (sessionId: string) => ipcRenderer.invoke('log:deleteSession', sessionId),
   wireLogOpenDir: () => ipcRenderer.invoke('log:openDir'),
 
-  // Web fetch (web_search / read_url tools)
+  // Web tools (web_search / read_url): search providers + SSRF-checked fetch
   webFetch: (url: string, options?: { timeoutMs?: number; maxBytes?: number }) =>
     ipcRenderer.invoke('web:fetch', url, options),
+  webSearch: (input: WebSearchInput): Promise<WebSearchResult> =>
+    ipcRenderer.invoke('web:search', input),
+  webFetchHosted: (input: HostedFetchInput): Promise<HostedFetchResult> =>
+    ipcRenderer.invoke('web:fetchHosted', input),
 
   // LLM HTTP bridge — main-process net.fetch (no CORS), supports streaming
   llmHttp: (req: {
@@ -331,6 +336,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resolveEnvVar: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.APP_RESOLVE_ENV_VAR, name),
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_VERSION),
   getLocale: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_LOCALE),
+
+  // Speech-to-text: mic audio → OpenAI-compatible /audio/transcriptions.
+  // Goes through the main process so the key stays out of the sandboxed page
+  // and CORS cannot block local whisper servers.
+  speechTranscribe: (payload: {
+    endpoint: string
+    apiKey?: string
+    model?: string
+    language?: string
+    audioBase64: string
+    mime?: string
+  }) => ipcRenderer.invoke('speech:transcribe', payload),
+
+  /** 探测本地 whisper 服务：返回仍然存活的端点，保持传入顺序。 */
+  speechProbe: (urls: string[]) => ipcRenderer.invoke('speech:probe', urls),
+
+  /** 内置 whisper 引擎状态（是否随包分发、模型名、是否已启动）。不拉起进程。 */
+  speechEngine: () => ipcRenderer.invoke('speech:engine'),
 
   // Auto Update
   checkForUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),

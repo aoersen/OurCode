@@ -53,7 +53,13 @@ export function friendlyNetworkError(message: string): string {
     return '网络请求失败，请检查网络、代理或 API 地址'
   }
   if (lower.includes('certificate') || lower.includes('err_cert') || lower.includes('tls') || lower.includes('ssl')) {
-    return 'HTTPS 证书校验失败：内网自签名 / 私有 CA 证书请在该配置中勾选「跳过证书校验」'
+    // A handshake failure is not always a bad cert (the port may not speak TLS at
+    // all), so keep the raw reason — without it "跳过证书校验" looks broken when
+    // the real cause is the protocol/port.
+    if (lower.includes('protocol') || lower.includes('wrong_version') || lower.includes('version')) {
+      return `TLS 握手失败：该端口可能不是 HTTPS，或网关 / 代理中断了 TLS 连接（原始错误：${message}）`
+    }
+    return `HTTPS 证书校验失败：内网自签名 / 私有 CA 证书请在该配置中勾选「跳过证书校验」（原始错误：${message}）`
   }
   return message
 }

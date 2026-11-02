@@ -63,7 +63,7 @@ export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps)
         <div className="absolute bottom-full left-0 mb-1.5 z-50 w-[300px] bg-nova-surface border border-nova-border rounded-lg overflow-hidden shadow-sm">
           <div className="px-3 py-2 border-b border-nova-border">
             <span className="text-[12px] font-semibold text-nova-text-primary">{t('chat.projectEditModeLabel')}</span>
-            <span className="ml-1.5 text-[10px] text-nova-text-muted">{t('chat.modeMenuSubtitle')}</span>
+            <span className="ml-1.5 text-[11px] text-nova-text-muted">{t('chat.modeMenuSubtitle')}</span>
           </div>
           <div className="py-1">
             {items.map((item) => {
@@ -84,14 +84,14 @@ export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps)
                     <span className={`block text-[12px] font-semibold ${item.warning && !active ? 'text-orange-400' : 'text-nova-text-primary'}`}>
                       {t(item.labelKey)}
                     </span>
-                    <span className="block text-[10px] text-nova-text-muted truncate">{t(item.hintKey)}</span>
+                    <span className="block text-[11px] text-nova-text-muted truncate">{t(item.hintKey)}</span>
                   </span>
                   {active && <MSIcon name="check" className="text-[15px] leading-none text-nova-accent shrink-0" />}
                 </button>
               )
             })}
           </div>
-          <div className="px-3 py-1.5 border-t border-nova-border flex items-center gap-1.5 text-[10px] text-nova-text-muted">
+          <div className="px-3 py-1.5 border-t border-nova-border flex items-center gap-1.5 text-[11px] text-nova-text-muted">
             <MSIcon name="refresh" className="text-[11px] leading-none" />
             {t('chat.modeSwitchHint')}
           </div>
