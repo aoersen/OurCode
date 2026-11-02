@@ -17,18 +17,27 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const entry = join(here, '..', 'tools', 'cua-helper', 'win', 'UiaBridge.ps1')
-if (!existsSync(entry)) {
-  console.error(`helper not found: ${entry}`)
+const winDir = join(here, '..', 'tools', 'cua-helper', 'win')
+const exePath = join(winDir, 'CuaHelper.exe')
+const psPath = join(winDir, 'UiaBridge.ps1')
+// OURCODE_CUA_HELPER=ps forces the PowerShell bridge; default prefers the
+// compiled C# helper (same protocol, no PS startup cost).
+const wantPs = process.env.OURCODE_CUA_HELPER === 'ps'
+const useExe = !wantPs && existsSync(exePath)
+if (!useExe && !existsSync(psPath)) {
+  console.error(`helper not found in ${winDir}`)
   process.exit(2)
 }
 const filter = process.argv[2] ?? ''
 const token = randomBytes(32).toString('hex')
 const ps = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+const command = useExe ? exePath : existsSync(ps) ? ps : 'powershell.exe'
+const args = useExe
+  ? []
+  : ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath]
+console.log(`backend: ${useExe ? 'native (CuaHelper.exe)' : 'powershell (UiaBridge.ps1)'}`)
 
-const child = spawn(existsSync(ps) ? ps : 'powershell.exe', [
-  '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', entry,
-], { env: { ...process.env, OURCODE_CUA_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] })
+const child = spawn(command, args, { env: { ...process.env, OURCODE_CUA_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] })
 
 child.stdout.setEncoding('utf8')
 child.stderr.setEncoding('utf8')

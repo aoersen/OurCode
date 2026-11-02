@@ -71,6 +71,7 @@ export class CuaHelperHost {
       args: launch.args,
       cwd: launch.cwd,
       token: this.token,
+      backendId: this.opts.backendId,
       readTimeoutMs: this.opts.readTimeoutMs,
       onLog: this.opts.onLog,
       onExit: () => {

@@ -7,7 +7,7 @@
  * state the model must never be told is safe to retry blindly.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
-import { CUA_READ_TIMEOUT_MS } from '../../../shared/computer'
+import { CUA_READ_TIMEOUT_MS, type CuaBackendId } from '../../../shared/computer'
 import type { CuaBackend, CuaProbeResult } from './backend'
 import { isWriteMethod } from './backend'
 
@@ -32,6 +32,8 @@ export interface StdioClientOptions {
   cwd?: string
   env?: Record<string, string>
   token: string
+  /** Which backend this process is ('native' exe vs PowerShell bridge). */
+  backendId?: CuaBackendId
   readTimeoutMs?: number
   onLog?: (line: string, level: 'info' | 'error') => void
   onExit?: (code: number | null) => void
@@ -44,14 +46,16 @@ interface Pending {
 }
 
 export class StdioCuaClient implements CuaBackend {
-  readonly id = 'powershell' as const
+  readonly id: CuaBackendId
   private child: ChildProcessWithoutNullStreams | null = null
   private nextId = 1
   private pending = new Map<number, Pending>()
   private buffer = ''
   private exited = false
 
-  constructor(private readonly opts: StdioClientOptions) {}
+  constructor(private readonly opts: StdioClientOptions) {
+    this.id = opts.backendId ?? 'powershell'
+  }
 
   /** Spawn the helper and perform the hello handshake. */
   async start(): Promise<CuaProbeResult> {

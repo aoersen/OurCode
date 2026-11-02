@@ -33,9 +33,9 @@
 |---|---|---|
 | M0 探针 | ✅ | `tools/cua-helper/probe/`（UIA 只读 / WPF 端到端 / 实测记录） |
 | M1 骨架 | ✅ | `shared/computer.ts`、`shared/computerPolicy.ts`、`electron/services/computer-use/*`（client / host / service / states / frames / audit / policy / fakeBackend / index）、IPC + preload + `ElectronAPI` 类型、12 个工具、`computer_write` 权限 kind、子代理硬禁用、chatStore 工具面过滤与 Esc/Stop 联动 |
-| M2 Windows 后端 | ✅（PowerShell 版） | `tools/cua-helper/win/UiaBridge.ps1`（hello/token、list_apps、capture_app(DFS+去噪)、click、set_value、type_text、press_key、scroll、drag、paste、perform_action、select_text、screenshot、activate_window、launch_app、controller_stop、shutdown）+ `scripts/cua-smoke.mjs` 冒烟 |
+| M2 Windows 后端 | ✅（两套后端，同一协议） | ① `tools/cua-helper/win/UiaBridge.ps1`（PowerShell 5.1 桥）；② `tools/cua-helper/win/CuaHelper.cs` + `build.ps1`（**in-box csc 编译的 25.5 KB C# exe**，C# 5 语法、零运行时安装）。`resolveHelperEntry()` 优先 exe、回退 ps1；`OURCODE_CUA_HELPER=ps` 可强制回退。方法面：hello/token、list_apps、capture_app(DFS+去噪+只读 pattern 过滤)、click、set_value、type_text、press_key、scroll、drag、paste、perform_action、select_text、screenshot、activate_window、launch_app、controller_stop、shutdown |
 | M3 权限与 UI | ✅ | 权限矩阵/敏感动作/黑名单/急停；设置页「功能 → 电脑操控」（状态 + 自检 + 白/黑名单 + 子代理开关 + **最近动作审计**）；**覆盖层**（红框 + 「OurCode 正在操作 · Esc 停止」，`overlay.ts`，动作期间注册全局 Escape）；对话内时间线仍以工具结果文本呈现 |
-| M4 C# 后端 | ⏳（受环境限制） | 本机只有 .NET runtime、**没有 SDK**，无法编译/验证；协议已冻结，装 SDK 后替换 `resolveLaunch()` 即可 |
+| M4 C# 后端 | ✅（in-box csc 版） | 本机只有 .NET runtime、没有 SDK，因此用 Windows 自带的 `csc.exe`（C# 5）编译单文件 exe，Win10/11 免安装即可运行；`.NET 8 self-contained` 版本仍可后续替换（协议不变，只换 `resolveLaunch()`）。二进制不入库：`npm run build:cua-helper` 重建 |
 | M5 浏览器 CDP | ✅ | `browser_snapshot`（CDP `Accessibility.getFullAXTree` → 带 `ref` 的紧凑 ARIA 树）+ `browser_act {ref}`（`DOM.resolveNode` + `Runtime.callFunctionOn`）；selector 路径保留为兜底；`scripts/browser-cdp-smoke.mjs` 实测通过 |
 | M6 macOS/Linux | ⏳ | 非 Windows 平台返回 `UNSUPPORTED`（设置页显示原因），不做假成功 |
 
@@ -45,7 +45,12 @@
 npx tsc --noEmit                       # 通过
 npx vitest run                         # 全量通过（含电脑操控 38 项 + ARIA 快照 6 项）
 npx electron-vite build                # 通过
-node scripts/cua-smoke.mjs "OurCode-ide - 文件资源管理器"   # 真实 helper：37 窗口、60 节点树、1936×1048 截图
+npm run build:cua-helper               # 可选：用 in-box csc 重建 CuaHelper.exe（25.5 KB）
+node scripts/cua-smoke.mjs "OurCode-ide - 文件资源管理器"        # 默认走 native exe
+OURCODE_CUA_HELPER=ps node scripts/cua-smoke.mjs "…"            # 强制 PowerShell 桥
+  # 两套后端均：39 窗口、60 节点树（radiobutton actions=[select]）、1936×1048 截图
+node scripts/cua-action-smoke.mjs                              # 写路径自检：set_value + press → echo="echo:action-smoke"
+  # 两套后端均通过（自建 WPF 目标窗口，不碰用户文档）
 node_modules\electron\dist\electron.exe scripts/browser-cdp-smoke.mjs
   # ax nodes: 14 · button backendNodeId=5 · DOM.resolveNode + callFunctionOn 点击成功（title→clicked）
 ```

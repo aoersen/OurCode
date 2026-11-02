@@ -45,28 +45,36 @@ function windowsPowerShell(): string {
   return existsSync(exe) ? exe : 'powershell.exe'
 }
 
-/** Helper script location: repo-relative in dev, resources-relative when packaged. */
-export function resolveHelperEntry(): string | null {
-  const candidates = [
-    join(app.getAppPath(), 'tools', 'cua-helper', 'win', 'UiaBridge.ps1'),
-    join(process.resourcesPath ?? '', 'cua-helper', 'win', 'UiaBridge.ps1'),
+/** Helper location: repo-relative in dev, resources-relative when packaged.
+ *  Prefers the compiled C# helper (fast, no PS startup); falls back to the
+ *  PowerShell bridge so a checkout without a build still works. */
+export function resolveHelperEntry(): { kind: 'native' | 'powershell'; command: string; args: string[]; cwd: string } | null {
+  if (process.platform !== 'win32') return null
+  const roots = [
+    join(app.getAppPath(), 'tools', 'cua-helper', 'win'),
+    join(process.resourcesPath ?? '', 'cua-helper', 'win'),
   ]
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate
+  for (const root of roots) {
+    const exe = join(root, 'CuaHelper.exe')
+    if (existsSync(exe)) return { kind: 'native', command: exe, args: [], cwd: root }
+    const ps1 = join(root, 'UiaBridge.ps1')
+    if (existsSync(ps1)) {
+      return {
+        kind: 'powershell',
+        command: windowsPowerShell(),
+        args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1],
+        cwd: root,
+      }
+    }
   }
   return null
 }
 
 function resolveLaunch(): HelperLaunchSpec | null {
   if (process.env.OURCODE_CUA_FAKE === '1') return null
-  if (process.platform !== 'win32') return null
   const entry = resolveHelperEntry()
   if (!entry) return null
-  return {
-    command: windowsPowerShell(),
-    args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', entry],
-    cwd: join(entry, '..'),
-  }
+  return { command: entry.command, args: entry.args, cwd: entry.cwd }
 }
 
 /** The deterministic fake desktop is opt-in only (tests / demos / CI). */
@@ -82,7 +90,9 @@ async function getBackend(): Promise<CuaBackend> {
   if (!host) {
     host = new CuaHelperHost({
       resolveLaunch,
-      backendId: 'powershell',
+      // The compiled C# helper and the PowerShell bridge speak the same protocol;
+      // the id only tells the UI which one is running.
+      backendId: resolveHelperEntry()?.kind === 'native' ? 'native' : 'powershell',
       onLog: (line, level) => {
         if (level === 'error') lastBackendError = line
         init?.broadcast(IPC_CHANNELS.COMPUTER_EVENT, { type: 'log', level, line })

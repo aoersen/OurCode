@@ -77,3 +77,7 @@ resources/whisper/.whisper-bin.zip
 
 # CDP smoke log (scripts/browser-cdp-smoke.mjs)
 scripts/.cdp-smoke.log
+
+# Computer Use helper binary (built by tools/cua-helper/win/build.ps1 with the in-box csc)
+tools/cua-helper/win/CuaHelper.exe
+tools/cua-helper/win/*.pdb
