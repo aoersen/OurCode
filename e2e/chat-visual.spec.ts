@@ -269,7 +269,9 @@ test('聊天区视觉截图（极简纯净版）', async () => {
       console.log('CHIP_STYLES', JSON.stringify(chip))
       expect(chip).not.toBeNull()
       expect(chip!.bg).toBe('rgb(255, 255, 255)')
-      expect(chip!.border).toBe('rgb(226, 232, 240)')
+      // chip 边框走设计 token --border（border-nova-border），与同一测试的
+      // planBorder 一致；旧的硬编码 slate-200 已随 redesign 移除。
+      expect(chip!.border).toBe('rgba(15, 23, 42, 0.08)')
       // mockup：状态图标在前（check/sync/close），工具名 13px mono，路径截断 100px
       expect(['check', 'sync', 'close']).toContain(chip!.iconText)
       expect(chip!.nameSize).toBe('13px')
