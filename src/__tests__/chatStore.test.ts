@@ -35,7 +35,7 @@ const mockApi = {
 }
 vi.stubGlobal('window', { electronAPI: mockApi })
 
-import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, compactToolCallArgs, buildWorkerHandoff, workerDispatchCapReached, WORKER_DISPATCH_TOKEN_CAP, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateRequestMessageTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, OFFICE_TOOL_RESULT_COMPACT, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, normalizeAskQuestionArgs, toolCallSignature, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
+import { useChatStore, reconcileInterruptedRuns, stopGitBranchPolling, trimHistoryForContext, compactToolResults, compactToolCallArgs, buildWorkerHandoff, workerDispatchCapReached, WORKER_DISPATCH_TOKEN_CAP, sanitizeToolPairing, generateSessionTitle, generateAiSessionTitle, estimateSessionHistoryTokens, estimateRequestMessageTokens, estimateContextTokens, DEFAULT_SESSION_TITLE, OFFICE_TOOL_RESULT_COMPACT, normalizeTodos, sessionLastUserActivity, isGhostSession, parseToolArguments, normalizeAskQuestionArgs, toolCallSignature, repeatCallVerdict, pruneRepeatState, noteRepeatResult, buildRepeatReminder, toRequestImages, MCP_AND_SKILLS_GUIDELINES } from '@/stores/chatStore'
 import type { ChatMessage, MessageAttachment } from '@/types'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
@@ -1693,6 +1693,64 @@ describe('loop guard: identical-call detection', () => {
     expect(sig('multi_edit_file', { edits: [{ oldText: 'x' }] })).not.toBe(
       sig('multi_edit_file', { edits: [{ oldText: 'z' }] }),
     )
+  })
+
+  it('nudges at 3, halts at 6, and never halts a polling tool', () => {
+    expect(repeatCallVerdict('read_file', 2)).toBe('none')
+    expect(repeatCallVerdict('read_file', 3)).toBe('nudge')
+    expect(repeatCallVerdict('read_file', 5)).toBe('nudge')
+    expect(repeatCallVerdict('read_file', 6)).toBe('halt')
+    expect(repeatCallVerdict('read_terminal_output', 6)).toBe('nudge')
+  })
+
+  it('does not carry a count across rounds that call another tool', () => {
+    // 真实事故：模型每截一张图前都 browser_navigate 到新的图片，6 张截图
+    // 内容各不相同，却因为 browser_screenshot 无参数、签名恒等被当成打转。
+    // 这里把截图文本固定成相同值，单独验证「换页轮会清掉上轮的计数」——
+    // 即使没有结果差异兜底，交替出现的调用也不能累计到 6。
+    const shot = sig('browser_screenshot', {})
+    const nav = sig('browser_navigate', { url: 'http://127.0.0.1:8765/a.png' })
+    const counts = new Map<string, number>()
+    const lastResults = new Map<string, string>()
+
+    for (let i = 0; i < 6; i++) {
+      counts.set(shot, (counts.get(shot) || 0) + 1)
+      pruneRepeatState(counts, lastResults, new Set([shot]))
+      noteRepeatResult(counts, lastResults, shot, 'same-page-text')
+      expect(counts.get(shot)).toBe(1)
+      expect(repeatCallVerdict('browser_screenshot', counts.get(shot)!)).toBe('none')
+      // 换页轮：只有 navigate，截图的计数与结果快照都应被清掉。
+      pruneRepeatState(counts, lastResults, new Set([nav]))
+    }
+    expect(counts.has(shot)).toBe(false)
+    expect(lastResults.has(shot)).toBe(false)
+  })
+
+  it('resets the count when a result-sensitive tool returns a different result', () => {
+    const shot = sig('browser_screenshot', {})
+    const counts = new Map<string, number>([[shot, 5]])
+    const lastResults = new Map<string, string>([[shot, 'page-a']])
+
+    expect(noteRepeatResult(counts, lastResults, shot, 'page-b')).toBe(true)
+    expect(counts.get(shot)).toBe(0)
+    expect(repeatCallVerdict('browser_screenshot', counts.get(shot)!)).toBe('none')
+  })
+
+  it('still halts when a result-sensitive tool keeps returning the same result', () => {
+    const shot = sig('browser_screenshot', {})
+    const counts = new Map<string, number>([[shot, 6]])
+    const lastResults = new Map<string, string>([[shot, 'page-a']])
+
+    expect(noteRepeatResult(counts, lastResults, shot, 'page-a')).toBe(false)
+    expect(repeatCallVerdict('browser_screenshot', counts.get(shot)!)).toBe('halt')
+  })
+
+  it('does not claim results are unchanged for state-dependent tools', () => {
+    const stateful = buildRepeatReminder('browser_screenshot', 3)
+    expect(stateful).toContain('返回的文本没有变化')
+    expect(stateful).not.toContain('结果不会改变')
+    expect(buildRepeatReminder('read_file', 3)).toContain('不会带来新信息')
+    expect(buildRepeatReminder('read_terminal_output', 3)).toContain('稍等再读')
   })
 })
 

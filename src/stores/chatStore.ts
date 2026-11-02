@@ -51,7 +51,11 @@ import {
   buildActiveFileRulesBlock,
   retrieveRelevantContext,
   getEditorSelectionContext,
+  isPathInsideProject,
 } from '@/services/tools/context'
+
+// 供测试与其他模块复用（提示词作用域判定）。
+export { isPathInsideProject }
 import { v4 as uuidv4 } from 'uuid'
 import { captureCheckpoint as captureCheckpointService } from '@/services/checkpointService'
 import { captureRunPreState, buildRunCommandCheckpoint, type RunPreState } from '@/services/runCommandCheckpoint'
@@ -111,11 +115,41 @@ export function clearWireContextForRun(): void {
   _wireCtxRef.current = {}
 }
 
-// Cached git info (refreshed via refreshGitBranch)
-let _cachedGitBranch = ''
-let _cachedGitStatus: string[] = []
-let _cachedGitLog: string[] = []
-let _gitBranchFetchedAt = 0
+// 注意：这里**没有任何「用户发了什么」的判断**。会话是上下文边界，任何一条用户
+// 消息都走同一条路：把本会话历史 + 本项目当前状态喂给模型，让它接着往下跑。
+// 曾经有两版错法：①用「纯『继续』」当作用域开关；②从消息文本里猜「这是不是要
+// 续跑」。两者都是在猜用户意图——用户说什么（「继续」「啥情况」「咋不写了」）都
+// 是在这个会话里要求继续，客户端不需要也不应该识别。中止状态本身已经写在历史里
+// （[已停止] 标记 + 半截工具链），模型看历史即可。
+
+// Cached git info, KEYED BY PROJECT (refreshed via refreshGitBranch).
+//
+// 曾经是单一全局槽位：30s 的后台定时器按「当前会话的项目」刷新，而
+// buildEnvironmentBlock 直接读这几个全局变量。于是从 A 项目的会话切到 B 项目
+// 的会话后，B 的提示词里最多 30 秒内仍然是 A 的「工作区改动 / 最近提交」——
+// 模型看到别的项目/别的会话的文件名与提交信息，自然会把这些当成当前对话的
+// 线索（「继续哪条线？」那类提问就是这么来的）。改成按项目根 key 的 Map：
+// 每个会话只读自己项目的快照，没快照就不注入 git 行。
+interface GitSnapshot {
+  branch: string
+  status: string[]
+  log: string[]
+  fetchedAt: number
+}
+const _gitCache = new Map<string, GitSnapshot>()
+
+/** Normalize a project root into a cache key (separators / trailing slash /
+ *  case — Windows paths are case-insensitive). */
+export function gitSnapshotKey(rootPath: string): string {
+  return (rootPath || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/** The git snapshot of exactly this project, or null when it was never
+ *  refreshed for it (never fall back to another project's snapshot). */
+export function getGitSnapshot(rootPath?: string): GitSnapshot | null {
+  if (!rootPath) return null
+  return _gitCache.get(gitSnapshotKey(rootPath)) || null
+}
 
 /** Minimum interval between git fetches (ms). Avoids redundant `git` calls
  *  when multiple consumers request git context within a short window. */
@@ -225,20 +259,24 @@ export async function generateAiSessionTitle(userContent: string, preferredModel
   }
 }
 
-export async function refreshGitBranch(): Promise<void> {
-  const rootPath = getWorkspaceRoot()
+export async function refreshGitBranch(rootOverride?: string): Promise<void> {
+  const rootPath = rootOverride || getWorkspaceRoot()
   if (!rootPath) return
 
-  // Skip re-fetch when the cache is still fresh (e.g. multiple consumers
-  // requesting git context within the same short window).
-  if (_gitBranchFetchedAt > 0 && Date.now() - _gitBranchFetchedAt < GIT_CACHE_TTL) return
+  const key = gitSnapshotKey(rootPath)
+  const cached = _gitCache.get(key)
+  // Skip re-fetch when the snapshot for THIS project is still fresh (e.g.
+  // multiple consumers requesting git context within the same short window).
+  if (cached && Date.now() - cached.fetchedAt < GIT_CACHE_TTL) return
   // Mark as fetched before the git calls so even a full failure (e.g. not a
   // repo) doesn't cause repeated retries within the TTL window.
-  _gitBranchFetchedAt = Date.now()
+  const snapshot: GitSnapshot = cached || { branch: '', status: [], log: [], fetchedAt: Date.now() }
+  snapshot.fetchedAt = Date.now()
+  _gitCache.set(key, snapshot)
   try {
     const res = await (window as any).electronAPI?.gitExec(rootPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
     if (res?.success) {
-      _cachedGitBranch = res.output.trim()
+      snapshot.branch = res.output.trim()
     }
   } catch { /* ignore */ }
   try {
@@ -248,26 +286,33 @@ export async function refreshGitBranch(): Promise<void> {
     if (statusRes?.success) {
       // Porcelain v1 lines are "XY path" — leading space is the staged-column
       // char, so only strip trailing whitespace, never the leading state.
-      _cachedGitStatus = statusRes.output.split('\n').map((l: string) => l.trimEnd()).filter(Boolean).slice(0, 30)
+      snapshot.status = statusRes.output.split('\n').map((l: string) => l.trimEnd()).filter(Boolean).slice(0, 30)
     } else {
       // git unavailable / not a repo — never surface stale workspace state
-      _cachedGitStatus = []
+      snapshot.status = []
     }
-  } catch { _cachedGitStatus = [] }
+  } catch { snapshot.status = [] }
   try {
     // Recent commit headlines for context
     const logRes = await (window as any).electronAPI?.gitExec(rootPath, ['log', '--oneline', '-5'])
     if (logRes?.success) {
-      _cachedGitLog = logRes.output.split('\n').map((l: string) => l.trimEnd()).filter(Boolean).slice(0, 5)
+      snapshot.log = logRes.output.split('\n').map((l: string) => l.trimEnd()).filter(Boolean).slice(0, 5)
     } else {
-      _cachedGitLog = []
+      snapshot.log = []
     }
-  } catch { _cachedGitLog = [] }
+  } catch { snapshot.log = [] }
 }
 
-// Auto-refresh git branch every 30s when module is active
+// Auto-refresh git branch every 30s for the ACTIVE session's project (each
+// project keeps its own snapshot, so switching sessions never reuses another
+// project's branch/status/log).
 let _gitBranchInterval: ReturnType<typeof setInterval> | null = null
-_gitBranchInterval = setInterval(() => { if (Date.now() - _gitBranchFetchedAt > 30000) refreshGitBranch() }, 30000)
+_gitBranchInterval = setInterval(() => {
+  const root = getWorkspaceRoot()
+  if (!root) return
+  const cached = _gitCache.get(gitSnapshotKey(root))
+  if (!cached || Date.now() - cached.fetchedAt > 30000) void refreshGitBranch(root)
+}, 30000)
 
 /** Stop git branch polling (for cleanup) */
 export function stopGitBranchPolling(): void {
@@ -322,7 +367,7 @@ function buildEnhancedSystemPrompt(basePrompt: string, projectPath?: string): st
     .replace(/\{\{framework\}\}/g, framework)
     .replace(/\{\{projectName\}\}/g, projectName)
     .replace(/\{\{currentFile\}\}/g, currentFileName || '无')
-    .replace(/\{\{gitBranch\}\}/g, _cachedGitBranch || '(未检测到Git分支)')
+    .replace(/\{\{gitBranch\}\}/g, getGitSnapshot(rootPath)?.branch || '(未检测到Git分支)')
     .replace(/\{\{date\}\}/g, new Date().toLocaleDateString())
 
   return enhanced
@@ -333,36 +378,42 @@ function buildEnhancedSystemPrompt(basePrompt: string, projectPath?: string): st
  *  byte-identical across turns and provider prefix caches keep hitting. */
 function buildEnvironmentBlock(projectPath?: string): string {
   const rootPath = projectPath || getWorkspaceRoot()
-  let block = `\n\n<environment>
+  // 只带**定位所需的**项目事实：路径 + 分支。工作区改动列表与最近提交标题是
+  // 「项目里别人/过去做过什么」，属于项目历史而不是这条会话的上下文——需要时
+  // 模型用 git_status / git_diff 自己查，不给它自动灌别的线索。
+  const git = getGitSnapshot(rootPath)
+  return `\n\n<environment>
 工作区路径: ${rootPath}
 平台: ${navigator.platform}
 当前日期: ${new Date().toLocaleDateString()}
-Git 分支: ${_cachedGitBranch || '未知'}`
-  if (_cachedGitStatus.length > 0) {
-    block += `\n工作区改动 (${_cachedGitStatus.length} 项):\n` + _cachedGitStatus.map((l) => `- ${l}`).join('\n')
-  }
-  if (_cachedGitLog.length > 0) {
-    block += `\n最近提交:\n` + _cachedGitLog.map((l) => `- ${l}`).join('\n')
-  }
-  return block + `\n</environment>`
+Git 分支: ${git?.branch || '未知'}
+</environment>`
 }
 
-/** Per-turn open-files list (dynamic editor state). */
-function buildOpenFilesBlock(): string {
+/** Per-turn open-files list (dynamic editor state) — ONLY files of the
+ *  session's own project. A tab opened from another project used to ride along
+ *  into every conversation's prompt, which is how unrelated work (and its
+ *  file names) ended up looking like part of the current task. */
+function buildOpenFilesBlock(projectPath?: string): string {
+  const rootPath = projectPath || getWorkspaceRoot()
   const editorState = useEditorStore.getState()
-  if (editorState.openFiles.length === 0) return ''
+  const files = editorState.openFiles.filter((f) => isPathInsideProject(f.path, rootPath))
+  if (files.length === 0) return ''
   let block = `\n\n<open_files>`
-  for (const file of editorState.openFiles) {
+  for (const file of files) {
     block += `\n- ${file.path}${file.isDirty ? ' (未保存)' : ''}`
   }
   return block + `\n</open_files>`
 }
 
-/** Per-turn current file content, live from the editor model. */
-function buildCurrentFileBlock(): string {
+/** Per-turn current file content, live from the editor model — skipped when the
+ *  active tab belongs to another project. */
+function buildCurrentFileBlock(projectPath?: string): string {
+  const rootPath = projectPath || getWorkspaceRoot()
   const editorState = useEditorStore.getState()
   const activeFile = editorState.openFiles.find((f) => f.path === editorState.activeFilePath)
   if (!activeFile) return ''
+  if (!isPathInsideProject(activeFile.path, rootPath)) return ''
   const liveContent = getFileContent(activeFile.path, activeFile.content)
   const lines = liveContent.split('\n')
   const truncated = lines.length > 200
@@ -398,7 +449,7 @@ async function buildMemoriesBlock(userContent: string): Promise<string> {
  *    selection / memories / retrieved files) — merged into the request's final
  *    user message so it never invalidates the stable prefix.
  */
-async function buildSystemPrompt(
+export async function buildSystemPrompt(
   basePrompt: string,
   userContent: string,
   contextFiles: string[],
@@ -419,13 +470,17 @@ async function buildSystemPrompt(
   // mtime-cached, so in practice stable per workspace.
   stable += await loadWorkspaceKnowledge(projectPath || getWorkspaceRoot())
 
-  // ── Per-turn dynamic context (moved out of the system prompt) ──
+  // ── Per-turn dynamic context（每一轮都同一套裁剪规则，没有「续跑特例」） ──
+  // 会话是上下文边界：这里只放**本会话项目的当前状态**——工作区路径、本项目的
+  // 打开文件/当前文件/选区、用户显式 @ 的附件、以及被明确引用时才触发的检索。
+  // 项目里其它工作留下的笔记、git 历史、别的会话的内容一律不自动进场。
   let dynamic = ''
   dynamic += buildEnvironmentBlock(projectPath)
-  dynamic += buildOpenFilesBlock()
-  dynamic += buildCurrentFileBlock()
-  // Current editor selection (Vibe-and-Replace style selected-text context)
-  dynamic += getEditorSelectionContext()
+  dynamic += buildOpenFilesBlock(projectPath)
+  dynamic += buildCurrentFileBlock(projectPath)
+  // Current editor selection (Vibe-and-Replace style selected-text context) —
+  // dropped when the selection lives in another project's file.
+  dynamic += getEditorSelectionContext(projectPath || getWorkspaceRoot())
   const activeFile = useEditorStore.getState().openFiles.find((f) => f.path === useEditorStore.getState().activeFilePath)
   // 目录级 AGENTS.md：跟着当前标签页变，放进 stable 会让每次切文件的
   // provider 端提示词缓存全部失效，所以留在 dynamic。
@@ -434,8 +489,12 @@ async function buildSystemPrompt(
   dynamic += await buildMemoriesBlock(userContent)
   // Auto-retrieved relevant files (pure chat mode skips the project-wide
   // search — no tool loop means the retrieval pays most and benefits least;
-  // explicitly @-attached files are still read via retrieveRelevantContext)
-  dynamic += await retrieveRelevantContext(userContent, contextFiles, projectPath || getWorkspaceRoot(), activeFile?.path, { skipSearch: skipAutoRetrieval })
+  // explicitly @-attached files are still read via retrieveRelevantContext).
+  // 检索本身按「有没有明确指代」决定是否触发（见 hasExplicitReference），与用户
+  // 发的是「继续」还是别的话无关。
+  dynamic += await retrieveRelevantContext(userContent, contextFiles, projectPath || getWorkspaceRoot(), activeFile?.path, {
+    skipSearch: skipAutoRetrieval,
+  })
 
   return { stable, dynamic }
 }
@@ -451,6 +510,9 @@ const BEHAVIOR_GUIDELINES = `
 - 删除或覆盖文件前，先读取目标内容确认；如果发现目标与描述不符、或不是你创建的，先向用户说明而不是直接操作。
 - 如实报告结果：测试失败要带上输出说明失败；跳过某一步要说跳过；完成并验证过的事要明确说明，不要含糊其辞。
 - 工具调用被拒绝表示用户不认可该操作，应调整方案而不是原样重试。
+- 上下文边界是本会话：只依据本会话历史、以及本会话项目里当前打开或被明确引用的内容作答。不要引用、猜测或罗列其它会话、其它项目、项目笔记、git 历史里出现过的工作。
+- 中途被中止/中断过的任务：用户再发任何一句话（「继续」「啥情况」「怎么不写了」都算）就是让你接着刚才那件事往下做——直接续上，不要反问是哪个任务，也不要重新规划整个项目。
+- 调用 ask_user_question 时，问题与选项只能来自本会话当前任务的真实分支；能自己判断的就不要问。
 - 如果任务是编程任务，交付前必须自行完整检查一遍代码，确保没有 bug；发现 bug 或潜在问题（逻辑错误、边界情况、类型问题、并发隐患等）要主动修复后再交付。`
 
 // MCP 与技能安装指南 —— 告诉模型本 IDE 自己的配置机制。不写这段时，模型
@@ -694,18 +756,102 @@ export function isRunCommandInfraFailure(text: string): boolean {
   return RUN_COMMAND_INFRA_FAILURE_MARKERS.some((marker) => text.startsWith(`Error: ${marker}`))
 }
 
-// 打转守卫 — 模型反复用完全相同的参数调用同一工具时，结果必然相同，继续跑只
-// 是烧轮次和 token（曾见反复重读同一文件而不动手）。达到 NUDGE 先在最后一次
-// 调用的工具结果尾部追加提醒，达到 HALT 直接停止本 run 并说明原因。
+// 打转守卫 — 模型连续多轮用完全相同的参数调用同一工具，继续跑只是烧轮次和
+// token（曾见反复重读同一文件而不动手）。达到 NUDGE 先在最后一次调用的工具
+// 结果尾部追加提醒，达到 HALT 直接停止本 run 并说明原因。
 // 提醒写在 tool 结果里而不是插入 user 消息：Anthropic 等 provider 要求
 // user/assistant 交替，连续两条 user 会被拒；tool 结果永远合法。
+//
+// 两个关键前提（此前各踩过一次误杀）：
+// 1) 「重复」必须是**连续**的：中间出现了别的工具调用，说明模型在推进
+//    （换页面后再截图、编辑后再 typecheck），该签名的计数到此为止。
+// 2) 「参数相同 ⇒ 结果相同」只对纯工具成立。截图/终端/仓库/桌面这类工具的
+//    结果由外部状态决定，参数一样也可能拿到完全不同的页面。它们还要看结果
+//    文本是否在变，变了就清零计数。
 const REPEAT_CALL_NUDGE = 3
 const REPEAT_CALL_HALT = 6
 
-/** 守卫的前提是「参数相同 ⇒ 结果相同」，轮询类工具是它的例外：后台进程的
- *  输出会随时间变长，等 dev server 起来本来就要连着读几次。重复调用照样提醒，
- *  但不因为次数到了就把这种等待当成打转停掉。 */
+/** 结果由外部状态决定的工具：参数相同不等于结果相同，重复调用只有在返回
+ *  文本也一直没变时才计入打转。run_command 也在此列——同样的 typecheck
+ *  穿插在编辑之间，报错行号/内容在变，是正常迭代而不是原样重试。 */
+const RESULT_SENSITIVE_TOOLS = new Set([
+  'run_command',
+  'read_terminal_output',
+  // 浏览器会话
+  'browser_screenshot',
+  'browser_snapshot',
+  'browser_read_console',
+  // 桌面操控
+  'computer_screenshot',
+  'computer_get_state',
+  'computer_list_apps',
+  // 仓库 / 一人公司 / 网络状态
+  'git_status',
+  'git_branch',
+  'git_diff',
+  'git_log',
+  'office_status',
+  'list_agents',
+  'web_search',
+  'read_url',
+])
+
+/** 轮询类工具：结果本来就随时间变长，重复读取是等待而不是打转——只提醒，
+ *  永不熔断。 */
 const POLLING_TOOLS = new Set(['read_terminal_output'])
+
+/** 打转守卫判定（纯函数，导出供单测覆盖边界）。`count` 是该签名连续出现的
+ *  次数；结果敏感工具的结果变化会由 noteRepeatResult 把 count 清零。 */
+export function repeatCallVerdict(
+  toolName: string,
+  count: number,
+): 'none' | 'nudge' | 'halt' {
+  if (count < REPEAT_CALL_NUDGE) return 'none'
+  if (count >= REPEAT_CALL_HALT && !POLLING_TOOLS.has(toolName)) return 'halt'
+  return 'nudge'
+}
+
+/** 一轮结束后清掉本轮没出现的签名：下一次出现从 1 重新计数，保证「重复」
+ *  指的是连续重复，而不是整个 run 的累计次数。 */
+export function pruneRepeatState(
+  counts: Map<string, number>,
+  lastResults: Map<string, string>,
+  activeSignatures: Set<string>,
+): void {
+  for (const sig of [...counts.keys()]) {
+    if (!activeSignatures.has(sig)) counts.delete(sig)
+  }
+  for (const sig of [...lastResults.keys()]) {
+    if (!activeSignatures.has(sig)) lastResults.delete(sig)
+  }
+}
+
+/** 记录一次结果敏感工具的结果。返回 true 表示结果较上次发生了变化——调用方
+ *  据此跳过本次提醒；计数已在此清零，下一次调用重新从 1 开始。 */
+export function noteRepeatResult(
+  counts: Map<string, number>,
+  lastResults: Map<string, string>,
+  signature: string,
+  resultText: string,
+): boolean {
+  const prev = lastResults.get(signature)
+  const changed = prev !== undefined && prev !== resultText
+  if (changed) counts.set(signature, 0)
+  lastResults.set(signature, resultText)
+  return changed
+}
+
+/** 提醒文案按工具类型分开：纯工具可以说「不会带来新信息」，状态依赖工具
+ *  只能说「返回的文本没变」——页面/终端可能确实还在变化，不能断言结果不变。 */
+export function buildRepeatReminder(toolName: string, count: number): string {
+  if (POLLING_TOOLS.has(toolName)) {
+    return `[系统提醒] ${toolName} 已连续 ${count} 次返回相同内容。如果进程仍在启动/构建，请稍等再读，不要密集轮询；否则请换做法或直接给出结论。`
+  }
+  if (RESULT_SENSITIVE_TOOLS.has(toolName)) {
+    return `[系统提醒] 你已连续第 ${count} 次用完全相同的参数调用 ${toolName}，返回的文本没有变化。如果外部状态确实还没变，请改变做法（换参数/换工具）或直接给出结论；状态仍在变化时可以忽略本提醒。`
+  }
+  return `[系统提醒] 你已连续第 ${count} 次用完全相同的参数调用 ${toolName}，这类调用不会带来新信息。请改变做法（换参数/换工具）或直接给出结论，不要重复此调用。`
+}
 
 /** Agent 会话默认编辑模式——与 Claude Code 默认一致：直接动手，但改文件前
  *  先征求用户确认。计划模式（plan）改为用户主动选择，不再作为默认。 */
@@ -4221,6 +4367,9 @@ async function runAgentLoop(
   // Split the prompt into a byte-stable prefix + per-turn dynamic context so
   // provider prefix caches (OpenAI / DeepSeek / Anthropic) keep hitting across
   // turns instead of re-billing the whole history every time.
+  //
+  // 不看用户发了什么：每条用户消息都只是「在这个会话里继续」，动态上下文按
+  // 同一套规则裁剪（会话边界 + 本项目当前状态）。
   const { stable, dynamic } = await timePrepStep('构建提示词', () => buildSystemPrompt(
     baseSystemPrompt, userContent, lastUserMessage?.contextFiles || [],
     workspacePath,
@@ -4816,12 +4965,13 @@ async function runAgentLoop(
   // （此前直接「任务卡死」——命令常常只是 shell 方言/瞬态锁问题），
   // 再次连续失败才终态停跑。
   let workerCommandBreakReminded = false
-  // 打转守卫状态：本 run 内每个 name+arguments 被调用的次数，以及是否已由
+  // 打转守卫状态：本 run 内每个 name+arguments 连续出现的次数，以及是否已由
   // 守卫停止（停止时不能再报「已达最大轮数」，两者的原因不同）。
   const repeatCallCounts = new Map<string, number>()
-  // run_command 每次调用的结果变化记录（签名 → 首次结果 + 是否出现过变化），
-  // 见 finalizeToolResult：结果在变的重复是编辑-验证循环，不算打转。
-  const repeatResultsBySig = new Map<string, { first: string; varied: boolean }>()
+  // 结果敏感工具上一次的结果文本（签名 → 上次结果）。下一次结果不同就把
+  // 重复计数清零，见 finalizeToolResult：结果在变的重复是观察/编辑-验证
+  // 循环，不是打转。
+  const repeatLastResults = new Map<string, string>()
   let loopGuardStopped = false
 
   while (iterationsLeft-- > 0) {
@@ -5152,19 +5302,23 @@ async function runAgentLoop(
         if (!ok) truncatedCallIds.add(tc.id)
       }
 
-      // ── 打转守卫：统计本 run 内重复的 name+arguments ──
+      // ── 打转守卫：统计本 run 内**连续**重复的 name+arguments ──
+      // 只看连续：本轮出现了别的工具调用，说明模型在推进（navigate 换页后
+      // 再 screenshot、编辑后再 typecheck），上一轮的签名链到此为止。曾经
+      // 按整个 run 累计，把「换页面→截图观察」误判成重复截图，第 6 张就把
+      // 正常任务停掉。
       const repeatCountByCallId = new Map<string, number>()
-      let roundRepeatsHalt = false
+      const roundSignatures = new Set<string>()
       for (const tc of parsedToolCalls) {
         if (truncatedCallIds.has(tc.id)) continue
         const sig = toolCallSignature(tc)
+        roundSignatures.add(sig)
         const n = (repeatCallCounts.get(sig) || 0) + 1
         repeatCallCounts.set(sig, n)
         if (n >= REPEAT_CALL_NUDGE) repeatCountByCallId.set(tc.id, n)
-        // run_command 的打转在结果落定时判定（见循环末尾 runCommandRepeatStuck）：
-        // 同样的 typecheck 命令穿插编辑、结果每次不同，是正常迭代不是打转。
-        if (n >= REPEAT_CALL_HALT && !POLLING_TOOLS.has(tc.name) && tc.name !== 'run_command') roundRepeatsHalt = true
       }
+      // 本轮没出现的签名：计数和上次结果一起清掉，下一次出现从 1 重新计。
+      pruneRepeatState(repeatCallCounts, repeatLastResults, roundSignatures)
 
       // ── 计划模式防空转 ──────────────────────────────────────────────────
       // 计划模式只暴露只读工具。若用户请求明显需要写操作/命令（提交/推送/
@@ -5341,30 +5495,27 @@ async function runAgentLoop(
       const roundImageNotes: string[] = []
 
       const finalizeToolResult = (tc: ToolCall, incoming: ToolResult): void => {
-        // run_command 的重复不一定是打转：同样的 typecheck 命令穿插在编辑之间，
-        // 结果每次都不同（报错行号/内容在变）。先记录结果是否较上次有变化，
-        // 有变化就清零该签名的重复计数——只有「连续多次结果完全相同」的原样
-        // 重试才算打转（循环末尾的 HALT 判定依据 repeatResultsBySig）。
-        let runCommandResultVaried = false
-        if (tc.name === 'run_command') {
-          const sig = toolCallSignature(tc)
-          const text = String(incoming.result ?? '')
-          const prev = repeatResultsBySig.get(sig)
-          const changed = prev ? prev.first !== text : false
-          if (changed) repeatCallCounts.set(sig, 0)
-          repeatResultsBySig.set(sig, { first: prev ? prev.first : text, varied: prev ? prev.varied || changed : false })
-          runCommandResultVaried = repeatResultsBySig.get(sig)!.varied
+        // 结果敏感工具（截图/终端/仓库/命令…）的重复不一定是打转：页面换了、
+        // 终端出了新行、typecheck 穿插在编辑之间，结果都在变。先记录本次结果，
+        // 与上次不同就清零该签名的计数——只有「连续多次结果完全相同」才算
+        // 打转（循环末尾的 HALT 判定依据 repeatCallCounts）。
+        const sig = toolCallSignature(tc)
+        let effectiveRepeatCount = repeatCountByCallId.get(tc.id)
+        if (RESULT_SENSITIVE_TOOLS.has(tc.name)) {
+          noteRepeatResult(repeatCallCounts, repeatLastResults, sig, String(incoming.result ?? ''))
+          effectiveRepeatCount = repeatCallCounts.get(sig)
         }
         // 打转提醒挂在被重复的那条结果尾部，而不是另插一条消息：provider 对
         // 角色交替和 tool_call_id 配对都有要求，只有 tool 结果是永远合法的。
-        // 结果每次都在变的 run_command 重复不加「结果不会改变」提醒——那是误导。
-        const repeats = runCommandResultVaried ? undefined : repeatCountByCallId.get(tc.id)
-        const result: ToolResult = repeats
-          ? {
-              ...incoming,
-              result: `${incoming.result}\n\n[系统提醒] 你已第 ${repeats} 次用完全相同的参数调用 ${tc.name}，结果不会改变。请改变做法（换参数/换工具）或直接给出结论，不要重复此调用。`,
-            }
-          : incoming
+        const repeatVerdict =
+          effectiveRepeatCount === undefined ? 'none' : repeatCallVerdict(tc.name, effectiveRepeatCount)
+        const result: ToolResult =
+          repeatVerdict === 'nudge' && effectiveRepeatCount !== undefined
+            ? {
+                ...incoming,
+                result: `${incoming.result}\n\n${buildRepeatReminder(tc.name, effectiveRepeatCount)}`,
+              }
+            : incoming
         // A user-denied call shows 'rejected' (not 'error') in the trace —
         // the pipeline marks denials via result.rejected.
         useChatStore.getState().setTraceStatus(sessionId, tc.id, result.rejected ? 'rejected' : result.isError ? 'error' : 'success')
@@ -5678,21 +5829,21 @@ async function runAgentLoop(
       if (planSubmitted) break
 
       // ── 打转守卫：提醒后仍原样重复，停下来 ──
-      // 与「命令连续失败熔断」不同，这里不打断问用户：同样的调用重复到第
-      // REPEAT_CALL_HALT 次已经没有任何信息量，继续跑只会把预算烧光。
-      // run_command 单独判定：只有同一签名的重复**结果完全相同**（真·原样重试）
-      // 才算打转；结果每次在变（编辑-验证循环）不在这里停。
-      const runCommandRepeatStuck = [...repeatCallCounts.entries()].some(([sig, n]) => {
-        if (n < REPEAT_CALL_HALT || !sig.startsWith('run_command|')) return false
-        const rec = repeatResultsBySig.get(sig)
-        return !rec || !rec.varied
+      // 与「命令连续失败熔断」不同，这里不打断问用户：同样的调用连续重复到
+      // REPEAT_CALL_HALT 次、且结果一直没变，已经没有任何信息量，继续跑只会
+      // 把预算烧光。结果敏感工具的结果变化会清零计数（见 finalizeToolResult），
+      // 所以能走到这里的都是「参数与结果都连续没变」。
+      const stuckRepeat = [...repeatCallCounts.entries()].find(([sig, n]) => {
+        const name = sig.slice(0, sig.indexOf('|'))
+        return repeatCallVerdict(name, n) === 'halt'
       })
-      if (roundRepeatsHalt || runCommandRepeatStuck) {
+      if (stuckRepeat) {
         loopGuardStopped = true
         haltedByLoopGuard = true
+        const stuckTool = stuckRepeat[0].slice(0, stuckRepeat[0].indexOf('|'))
         chatStore.addMessage(sessionId, {
           role: 'assistant',
-          content: `[已停止：同一个工具调用以完全相同的参数重复了 ${REPEAT_CALL_HALT} 次，结果不会改变。请补充缺失的信息或调整任务描述后重试。]`,
+          content: `[已停止：${stuckTool} 已连续 ${stuckRepeat[1]} 次用相同参数调用，返回结果没有变化，继续执行不会产生新信息。请补充缺失的信息或调整任务描述后重试。]`,
           runId,
         })
         clearStream()
@@ -5896,13 +6047,17 @@ async function runAgentLoop(
       // the unconditional overwrite used to put a green "已完成" badge next to
       // the red error card the chat just showed.
       const rec = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.agentRuns?.find((r) => r.id === runId)
+      // 打转守卫/命令熔断停下的 run 不是正常完成：任务面板不能再显示绿色
+      // 「已完成」。错误状态优先保留（可能先报错、后又被守卫停下）。
       const finalStatus: AgentRun['status'] = abortController.signal.aborted
         ? 'stopped'
         : rec?.status === 'error'
           ? 'error'
-          : planWasSubmitted(sessionId)
-            ? 'waiting_plan'
-            : 'done'
+          : haltedByLoopGuard
+            ? 'stopped'
+            : planWasSubmitted(sessionId)
+              ? 'waiting_plan'
+              : 'done'
       useChatStore.getState().finishAgentRun(sessionId, runId, finalStatus, {
         tokensIn: runTokensIn,
         tokensOut: runTokensOut,

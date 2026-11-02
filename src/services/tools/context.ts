@@ -93,6 +93,28 @@ export function scoreAgainstKeywords(text: string, keywords: string[]): number {
  * has no tool loop — auto-retrieval costs most but benefits least there);
  * explicitly attached contextFiles are still always read.
  */
+/**
+ * 消息里是否带有**明确的代码引用**（文件名 / 路径 / 反引号符号 / @附件 / 标识符）。
+ *
+ * 自动检索只在有明确指代时触发。纯自然语言（「继续」「这个项目怎么样」
+ * 「帮我优化一下」）不触发全项目关键词搜索——项目里躺着的是**别的会话、过去
+ * 的工作**留下的笔记与文档，按关键词捞出来塞进本轮，等于把别处的上下文带进
+ * 这条对话。会话是上下文边界，没被点名就不该进场。
+ */
+export function hasExplicitReference(text: string): boolean {
+  const t = text || ''
+  if (/@[^\s@]+/.test(t)) return true                     // @文件 / @符号
+  if (/`[^`\n]+`/.test(t)) return true                    // `identifier`
+  if (/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b/.test(t)) return true // main.ts / a.b.c
+  if (/[\\/][\w.-]+[\\/]/.test(t)) return true            // src/foo/ / \src\
+  // 至少一个拉丁标识符（长度 ≥3，非停用词）——纯中文聊天不会命中
+  return extractKeywords(t).some((k) => /[a-z0-9]/.test(k) && k.length >= 3)
+}
+
+/** 文档/笔记类后缀：这些文件往往是别的会话留下的工作记录，只有用户显式点名
+ *  （@ 附件 / 直接写了文件名）时才进上下文，绝不由关键词搜索自动带入。 */
+const DOC_FILE_RE = /\.(md|markdown|txt|log|rst|adoc|org)$/i
+
 export async function retrieveRelevantContext(
   userContent: string,
   contextFiles: string[],
@@ -109,6 +131,10 @@ export async function retrieveRelevantContext(
   const keywords = extractKeywords(userContent).slice(0, MAX_KEYWORDS)
   if (keywords.length === 0 && contextFiles.length === 0) return ''
 
+  // 没有明确指代 → 不自动检索（会话边界；见 hasExplicitReference 的注释）。
+  const allowSearch = !opts?.skipSearch && hasExplicitReference(userContent)
+  if (!allowSearch && contextFiles.length === 0) return ''
+
   // Short-TTL cache — the expensive part is the search, not the block assembly,
   // so cache the final block (empty hits included, so a hitless query doesn't
   // re-walk the project on the next message either).
@@ -120,11 +146,14 @@ export async function retrieveRelevantContext(
 
   // 1) File-name matches (highest signal) — only when we have a keyword to
   //    search by (explicit attachments alone must not call search with undefined)
-  if (keywords.length > 0 && !opts?.skipSearch) {
+  if (keywords.length > 0 && allowSearch) {
     console.time(`[检索] searchFiles "${keywords[0]}" @ ${rootPath}`)
     try {
       const nameHits = await window.electronAPI.searchFiles(rootPath, keywords[0])
-      for (const p of nameHits.slice(0, 10)) matches.push({ path: p, score: 10 })
+      for (const p of nameHits.slice(0, 10)) {
+        if (DOC_FILE_RE.test(p)) continue // 笔记/文档只在显式点名时才带
+        matches.push({ path: p, score: 10 })
+      }
     } catch { /* ignore */ } finally {
       console.timeEnd(`[检索] searchFiles "${keywords[0]}" @ ${rootPath}`)
     }
@@ -134,7 +163,7 @@ export async function retrieveRelevantContext(
   //    full project walk (read every matching file + regex every line); the
   //    recall gained from the 2nd/3rd keywords doesn't justify tripling that
   //    cost on every message. (The cache above makes repeated queries free.)
-  if (keywords.length > 0 && !opts?.skipSearch) {
+  if (keywords.length > 0 && allowSearch) {
     const kw = keywords[0]
     console.time(`[检索] searchInFiles "${kw}" @ ${rootPath}`)
     try {
@@ -143,6 +172,7 @@ export async function retrieveRelevantContext(
         caseSensitive: false,
       })
       for (const hit of hits.slice(0, 20)) {
+        if (DOC_FILE_RE.test(hit.filePath)) continue // 同上：笔记不进自动检索
         matches.push({
           path: hit.filePath,
           line: hit.lineNumber,
@@ -422,8 +452,11 @@ function escapeRe(s: string): string {
 
 // ───────────────────────── Editor selection context ─────────────────────────
 
-/** Read the current selection from the live Monaco editor (if any) */
-export function getEditorSelectionContext(): string {
+/** Read the current selection from the live Monaco editor (if any).
+ *
+ *  `projectRoot` 传入时，只接受该项目内的选区：编辑器是全局 UI 状态，A 项目里
+ *  选中的一段笔记不该作为上下文进入 B 项目的会话。 */
+export function getEditorSelectionContext(projectRoot?: string): string {
   try {
     const editor = (window as any).__monacoEditor as any
     if (!editor || !editor.getSelection || !editor.getModel) return ''
@@ -431,10 +464,28 @@ export function getEditorSelectionContext(): string {
     const model = editor.getModel()
     if (!selection || selection.isEmpty() || !model) return ''
     const filePath = model.uri?.path || ''
+    if (projectRoot && !isPathInsideProject(filePath, projectRoot)) return ''
     const text = model.getValueInRange(selection)
     if (!text) return ''
     return `\n\n<editor_selection path="${filePath}" lineStart="${selection.startLineNumber}" lineEnd="${selection.endLineNumber}">\n${text.slice(0, 4000)}\n</editor_selection>`
   } catch {
     return ''
   }
+}
+
+/** Path containment check that tolerates Windows drive letters, backslashes and
+ *  file:// URI paths ("/e:/ls/x/y.ts" vs "E:\\ls\\x"). Exported: prompt assembly
+ *  uses it to keep editor state (open tabs / current file / selection) of OTHER
+ *  projects out of this session's request. */
+export function isPathInsideProject(filePath: string, projectRoot?: string): boolean {
+  const norm = (p: string) => decodeURIComponent(p || '')
+    .replace(/^file:\/\/\/?/i, '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+([a-zA-Z]:)/, '$1')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+  const f = norm(filePath)
+  const r = norm(projectRoot || '')
+  if (!f || !r) return false
+  return f === r || f.startsWith(r + '/')
 }
