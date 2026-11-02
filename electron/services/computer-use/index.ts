@@ -78,12 +78,12 @@ function resolveLaunch(): HelperLaunchSpec | null {
 }
 
 /** The deterministic fake desktop is opt-in only (tests / demos / CI). */
-function useFakeBackend(): boolean {
+function fakeBackendRequested(): boolean {
   return process.env.OURCODE_CUA_FAKE === '1'
 }
 
 async function getBackend(): Promise<CuaBackend> {
-  if (useFakeBackend()) {
+  if (fakeBackendRequested()) {
     fake = fake ?? new FakeCuaBackend(dataDir('frames'))
     return fake
   }
