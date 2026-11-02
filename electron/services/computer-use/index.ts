@@ -19,6 +19,8 @@ import { CuaHelperHost, type HelperLaunchSpec } from './host'
 import { FakeCuaBackend } from './fakeBackend'
 import type { CuaBackend, CuaProbeResult } from './backend'
 import type { UserPreferences } from '../../../shared/types'
+import { cursorDisplayBounds, destroyOverlay, hideOverlay, showOverlay } from './overlay'
+import { readRecentAudit } from './audit'
 
 export interface ComputerUseInit {
   broadcast: (channel: string, payload: unknown) => void
@@ -132,6 +134,15 @@ function ensureService(): CuaService {
       frameDir: dataDir('frames'),
       auditFile: dataDir('audit.jsonl'),
       platform: process.platform,
+      onActionStart: ({ app, kind, bounds }) => {
+        const prefs = init?.getPreferences()
+        if (prefs?.computerUseShowOverlay !== false) showOverlay({ app, kind, bounds: bounds ?? cursorDisplayBounds() ?? undefined })
+        init?.broadcast(IPC_CHANNELS.COMPUTER_EVENT, { type: 'action', phase: 'start', app, kind })
+      },
+      onActionEnd: () => {
+        hideOverlay()
+        init?.broadcast(IPC_CHANNELS.COMPUTER_EVENT, { type: 'action', phase: 'end' })
+      },
     })
   }
   return service
@@ -234,11 +245,16 @@ export function registerComputerUseIpc(): void {
     host?.resetBudget()
     return { ok: true }
   })
+
+  ipcMain.handle(IPC_CHANNELS.COMPUTER_AUDIT, (_event, limit?: number) => {
+    return { ok: true, records: readRecentAudit(dataDir('audit.jsonl'), Number(limit) || 50) }
+  })
 }
 
 export async function shutdownComputerUse(): Promise<void> {
   try { globalShortcut.unregister('Escape') } catch { /* not registered */ }
   escRegistered = false
+  destroyOverlay()
   await host?.stop()
   await fake?.shutdown()
   host = null

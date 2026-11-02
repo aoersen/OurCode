@@ -932,20 +932,34 @@ export async function browserScreenshotTool(): Promise<string | ToolImageResult>
   }
 }
 
-/** 页面交互：点击 / 输入 / 按键 / 滚动 / 等待。 */
+/** 页面交互：点击 / 输入 / 按键 / 滚动 / 等待。
+ *  `ref`（来自 browser_snapshot）优先于 selector：跨 React 重渲染、能进 shadow DOM。 */
 export async function browserActTool(
   action: string,
-  opts: { selector?: string; text?: string; key?: string; ms?: number } = {},
+  opts: { selector?: string; ref?: string; text?: string; key?: string; ms?: number } = {},
 ): Promise<string> {
   const allowed = ['click', 'type', 'press', 'scroll', 'wait']
   if (!allowed.includes(action)) return `Error: 不支持的 action：${action}（可用：${allowed.join('、')}）`
-  if ((action === 'click' || action === 'type') && !String(opts.selector ?? '').trim()) {
-    return `Error: ${action} 需要 selector`
+  const hasRef = String(opts.ref ?? '').trim() !== ''
+  if ((action === 'click' || action === 'type') && !hasRef && !String(opts.selector ?? '').trim()) {
+    return `Error: ${action} 需要 ref（推荐，来自 browser_snapshot）或 selector`
   }
   const res = await window.electronAPI.browserAct(action as never, opts)
   if (!res.ok) return `Error: ${res.error || '操作失败'}`
   const loaded = res.state.loading ? '（页面仍在加载，稍后用 browser_read_console 确认结果）' : ''
   return `${res.detail || '已执行'}\nURL: ${res.state.url}${loaded}`
+}
+
+/** 可访问性快照（CDP AX 树）：返回带 ref 的紧凑树，供 browser_act {ref} 定位。 */
+export async function browserSnapshotTool(maxNodes?: number): Promise<string> {
+  const res = await window.electronAPI.browserSnapshot(maxNodes)
+  if (!res.ok || !res.text) return `Error: ${res.error || '快照失败'}`
+  return [
+    `页面：${res.title || '(无标题)'} — ${res.url || ''}`,
+    `快照 ${res.snapshotId || '?'} · ${res.nodes ?? 0} 节点`,
+    res.text,
+    '提示：用 browser_act { action:"click"|"type", ref:"e12" } 操作；ref 只对本次快照有效。',
+  ].join('\n')
 }
 
 // ── GitHub PR（gh CLI）───────────────────────────────────────────────────────

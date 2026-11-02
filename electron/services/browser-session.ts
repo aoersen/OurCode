@@ -15,6 +15,7 @@ import { BrowserWindow, type WebContents } from 'electron'
 import { allowArbitraryNavigation, revokeArbitraryNavigation } from './navigation-guard'
 import {
   buildActScript,
+  formatAxTree,
   formatConsoleForModel,
   normalizeBrowserUrl,
   pageTextScript,
@@ -22,6 +23,7 @@ import {
   truncatePageText,
   BROWSER_CONSOLE_LIMIT,
   BROWSER_PAGE_TEXT_LIMIT,
+  type AxInputNode,
 } from '../../shared/browser'
 import type {
   BrowserAction,
@@ -29,6 +31,7 @@ import type {
   BrowserActResult,
   BrowserConsoleEntry,
   BrowserSessionState,
+  BrowserSnapshotResult,
 } from '../../shared/types'
 
 /** How long a navigation may take before the tool gives up and reports what it
@@ -49,6 +52,11 @@ let win: BrowserWindow | null = null
 let hooks: BrowserSessionHooks | null = null
 let consoleBuffer: BrowserConsoleEntry[] = []
 let lastError: string | undefined
+/** ref table of the last snapshot (ref → backend DOM node id). A navigation
+ *  invalidates it: the ids belong to the document that produced them. */
+let lastRefs = new Map<string, number>()
+let lastSnapshotId = ''
+let snapshotSeq = 0
 const state: BrowserSessionState = {
   url: '',
   title: '',
@@ -110,6 +118,8 @@ function attachContentsEvents(wc: WebContents): void {
   wc.on('did-navigate', (_event, url) => {
     state.url = url
     lastError = undefined
+    lastRefs = new Map()
+    lastSnapshotId = ''
     pushState()
   })
   wc.on('did-navigate-in-page', (_event, url) => {
@@ -226,6 +236,125 @@ async function evaluate<T>(wc: WebContents, script: string): Promise<T> {
   return guarded
 }
 
+// ── CDP helpers: ARIA snapshot + ref-addressed actions ──────────────────────
+//
+// The selector path (buildActScript) stays for plain pages; refs add what it
+// cannot do: address nodes inside shadow DOM / iframes, and survive re-renders
+// because the ref table is rebuilt per snapshot.
+
+function ensureDebugger(wc: WebContents): void {
+  if (!wc.debugger.isAttached()) wc.debugger.attach('1.3')
+}
+
+async function cdp<T = any>(wc: WebContents, method: string, params: Record<string, unknown> = {}): Promise<T> {
+  return (await wc.debugger.sendCommand(method, params)) as T
+}
+
+function axString(value: any): string {
+  return value && typeof value === 'object' && typeof value.value === 'string' ? value.value : ''
+}
+
+/** Rebuild CDP's flat AX node list into the tree `formatAxTree` walks. */
+function buildAxTree(nodes: any[]): AxInputNode[] {
+  const byId = new Map<string, any>()
+  for (const node of nodes ?? []) byId.set(String(node.nodeId), node)
+  const convert = (node: any): AxInputNode => ({
+    role: axString(node.role) || undefined,
+    name: axString(node.name) || undefined,
+    value: axString(node.value) || undefined,
+    backendDOMNodeId: typeof node.backendDOMNodeId === 'number' ? node.backendDOMNodeId : undefined,
+    ignored: node.ignored === true,
+    children: (node.childIds ?? [])
+      .map((id: string) => byId.get(String(id)))
+      .filter(Boolean)
+      .map(convert),
+  })
+  const roots = (nodes ?? []).filter((n) => !n.parentId || !byId.has(String(n.parentId)))
+  return (roots.length ? roots : (nodes ?? []).slice(0, 1)).map(convert)
+}
+
+/** Accessibility snapshot of the current page, as a ref-addressable ARIA tree. */
+export async function browserSnapshot(maxNodes = 500): Promise<BrowserSnapshotResult> {
+  const wc = currentContents()
+  if (!wc || !state.url) return { ok: false, error: '浏览器会话还没有打开任何页面' }
+  try {
+    ensureDebugger(wc)
+    await cdp(wc, 'Accessibility.enable')
+    const result = await cdp<{ nodes: any[] }>(wc, 'Accessibility.getFullAXTree')
+    const formatted = formatAxTree(buildAxTree(result.nodes ?? []), { maxNodes })
+    snapshotSeq += 1
+    lastSnapshotId = `snap-${snapshotSeq}`
+    lastRefs = new Map(Object.entries(formatted.refs))
+    return {
+      ok: true,
+      url: state.url,
+      title: state.title,
+      text: formatted.text,
+      nodes: formatted.nodes,
+      snapshotId: lastSnapshotId,
+    }
+  } catch (error: any) {
+    return { ok: false, error: `可访问性快照失败：${error?.message ?? error}` }
+  }
+}
+
+const CLICK_FN = `function () {
+  if (this.scrollIntoView) this.scrollIntoView({ block: 'center', inline: 'center' });
+  if (this.disabled) return 'disabled';
+  this.click();
+  return 'clicked';
+}`
+
+const TYPE_FN = `function (text) {
+  const el = this;
+  el.scrollIntoView && el.scrollIntoView({ block: 'center' });
+  if (el.isContentEditable) {
+    el.focus();
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    return 'typed';
+  }
+  if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return 'not-editable';
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(proto.prototype, 'value');
+  if (setter && setter.set) setter.call(el, text); else el.value = text;
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'typed';
+}`
+
+/** Act on a node by the ref from the latest browser_snapshot. */
+async function actByRef(wc: WebContents, action: 'click' | 'type', opts: BrowserActOptions): Promise<BrowserActResult> {
+  const ref = String(opts.ref ?? '')
+  const backendNodeId = lastRefs.get(ref)
+  if (!backendNodeId) {
+    return { ok: false, error: `ref ${ref || '(空)'} 不属于最近一次 browser_snapshot（快照可能已过期，重新调用一次）` }
+  }
+  if (action === 'type' && opts.text === undefined) return { ok: false, error: 'type 需要 text' }
+  try {
+    ensureDebugger(wc)
+    await cdp(wc, 'DOM.enable')
+    const resolved = await cdp<{ object?: { objectId?: string } }>(wc, 'DOM.resolveNode', { backendNodeId })
+    const objectId = resolved.object?.objectId
+    if (!objectId) return { ok: false, error: `ref ${ref} 解析不到 DOM 节点（页面可能已更新）` }
+    const result = await cdp<{ result?: { value?: string }; exceptionDetails?: { text?: string } }>(wc, 'Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: action === 'click' ? CLICK_FN : TYPE_FN,
+      arguments: action === 'type' ? [{ value: String(opts.text ?? '') }] : [],
+      returnByValue: true,
+    })
+    if (result.exceptionDetails) {
+      return { ok: false, error: `动作执行失败：${result.exceptionDetails.text ?? '未知异常'}` }
+    }
+    const outcome = String(result.result?.value ?? '')
+    if (outcome === 'disabled') return { ok: false, error: '目标元素处于 disabled 状态' }
+    if (outcome === 'not-editable') return { ok: false, error: '目标元素不能输入文字（不是 input/textarea/contenteditable）' }
+    return { ok: true, detail: `${ref} ${action === 'click' ? '已点击' : `已输入 ${String(opts.text ?? '').length} 个字符`}${lastSnapshotId ? `（快照 ${lastSnapshotId}）` : ''}` }
+  } catch (error: any) {
+    return { ok: false, error: `按 ref 操作失败：${error?.message ?? error}` }
+  }
+}
+
 /** Wait until the page settles after an action that starts a navigation.
  *  `goBack()`/`goForward()` return before Chromium flips the loading flag, so
  *  checking `isLoading()` immediately answers with the PREVIOUS page's url —
@@ -312,6 +441,13 @@ export async function browserAct(
 ): Promise<BrowserActResult & { state: BrowserSessionState }> {
   const wc = currentContents()
   if (!wc || !state.url) return { ok: false, error: '浏览器会话还没有打开任何页面', state: snapshot() }
+  // A ref from the latest snapshot is the strongest target: it survives
+  // re-renders and reaches shadow DOM / iframes that querySelector cannot.
+  if ((action === 'click' || action === 'type') && opts.ref) {
+    const byRef = await actByRef(wc, action, opts)
+    if (action === 'click' && byRef.ok) await waitForNavigation(wc, 5_000)
+    return { ...byRef, state: snapshot() }
+  }
   const script = buildActScript(action, opts)
   if (!script) return { ok: false, error: `不支持的操作：${action}`, state: snapshot() }
   try {
@@ -350,7 +486,14 @@ export function browserSetVisible(visible: boolean): BrowserSessionState {
 export function browserClose(): void {
   consoleBuffer = []
   lastError = undefined
-  if (win && !win.isDestroyed()) win.close()
+  lastRefs = new Map()
+  lastSnapshotId = ''
+  if (win && !win.isDestroyed()) {
+    try {
+      if (win.webContents.debugger.isAttached()) win.webContents.debugger.detach()
+    } catch { /* window already tearing down */ }
+    win.close()
+  }
   win = null
   pushState()
 }

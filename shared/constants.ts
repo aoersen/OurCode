@@ -127,6 +127,7 @@ export const IPC_CHANNELS = {
   BROWSER_CONSOLE: 'browser:console',
   BROWSER_PAGE_TEXT: 'browser:pageText',
   BROWSER_SCREENSHOT: 'browser:screenshot',
+  BROWSER_SNAPSHOT: 'browser:snapshot',
   BROWSER_ACT: 'browser:act',
   BROWSER_HISTORY: 'browser:history',
   BROWSER_VISIBLE: 'browser:visible',
@@ -142,6 +143,7 @@ export const IPC_CHANNELS = {
   COMPUTER_RUN_STEPS: 'computer:runSteps',
   COMPUTER_STOP: 'computer:stop',
   COMPUTER_RESET: 'computer:reset',
+  COMPUTER_AUDIT: 'computer:audit',
   COMPUTER_EVENT: 'computer:event',
 
   // Auto Update

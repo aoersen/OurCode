@@ -32,6 +32,7 @@ import {
   browserPageText,
   browserScreenshot,
   browserSetVisible,
+  browserSnapshot,
   browserState,
   initBrowserSession,
 } from './services/browser-session'
@@ -3022,6 +3023,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.BROWSER_CONSOLE, (_event, clear?: boolean) => browserConsole(clear === true))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PAGE_TEXT, (_event, maxChars?: number) => browserPageText(maxChars))
   ipcMain.handle(IPC_CHANNELS.BROWSER_SCREENSHOT, () => browserScreenshot())
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SNAPSHOT, (_event, maxNodes?: number) => browserSnapshot(maxNodes))
   ipcMain.handle(IPC_CHANNELS.BROWSER_ACT, (_event, action: BrowserAction, opts?: BrowserActOptions) =>
     browserAct(action, opts))
   ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY, (_event, step: 'back' | 'forward' | 'reload') => browserHistory(step))

@@ -895,9 +895,12 @@ export interface BrowserSessionState {
 export type BrowserAction = 'click' | 'type' | 'press' | 'scroll' | 'wait'
 
 /** Arguments for one in-page interaction. `selector` is a CSS selector; an
- *  empty one means "the focused element" (press) or is rejected (click/type). */
+ *  empty one means "the focused element" (press) or is rejected (click/type).
+ *  `ref` (from browser_snapshot) takes precedence: it addresses the isolated
+ *  world node by backend id, so it survives React re-renders and shadow DOM. */
 export interface BrowserActOptions {
   selector?: string
+  ref?: string
   text?: string
   key?: string
   ms?: number
@@ -908,6 +911,28 @@ export interface BrowserActResult {
   error?: string
   /** What the page looked like after the action (title + url), when known. */
   detail?: string
+}
+
+/** One compact accessibility node, as handed to the model by browser_snapshot. */
+export interface BrowserAxNode {
+  role: string
+  name?: string
+  value?: string
+  /** Present only for nodes an action can target; the model passes it as `ref`. */
+  ref?: string
+  children?: BrowserAxNode[]
+}
+
+export interface BrowserSnapshotResult {
+  ok: boolean
+  error?: string
+  url?: string
+  title?: string
+  /** `- role "name" [ref=e3]` tree, capped and de-noised. */
+  text?: string
+  nodes?: number
+  /** Opaque id of this snapshot; refs from an older snapshot are rejected. */
+  snapshotId?: string
 }
 
 /** Pushed from the main process whenever the session changes (navigation, title,

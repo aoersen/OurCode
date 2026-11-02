@@ -75,6 +75,10 @@ export interface CuaServiceOptions {
   sleep?: (ms: number) => Promise<void>
   audit?: AuditLogger
   platform?: string
+  /** Called right before a write action is delivered (drives the overlay/UI). */
+  onActionStart?: (info: { app: string; kind: CuaActionKind; bounds?: [number, number, number, number] }) => void
+  /** Called when the action (including settle) is finished, whatever the outcome. */
+  onActionEnd?: () => void
 }
 
 /** A refusal or backend failure carrying the protocol error shape. */
@@ -309,7 +313,12 @@ export class CuaService {
       const backend = await this.backend()
       const method = this.methodOf(kind)
       const params = this.wireAction(kind, request)
-      await this.enqueue(() => backend.call(method, params))
+      this.opts.onActionStart?.({ app: identity, kind, bounds: info?.bounds })
+      try {
+        await this.enqueue(() => backend.call(method, params))
+      } finally {
+        this.opts.onActionEnd?.()
+      }
 
       const settled = info
         ? await this.settle(owner, info, before)

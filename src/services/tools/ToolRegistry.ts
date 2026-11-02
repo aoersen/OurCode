@@ -369,15 +369,37 @@ export function createToolRegistry(): Tool[] {
       timeoutMs: 30_000,
     },
     {
+      name: 'browser_snapshot',
+      description:
+        'Read the page as a compact accessibility tree with per-node refs (role / name / value / [ref=eN]). ' +
+        'This is the reliable way to address elements: refs survive re-renders and reach shadow DOM / iframes. ' +
+        'Refs are valid only for THIS snapshot; re-snapshot after navigation or a big change.',
+      parameters: {
+        type: 'object',
+        properties: {
+          max_nodes: { type: 'number', description: 'Node cap (default 500)' },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const { browserSnapshotTool } = await import('@/services/tools/helpers')
+        return browserSnapshotTool(args.max_nodes)
+      },
+      timeoutMs: 30_000,
+    },
+    {
       name: 'browser_act',
       description:
-        'Interact with the page: click / type / press / scroll / wait. `type` sets the value through the native ' +
-        'setter so React/Vue controlled inputs update. Approval is required because clicking can change remote state.',
+        'Interact with the page: click / type / press / scroll / wait. Prefer `ref` from browser_snapshot ' +
+        '(addresses the node directly); `selector` is the fallback for plain pages. `type` sets the value through ' +
+        'the native setter so React/Vue controlled inputs update. Approval is required because clicking can change remote state.',
       parameters: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['click', 'type', 'press', 'scroll', 'wait'], description: 'What to do' },
-          selector: { type: 'string', description: 'CSS selector (required for click/type; empty for press means the focused element)' },
+          ref: { type: 'string', description: 'Element ref from browser_snapshot (preferred for click/type)' },
+          selector: { type: 'string', description: 'CSS selector (fallback; empty for press means the focused element)' },
           text: { type: 'string', description: 'Text to type (action=type)' },
           key: { type: 'string', description: 'Key name (action=press), e.g. Enter' },
           ms: { type: 'number', description: 'Delay in ms (action=wait, max 10000)' },
@@ -388,6 +410,7 @@ export function createToolRegistry(): Tool[] {
       execute: async (args) => {
         const { browserActTool } = await import('@/services/tools/helpers')
         return browserActTool(args.action, {
+          ref: args.ref,
           selector: args.selector,
           text: args.text,
           key: args.key,

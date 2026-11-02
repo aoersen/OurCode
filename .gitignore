@@ -59,8 +59,10 @@ tools/repro-*.*
 # e2e debug screenshots (cursor/caret/hit probes during bug investigation)
 e2e/*.png
 
-# Docs (not committed per user request)
-docs/
+# Docs (not committed per user request) — except the Computer Use design doc,
+# which ships with the feature it specifies.
+docs/*
+!docs/COMPUTER_USE.md
 
 # WeChat Agent sandbox (dev: created next to the app in the repo root)
 wechat-agent/
@@ -72,3 +74,6 @@ resources/whisper/.whisper-bin.zip
 
 # scratch downloads / test audio
 .tmp/
+
+# CDP smoke log (scripts/browser-cdp-smoke.mjs)
+scripts/.cdp-smoke.log

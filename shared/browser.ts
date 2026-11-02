@@ -89,6 +89,97 @@ export function truncatePageText(text: string, maxChars = BROWSER_PAGE_TEXT_LIMI
   return `...(前 ${clean.length - maxChars} 字符已省略)\n${clean.slice(clean.length - maxChars)}`
 }
 
+// ── ARIA snapshot (CDP Accessibility.getFullAXTree → compact model text) ─────
+
+/** What the main process hands to the formatter, after resolving CDP AX nodes. */
+export interface AxInputNode {
+  role?: string
+  name?: string
+  value?: string
+  backendDOMNodeId?: number
+  ignored?: boolean
+  children?: AxInputNode[]
+}
+
+export interface FormattedAxTree {
+  text: string
+  /** ref → backendDOMNodeId, used by browser_act {ref}. */
+  refs: Record<string, number>
+  nodes: number
+}
+
+/** Container roles that carry no information on their own. */
+const AX_NOISE_ROLES = new Set(['none', 'generic', 'rootwebarea', 'inlinetextbox', 'presentation'])
+/** Container roles worth printing even without a name (they organise the tree). */
+const AX_KEEP_ROLES = new Set([
+  'document', 'main', 'navigation', 'region', 'article', 'form', 'dialog', 'alertdialog',
+  'toolbar', 'tablist', 'list', 'table', 'grid', 'menu', 'menubar', 'tree', 'group', 'status',
+])
+
+/**
+ * Render a CDP accessibility tree as the compact text the model reads.
+ *
+ * - `ignored` nodes are dropped but their children are hoisted (CDP marks plain
+ *   `<div>` wrappers ignored; losing their children would hide the page).
+ * - Every node that has a backend DOM id gets a ref (`e0`, `e1`, …) that is valid
+ *   only for this snapshot, so click/type can address it without CSS selectors.
+ * - Output is node- and character-capped: a real page's AX tree is thousands of
+ *   nodes and would drown the conversation.
+ */
+export function formatAxTree(
+  roots: AxInputNode[] | AxInputNode,
+  opts: { maxNodes?: number; maxChars?: number } = {},
+): FormattedAxTree {
+  const maxNodes = opts.maxNodes ?? 500
+  const maxChars = opts.maxChars ?? 8_000
+  const refs: Record<string, number> = {}
+  const lines: string[] = []
+  let seq = 0
+  let nodes = 0
+  let truncated = false
+
+  const walk = (node: AxInputNode, depth: number): void => {
+    if (truncated) return
+    if (nodes >= maxNodes) {
+      truncated = true
+      return
+    }
+    const children = node.children ?? []
+    if (node.ignored) {
+      for (const child of children) walk(child, depth)
+      return
+    }
+    const role = String(node.role ?? '').toLowerCase() || 'unknown'
+    const name = String(node.name ?? '').replace(/\s+/g, ' ').trim()
+    const value = String(node.value ?? '').replace(/\s+/g, ' ').trim()
+    const hasBackendId = typeof node.backendDOMNodeId === 'number' && node.backendDOMNodeId > 0
+    const printable = !!name || !!value || AX_KEEP_ROLES.has(role) || hasBackendId || depth === 0
+    if (!printable && AX_NOISE_ROLES.has(role)) {
+      for (const child of children) walk(child, depth)
+      return
+    }
+    if (printable) {
+      let ref = ''
+      if (hasBackendId) {
+        ref = `e${seq++}`
+        refs[ref] = node.backendDOMNodeId as number
+      }
+      nodes += 1
+      const label = name ? ` "${name.slice(0, 80)}"` : ''
+      const valueText = value && value !== name ? ` value="${value.slice(0, 60)}"` : ''
+      const refText = ref ? ` [ref=${ref}]` : ''
+      lines.push(`${'  '.repeat(Math.min(depth, 12))}- ${role}${label}${valueText}${refText}`)
+      if (lines.join('\n').length > maxChars) truncated = true
+    }
+    for (const child of children) walk(child, printable ? depth + 1 : depth)
+  }
+
+  for (const root of Array.isArray(roots) ? roots : [roots]) walk(root, 0)
+  if (truncated) lines.push('…（可访问性树已截断：节点/字符上限。用已列出的 ref 操作，或先滚动/导航缩小范围）')
+  return { text: lines.join('\n'), refs, nodes }
+}
+
+
 /** Script that reads back the page's visible text. Whitespace-collapsed so the
  *  budget buys content instead of indentation. */
 export function pageTextScript(): string {

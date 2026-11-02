@@ -25,6 +25,7 @@ export default function ComputerUseSection() {
   const [error, setError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [audit, setAudit] = useState<Array<{ ts: number; kind: string; app?: string; target?: string; ok: boolean; code?: string; effect?: string }>>([])
 
   const refresh = useCallback(async () => {
     try {
@@ -35,6 +36,8 @@ export default function ComputerUseSection() {
       } else {
         setError(res.error?.message ?? '无法读取运行时状态')
       }
+      const log = await window.electronAPI.computerAudit(12)
+      setAudit(Array.isArray(log.records) ? log.records : [])
     } catch (err: any) {
       setError(String(err?.message ?? err))
     }
@@ -157,6 +160,29 @@ export default function ComputerUseSection() {
             checked={preferences.computerUseInSubagent === true}
             onChange={(v) => savePreferences({ computerUseInSubagent: v })}
           />
+        }
+      />
+      <SettingRow
+        label="最近动作"
+        desc={audit.length ? '审计记录（只记录动作目标与结果；输入内容仅长度与前两个字符）' : '还没有动作记录'}
+        stacked
+        right={
+          <div className="w-full space-y-1 font-mono text-[12px] leading-[18px] text-nova-text-secondary">
+            {audit.length === 0 ? (
+              <div className="text-nova-text-secondary">—</div>
+            ) : (
+              audit
+                .slice()
+                .reverse()
+                .map((record, index) => (
+                  <div key={`${record.ts}-${index}`} className="truncate">
+                    {new Date(record.ts).toLocaleTimeString()} · {record.kind} · {record.app ?? '—'}
+                    {record.target ? ` · ${record.target}` : ''} · {record.ok ? 'ok' : `error(${record.code ?? '?'})`}
+                    {record.effect ? ` · ${record.effect}` : ''}
+                  </div>
+                ))
+            )}
+          </div>
         }
       />
     </SettingsSection>

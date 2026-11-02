@@ -213,6 +213,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   browserConsole: (clear?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CONSOLE, clear),
   browserPageText: (maxChars?: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PAGE_TEXT, maxChars),
   browserScreenshot: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SCREENSHOT),
+  browserSnapshot: (maxNodes?: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SNAPSHOT, maxNodes),
   browserAct: (action: string, opts?: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_ACT, action, opts),
   browserHistory: (step: 'back' | 'forward' | 'reload') => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY, step),
@@ -235,6 +236,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   computerRunSteps: (request: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_RUN_STEPS, request),
   computerStop: (owner?: string) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_STOP, owner),
   computerReset: (owner?: string) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_RESET, owner),
+  computerAudit: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.COMPUTER_AUDIT, limit),
   onComputerEvent: (callback: (payload: unknown) => void) => {
     const listener = (_event: any, payload: any) => callback(payload)
     ipcRenderer.on(IPC_CHANNELS.COMPUTER_EVENT, listener)
