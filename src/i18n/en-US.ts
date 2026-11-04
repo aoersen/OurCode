@@ -260,7 +260,6 @@ export const enUS: Record<TranslationKey, string> = {
 
   // ── Company Dashboard ─────────────────────────────────────────────────────
   'office.dashboard': 'Dashboard',
-  'office.scene': 'Scene',
   'office.progress': 'Progress',
   'office.activeTasks': 'Active Tasks',
   'office.deliverables': 'Deliverables',
@@ -362,6 +361,8 @@ export const enUS: Record<TranslationKey, string> = {
   'office.restoreNoPaths': 'No changed paths recorded',
   'office.restoreTask': 'Restore entire task',
   'office.restoreTaskConfirm': 'Restore all changes made during this task to its start? The current state is backed up first. Continue?',
+  'office.restoreBaseline': 'Reset to initial',
+  'office.restoreBaselineConfirm': 'Roll the whole project back to its baseline (the state before the company started): changed files are restored, new files deleted. The current state is backed up first. Continue?',
   'office.restoreConfirm': 'Restore "{label}"? The current state is backed up first, and the restore itself can be undone. Continue?',
   'office.restoreDone': 'Restored (undoable)',
   'office.budgetPopTitle': 'Global token budget',
@@ -405,8 +406,6 @@ export const enUS: Record<TranslationKey, string> = {
   'office.rbWarn': 'A new branch will be created at this version; the original branch and later changes are kept.',
   'office.rbDone': 'Rolled back — current branch: {branch}',
   'office.rbFail': 'Rollback failed',
-  'office.scenePending': '{n} pending',
-  'office.scenePendingTip': 'Pending items need you — click to open the pending center',
 
   // ── Status bar ─────────────────────────────────────────────────────────
   'statusBar.switchBranch': 'Click to switch branch',
@@ -597,8 +596,10 @@ export const enUS: Record<TranslationKey, string> = {
   'chat.projectEditModeAutoHint': 'Auto-edit files; commands still ask',
   'chat.projectEditModePlan': 'Plan Mode',
   'chat.projectEditModePlanHint': 'Read-only research first, then write only declared deliverables',
+  'chat.projectEditModeGuarded': 'Autonomous',
+  'chat.projectEditModeGuardedHint': 'No approvals; dangerous commands still confirm once',
   'chat.projectEditModeFull': 'Full Access',
-  'chat.projectEditModeFullHint': 'No approvals (dangerous commands still ask)',
+  'chat.projectEditModeFullHint': 'No approvals at all — dangerous commands run too',
   'chat.projectEditModeLabel': 'Edit Mode',
   'chat.modeMenuSubtitle': 'Decides which operations need your approval',
   'chat.modeSwitchHint': 'Shift+Tab cycles modes',

@@ -21,6 +21,7 @@ import MSIcon from '@/components/Common/icons/MSIcon'
 import Button from '@/components/Common/Button'
 import { isComposingEvent } from '@/utils/composition'
 import { getReasoningLevels } from '@/services/llm/modelDefaults'
+import type { EditMode } from '@/services/permissions/modePolicy'
 
 /** Thinking-level menu entries; the visible subset follows the model config. */
 const THINKING_LEVEL_OPTIONS = [
@@ -167,10 +168,10 @@ export default function ChatPanel() {
   }
 
   // Mode switch is where the session-wide READ policy follows the edit mode:
-  // entering 完全访问 arms it behind one native confirmation; leaving it
+  // entering 自主/完全 arms it behind one native confirmation; leaving them
   // disarms (a safe direction, no dialog), so 手动确认 really asks again.
   // 逻辑已收敛到 store 的 requestEditModeChange（Shift+Tab 循环复用同一路径）。
-  const handleEditModeChange = (mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access') => {
+  const handleEditModeChange = (mode: EditMode) => {
     if (!activeSession) return
     void requestEditModeChange(activeSession.id, mode)
   }
@@ -375,7 +376,7 @@ export default function ChatPanel() {
                       <option key={o.value} value={o.value} title={t(o.hint)}>{t(o.label)}</option>
                     ))}
                 </select>
-                {/* 编辑方式 —— 四档权限模式（手动确认/自动编辑/计划/完全访问）。
+                {/* 编辑方式 —— 五档权限模式（手动/自动/计划/自主/完全，对齐 ZCode）。
                     弹出菜单展示图标 + 一句话说明；Shift+Tab 可循环切换。
                     目标模式/一人公司不使用这套模式：默认放行工作区内操作，
                     安全网是 checkpoint + 恢复，而不是审批。 */}

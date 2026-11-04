@@ -40,6 +40,7 @@ import { SpillStore } from './services/spill-store'
 import { initComputerUse, registerComputerUseIpc, shutdownComputerUse } from './services/computer-use'
 import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
 import { CheckpointRepo } from './services/checkpoint-repo'
+import { detectRemoteAction, recordRemoteAction, remoteActionNote, listRemoteActions } from './services/remoteActions'
 import { ensureWhisperServer, stopWhisperServer, whisperStatus } from './services/whisperRuntime'
 import { nodeTlsFetch } from './services/node-tls-fetch'
 import { fetchPage } from './services/web-safety'
@@ -162,7 +163,7 @@ const readOnlyDirs: Set<string> = new Set()
 
 /**
  * Session-wide read policy: the user natively agreed that reads outside the
- * workspace no longer ask (armed by the full-access confirmation or the
+ * workspace no longer ask (armed by the 自主/完全 confirmation or the
  * "全部允许" choice on the read-permission dialog). ONLY those two native
  * dialogs may set this — the renderer's edit-mode value alone never can.
  */
@@ -210,9 +211,31 @@ function untrustedPathError(p: string): Error {
   return new Error(`${UNTRUSTED_PATH_MARKER}: 路径不在允许范围内: ${p}`)
 }
 
+/** 越界访问审计（C 档）。工作区外的写入不在任何快照范围内，不能假装没发生：
+ *  主进程的 fs allowlist 会拒绝越界读写，这里把每次被拒的尝试记下来，供
+ *  公司模式的时间线/报告展示"这次任务碰过项目外几次、碰的是哪"。
+ *  环形缓冲，上限 200 条，绝不抛异常影响主流程。 */
+interface OutsideAccessRecord {
+  path: string
+  kind: 'read' | 'write'
+  at: number
+}
+const outsideAccessLog: OutsideAccessRecord[] = []
+const OUTSIDE_ACCESS_CAP = 200
+
+function recordOutsideAccess(p: string, kind: 'read' | 'write'): void {
+  try {
+    outsideAccessLog.push({ path: String(p), kind, at: Date.now() })
+    while (outsideAccessLog.length > OUTSIDE_ACCESS_CAP) outsideAccessLog.shift()
+  } catch {
+    /* 审计失败绝不能影响文件操作本身 */
+  }
+}
+
 /** Throw if the path is outside every registered root */
 function assertPathWritable(p: string): void {
   if (!isPathWritable(p)) {
+    recordOutsideAccess(p, 'write')
     throw untrustedPathError(p)
   }
 }
@@ -220,6 +243,7 @@ function assertPathWritable(p: string): void {
 /** Throw if the path is neither writable nor granted read-only */
 function assertPathReadable(p: string): void {
   if (!isPathReadable(p)) {
+    recordOutsideAccess(p, 'read')
     throw untrustedPathError(p)
   }
 }
@@ -1301,6 +1325,18 @@ function registerIpcHandlers(): void {
     return authorizeRendererPath(path)
   })
 
+  // 越界访问审计回读（公司模式：外部写不在快照里，至少要留账）。
+  ipcMain.handle('fs:outsideAccess', async (_event, opts?: { clear?: boolean }) => {
+    const rows = outsideAccessLog.slice()
+    if (opts?.clear) outsideAccessLog.length = 0
+    return rows
+  })
+
+  // 远端动作审计回读（git push / publish / deploy 等：写远端，本地回退不到）。
+  ipcMain.handle('shell:remoteActions', async (_event, opts?: { clear?: boolean }) => {
+    return listRemoteActions({ clear: opts?.clear })
+  })
+
   // 「打开即信任」——the renderer reports that the user opened/activated a
   // project in the workspace. The open action is the trust decision: the grant
   // is persisted and the root registered, no extra dialog. Only user-initiated
@@ -1373,7 +1409,7 @@ function registerIpcHandlers(): void {
   // `mode` is the session's project edit mode. It is advisory only: it picks
   // which dialog shape to show (per-file vs. with a session-wide option), and
   // a compromised renderer forging it still lands on a native dialog whose
-  // buttons are the real consent. Only a native "全部允许" / full-access
+  // buttons are the real consent. Only a native "全部允许" / 自主·完全
   // confirmation may arm the session-wide read policy.
   ipcMain.handle('trust:requestFile', async (event, path: string, mode?: string) => {
     if (!path || !isAbsolute(path)) return false
@@ -1395,9 +1431,9 @@ function registerIpcHandlers(): void {
       return granted
     }
     // 手动确认 keeps the minimal per-file dialog; the other edit modes offer
-    // the session-wide read option up front (the plan phase / auto-editing
-    // reads a lot, and full-access users expect no per-file friction).
-    const offerSessionWide = mode === 'auto_edit' || mode === 'plan' || mode === 'full_access'
+    // the session-wide read option up front (the plan phase / auto-editing /
+    // autonomous & full-access runs read a lot and expect no per-file friction).
+    const offerSessionWide = mode === 'auto_edit' || mode === 'plan' || mode === 'guarded' || mode === 'yolo'
     const zh = app.getLocale().toLowerCase().startsWith('zh')
     const options: MessageBoxOptions = zh
       ? {
@@ -1466,23 +1502,23 @@ function registerIpcHandlers(): void {
     const options: MessageBoxOptions = zh
       ? {
           type: 'warning',
-          title: '完全访问：允许读取工作区外的文件？',
-          message: '完全访问模式下，AI 将可读取工作区外的文件',
+          title: '自主/完全：允许读取工作区外的文件？',
+          message: '自主或完全访问模式下，AI 将可读取工作区外的文件',
           detail:
             '允许后，本次会话中 AI 读取工作区外的文件时不再逐个询问（仅读取，' +
             '不会修改工作区外的文件；修改仍然只发生在工作区内）。只对可信项目启用。',
-          buttons: ['启用完全访问', '取消'],
+          buttons: ['启用', '取消'],
         }
       : {
           type: 'warning',
-          title: 'Full access: allow reading files outside the workspace?',
-          message: 'In full-access mode the AI may read files outside your workspace',
+          title: 'Autonomous/Full access: allow reading files outside the workspace?',
+          message: 'In autonomous or full-access mode the AI may read files outside your workspace',
           detail:
             'After you allow this, the AI no longer asks before reading files outside the ' +
             'workspace for this session (read-only \u2014 files outside the workspace are ' +
             'never modified; edits still happen inside the workspace only). Enable for ' +
             'trusted projects only.',
-          buttons: ['Enable full access', 'Cancel'],
+          buttons: ['Enable', 'Cancel'],
         }
     Object.assign(options, { defaultId: 1, cancelId: 1, noLink: true })
     const win = windowFromEvent(event) ?? mainWindow
@@ -1492,7 +1528,7 @@ function registerIpcHandlers(): void {
     return true
   })
 
-  // Switching the session OUT of full access withdraws the session-wide read
+  // Switching the session OUT of 自主/完全 withdraws the session-wide read
   // policy so 手动确认 truly asks again. Disarming is always the safe
   // direction — no dialog, and a compromised renderer can only make itself
   // MORE restricted by calling it.
@@ -2410,6 +2446,14 @@ function registerIpcHandlers(): void {
   })
 
   // ───────────────────── Checkpoints (AI edit snapshots) ─────────────────────
+  /** Only ENOENT means "the file did not exist". Any other read failure leaves
+   *  the pre-image UNKNOWN — recording it as "did not exist" would make a
+   *  revert delete an existing file. */
+  const isMissingFileError = (error: unknown): boolean => {
+    const e = error as { code?: string; message?: string } | null
+    return e?.code === 'ENOENT' || /ENOENT|no such file or directory/i.test(String(e?.message ?? error))
+  }
+
   ipcMain.handle('checkpoint:list', async (_event, sessionId: string) => {
     return store.getCheckpoints(sessionId)
   })
@@ -2427,11 +2471,16 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('checkpoint:delete', async (_event, sessionId: string) => {
     const wsRows = store.getWorkspaceCheckpoints(sessionId)
+    // The project baseline is project-scoped, not conversation-scoped: deleting
+    // a chat must not remove the only "回到初始状态" anchor. (New baselines are
+    // stored under the synthetic session id below; this also protects legacy
+    // rows created with a real session id.)
+    const deletable = wsRows.filter((cp) => cp.kind !== 'baseline')
     store.deleteCheckpoints(sessionId)
     store.deleteRevertedFiles(sessionId)
-    store.deleteWorkspaceCheckpoints(sessionId)
+    for (const cp of deletable) store.deleteWorkspaceCheckpoint(cp.id)
     if (checkpointRepo) {
-      for (const cp of wsRows) {
+      for (const cp of deletable) {
         try { await checkpointRepo.deleteRef(cp.projectPath, cp.id) } catch { /* best-effort */ }
       }
     }
@@ -2457,6 +2506,7 @@ function registerIpcHandlers(): void {
     if (!target) return { ok: false, error: '检查点不存在' }
 
     let restored = 0
+    let skipped = 0
     // Only files that were ACTUALLY reverted get a forward record — a file whose
     // revert failed keeps its AI content on disk, so restoring it would be a
     // no-op and must not show up as「已回退」.
@@ -2466,21 +2516,31 @@ function registerIpcHandlers(): void {
         // Defense in depth: re-validate each path at revert time (the snapshot
         // may predate an allowlist change, or be from an older version).
         if (!file?.path) continue
+        // The pre-image was unreadable when the write happened ("existed" is
+        // unknown, not false). Writing an empty pre-image or deleting the file
+        // would destroy it — skip instead.
+        if (file.snapshotFailed) {
+          skipped++
+          continue
+        }
         assertPathWritable(file.path)
         // Capture the current (AI-written) state BEFORE the revert writes the
         // pre-edit snapshot back — this is what checkpoint:restore replays.
-        let current: { content: string; existed: boolean }
+        let current: { content: string; existed: boolean } | null = null
         try {
           current = { content: (await fileSystem.readFile(file.path)).content, existed: true }
-        } catch {
-          current = { content: '', existed: false }
+        } catch (error) {
+          if (isMissingFileError(error)) current = { content: '', existed: false }
+          // Unknown state (locked / EIO / permission): the revert still runs,
+          // but it must NOT be recorded as undoable — replaying "existed:false"
+          // would delete the file.
         }
         if (file.existed) {
           await fileSystem.writeFile(file.path, file.content, 'utf-8', false)
         } else if (existsSync(file.path)) {
           await fileSystem.delete(file.path)
         }
-        forward.push({ path: file.path, ...current })
+        if (current) forward.push({ path: file.path, ...current })
         restored++
       } catch (error: any) {
         console.error(`回滚 ${file.path} 失败:`, error.message)
@@ -2504,7 +2564,7 @@ function registerIpcHandlers(): void {
     } catch {
       // Ignore notification failures — the revert itself is already complete.
     }
-    return { ok: true, restored }
+    return { ok: true, restored, skipped }
   })
 
   // Restore (undo a revert): write the captured AI version of each file back
@@ -2529,11 +2589,17 @@ function registerIpcHandlers(): void {
         }
         // Snapshot the state that will be overwritten so the restored file
         // stays revertable (回退/恢复 become a round-trip instead of a dead end).
-        let current: { content: string; existed: boolean }
+        let current: { content: string; existed: boolean; snapshotFailed?: boolean }
         try {
           current = { content: (await fileSystem.readFile(rec.path)).content, existed: true }
-        } catch {
-          current = { content: '', existed: false }
+        } catch (error) {
+          if (isMissingFileError(error)) {
+            current = { content: '', existed: false }
+          } else {
+            // Unknown current state — keep the restore undoable? No: a later
+            // revert would delete the file. Mark it so revert skips it.
+            current = { content: '', existed: false, snapshotFailed: true }
+          }
         }
         if (rec.existed) {
           await fileSystem.writeFile(rec.path, rec.content, 'utf-8', false)
@@ -2671,7 +2737,8 @@ function registerIpcHandlers(): void {
       paths: scopePaths,
       emptyDirs: snapshot.emptyDirs,
       createdDirs: (Array.isArray(input.createdDirs) ? input.createdDirs : []).map(String).filter(Boolean),
-      kind: input.kind === 'command' || input.kind === 'mkdir' || input.kind === 'restore-safety' || input.kind === 'dir-delete'
+      kind: input.kind === 'command' || input.kind === 'mkdir' || input.kind === 'restore-safety' ||
+        input.kind === 'dir-delete' || input.kind === 'task-start'
         ? input.kind
         : 'files',
     })
@@ -2721,23 +2788,125 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('checkpoint:workspaceRestoreTask', async (_event, taskId: string) => {
-    const all = store.getWorkspaceCheckpointsByTask(taskId).filter((c) => c.kind !== 'restore-safety')
+    const all = store.getWorkspaceCheckpointsByTask(taskId).filter(
+      (c) => c.kind !== 'restore-safety' && c.kind !== 'baseline',
+    )
     if (all.length === 0) return { ok: false, restored: 0, deleted: 0, skipped: 0, error: '任务没有可恢复的快照' }
+    // Task-start is the true "whole task" anchor: it covers every per-file
+    // write/edit inside the task, not just the paths a command happened to
+    // touch. Fall back to the old union-of-paths behavior for old tasks.
+    const start = all.find((c) => c.kind === 'task-start')
+    if (start) return restoreWorkspaceCheckpoint(start, { paths: undefined })
     const earliest = all[0]
     const anyFull = all.some((c) => c.paths.length === 0)
     const scoped = anyFull ? undefined : Array.from(new Set(all.flatMap((c) => c.paths)))
     return restoreWorkspaceCheckpoint(earliest, { paths: scoped })
   })
 
+  // ── Baseline anchor: "回到初始状态" ───────────────────────────────────────
+  // The baseline is the project exactly as it was before the company started
+  // touching it. Taken once per project, kept forever (never pruned), and it
+  // is the target of the office "回到初始状态" action. Empty `paths` means
+  // "whole tree", so restoring it rolls back every path the company changed.
+  const BASELINE_LABEL = '项目基线（回到初始状态的目标）'
+
+  const takeBaseline = async (projectPath: string, _sessionId: string): Promise<WorkspaceCheckpoint> => {
+    const repo = requireCheckpointRepo()
+    const id = uuidv4()
+    const snapshot = await repo.snapshot(projectPath, { id, collectEmptyDirs: true })
+    return store.addWorkspaceCheckpoint({
+      id,
+      // Project-scoped, not conversation-scoped: deleting a chat must never
+      // remove the baseline (and no session's "restore last" can pick it).
+      sessionId: '__baseline__',
+      projectPath,
+      label: BASELINE_LABEL,
+      commit: snapshot.commit,
+      paths: [],
+      emptyDirs: snapshot.emptyDirs,
+      createdDirs: [],
+      kind: 'baseline',
+    })
+  }
+
+  ipcMain.handle(
+    'checkpoint:workspaceBaseline',
+    async (_event, projectPath: string, sessionId?: string, opts?: { force?: boolean }) => {
+      if (!projectPath) throw new Error('缺少项目路径')
+      assertPathWritable(projectPath)
+      if (opts?.force) {
+        const previous = store.getBaselineCheckpoint(projectPath)
+        if (previous) {
+          store.deleteWorkspaceCheckpoint(previous.id)
+          try {
+            await requireCheckpointRepo().deleteRef(projectPath, previous.id)
+          } catch {
+            /* best-effort: a stale ref only wastes disk */
+          }
+        }
+      } else {
+        const existing = store.getBaselineCheckpoint(projectPath)
+        if (existing) return existing
+      }
+      return takeBaseline(projectPath, sessionId || '__baseline__')
+    },
+  )
+
+  // Task-start anchor: one whole-tree snapshot per task, taken before the
+  // task's first tool call. "恢复整个任务" restores this, so per-file
+  // write/edit changes (which carry no taskId) are rolled back too.
+  ipcMain.handle(
+    'checkpoint:workspaceTaskStart',
+    async (_event, projectPath: string, _sessionId: string, taskId: string) => {
+      if (!projectPath || !taskId) throw new Error('缺少项目路径或任务 id')
+      assertPathWritable(projectPath)
+      const existing = store.getWorkspaceCheckpointsByTask(taskId).find((c) => c.kind === 'task-start')
+      if (existing) return existing
+      const repo = requireCheckpointRepo()
+      const id = uuidv4()
+      const snapshot = await repo.snapshot(projectPath, { id, collectEmptyDirs: true })
+      return store.addWorkspaceCheckpoint({
+        id,
+        // Owned by the task/director, not by whichever worker happened to be
+        // first: deleting a single worker must not remove the task anchor.
+        sessionId: taskId,
+        projectPath,
+        taskId,
+        label: '任务开始快照（恢复整个任务的目标）',
+        commit: snapshot.commit,
+        paths: [],
+        emptyDirs: snapshot.emptyDirs,
+        createdDirs: [],
+        kind: 'task-start',
+      })
+    },
+  )
+
+  ipcMain.handle(
+    'checkpoint:workspaceRestoreBaseline',
+    async (_event, projectPath: string, opts?: { paths?: string[] }) => {
+      if (!projectPath) return { ok: false, restored: 0, deleted: 0, skipped: 0, error: '缺少项目路径' }
+      const baseline = store.getBaselineCheckpoint(projectPath)
+      if (!baseline) {
+        return { ok: false, restored: 0, deleted: 0, skipped: 0, error: '该项目还没有基线快照；先创建基线再回退。' }
+      }
+      const paths = Array.isArray(opts?.paths) ? opts!.paths!.map(String).filter(Boolean) : undefined
+      // Empty scope inside the baseline means "whole tree".
+      return restoreWorkspaceCheckpoint(baseline, { paths: paths && paths.length > 0 ? paths : undefined })
+    },
+  )
+
   ipcMain.handle('checkpoint:workspaceDelete', async (_event, sessionId: string) => {
     const rows = store.getWorkspaceCheckpoints(sessionId)
-    store.deleteWorkspaceCheckpoints(sessionId)
+    // Baseline is project-scoped and never pruned.
+    const deletable = rows.filter((cp) => cp.kind !== 'baseline')
+    for (const cp of deletable) store.deleteWorkspaceCheckpoint(cp.id)
     const repo = requireCheckpointRepo()
-    for (const cp of rows) {
+    for (const cp of deletable) {
       try { await repo.deleteRef(cp.projectPath, cp.id) } catch { /* best-effort */ }
     }
     try {
-      const project = rows[0]?.projectPath
+      const project = deletable[0]?.projectPath
       if (project) await repo.gc(project)
     } catch { /* best-effort */ }
   })
@@ -3060,6 +3229,14 @@ function registerIpcHandlers(): void {
       // 重写为 ;（顺序执行），并在输出里注明，让模型一次就学会本机方言。
       // macOS / Linux 的 bash 原生支持这些运算符，不做改写（会改变短路语义）。
       const rewritten = process.platform === 'win32' ? rewriteBashSeparators(command) : { command }
+      // 远端动作记录（C 档）：写远端的命令不在任何本地回退范围内，执行前先
+      // 记一笔并把提示拼进输出，让模型和用户当场知道"这一步离开本机了"。
+      // 只记录，不拦截——公司模式的门是"能回退"，不是"不许推送"。
+      const remote = detectRemoteAction(rewritten.command)
+      if (remote) {
+        recordRemoteAction({ ...remote, command: rewritten.command, cwd, at: Date.now() })
+      }
+      const remoteNote = remote ? `${remoteActionNote(remote)}\n` : ''
       const child = exec(rewritten.command, {
         cwd: cwd || undefined,
         timeout: timeoutMs,
@@ -3095,9 +3272,9 @@ function registerIpcHandlers(): void {
             errorMessage: String(error.message || ''),
             timeoutMs,
           })
-          resolve({ success: false, output: note + (outText || ''), error: msg })
+          resolve({ success: false, output: remoteNote + note + (outText || ''), error: msg })
         } else {
-          resolve({ success: true, output: note + outText.trim() })
+          resolve({ success: true, output: remoteNote + note + outText.trim() })
         }
       })
       shellRuns.set(requestId, child)
@@ -3242,16 +3419,23 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.CLAW_SAVE_CHANNEL, (_event, config: ClawChannelConfig) => {
     if (!config || !isClawChannelId(config.id)) return { ok: false, error: '参数无效' }
-    return clawService.saveChannel(config)
+    const res = clawService.saveChannel(config)
+    // 配置变更对其他窗口不可见：广播一条「去重拉」，否则一人公司窗口会一直
+    // 停留在打开时的旧配置（开关、策略、凭据全都不变）。
+    broadcast(IPC_CHANNELS.CLAW_EVENT, { event: 'configChanged' } satisfies ClawGatewayEvent)
+    return res
   })
   ipcMain.handle(IPC_CHANNELS.CLAW_SET_CHANNEL_ENABLED, (_event, id: ClawChannelId, enabled: boolean) => {
     if (!isClawChannelId(id)) return { ok: false }
-    return clawService.setChannelEnabled(id, Boolean(enabled))
+    const res = clawService.setChannelEnabled(id, Boolean(enabled))
+    broadcast(IPC_CHANNELS.CLAW_EVENT, { event: 'configChanged' } satisfies ClawGatewayEvent)
+    return res
   })
   // 总开关：只启停进程，**不动**各渠道自己的开关状态——关掉再打开时按各渠道
   // 原设置恢复，而不是把所有渠道重置为关闭。
   ipcMain.handle(IPC_CHANNELS.CLAW_SET_ENABLED, (_event, enabled: boolean) => {
     void clawService.setMasterEnabled(Boolean(enabled))
+    broadcast(IPC_CHANNELS.CLAW_EVENT, { event: 'configChanged' } satisfies ClawGatewayEvent)
     return { ok: true }
   })
   ipcMain.handle(IPC_CHANNELS.CLAW_START_LOGIN, (_event, id: ClawChannelId) => {

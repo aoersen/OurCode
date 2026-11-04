@@ -1,13 +1,12 @@
 /**
- * 3D 办公室 × 目标模式：纯函数映射层（无副作用，便于单测）。
+ * 目标模式看板：纯函数映射层（无副作用，便于单测）。
  *
- * 职责：把 IDE 侧真实状态（目标模式子 Agent 进度）映射为 3D 场景 / 看板可消费的
- * 指令载荷 —— 角色→工位槽位分配、子 Agent 状态→场景状态、任务进度估计、
- * 8 工位常驻状态（看板团队状态栏与 3D 场景共用同一套槽位池）。
+ * 职责：把 IDE 侧真实状态（目标模式子 Agent 进度）映射为看板可消费的
+ * 数据 —— 角色→工位槽位分配、任务进度估计、8 工位常驻状态。
  */
-import type { OfficeAgentState, OfficeStatus, SubAgentProgress } from '@shared/types'
+import type { SubAgentProgress } from '@shared/types'
 
-/** 8 个工位的静态基础信息（与 office-v3 src/data/agentsData.js 对齐）。
+/** 8 个工位的静态基础信息。
  *  编制（M4 定稿）：1 总监 + 2 需求分析师 + 3 UI 研发（固定）；
  *  4~6 业务研发-N、7~8 测试-N（动态增减，各最少 1 名）。 */
 export const OFFICE_SLOTS: Array<{ id: number; role: string; codeName: string }> = [
@@ -36,32 +35,6 @@ const ROLE_SLOTS: Record<string, number[]> = {
   'researcher': [6, 5],
 }
 
-/** 构造 8 槽初始状态（全空闲）。 */
-export function buildInitialOfficeAgents(): OfficeAgentState[] {
-  return OFFICE_SLOTS.map((s) => ({
-    ...s,
-    status: 'idle' as OfficeStatus,
-    task: '待命中 · 等待监管派发任务',
-    progress: 0,
-    logs: [],
-  }))
-}
-
-/** 子 Agent 结束态 → 场景状态。 */
-export function subagentStatusToOffice(status: SubAgentProgress['status']): OfficeStatus {
-  switch (status) {
-    case 'running':
-      return 'working'
-    case 'done':
-      return 'completed'
-    case 'error':
-    case 'stopped':
-      return 'error'
-    default:
-      return 'idle'
-  }
-}
-
 /** 看板 4 态(与团队状态栏状态药片对齐:工作中/已完成/失败/空闲)。 */
 export type SlotStatus = 'working' | 'completed' | 'error' | 'idle'
 
@@ -81,8 +54,7 @@ const rankSlotTask = (s: SubAgentProgress['status']) => (s === 'running' ? 0 : s
 
 /**
  * 8 工位常驻状态(看板团队状态栏):子任务按角色槽位池占位——运行中优先抢位,
- * 失败次之,完成后到;槽位池占满后其余子任务不占位(保持空闲)。与 3D 场景
- * 共用 ROLE_SLOTS 槽位池与 assignSlot 语义,保证看板与场景的角色/状态对得上。
+ * 失败次之,完成后到;槽位池占满后其余子任务不占位(保持空闲)。
  * 1 号监管槽不参与子任务占位(监管状态由主循环相位单独驱动,见组件层)。
  */
 export function computeSlotAssignments(tasks: Array<{ key: string; p: SubAgentProgress }>): SlotAssignment[] {
@@ -166,29 +138,6 @@ export function roleLabel(task: string, name: string): string {
   if (ROLE_LABELS[raw]) return ROLE_LABELS[raw]
   if (!raw) return '子任务'
   return raw.replace(/^tm-/, '').replace(/[-_]/g, ' ')
-}
-
-/**
- * 看板「团队」格：按运行中的子 Agent 角色推导 8 工位状态。
- * 与 3D 场景共用同一套 ROLE_SLOTS 槽位池（assignSlot）：监管（Director-01）
- * 在目标模式会话生成中时视为 working；运行中角色按传入顺序占各自池里的
- * 空闲工位；其余工位保持 idle。纯函数，无副作用。
- */
-export function computeSlotStates(runningRoles: string[], supervisorActive: boolean): OfficeStatus[] {
-  const states: OfficeStatus[] = Array(8).fill('idle')
-  const occupied = new Set<number>()
-  if (supervisorActive) {
-    states[0] = 'working'
-    occupied.add(1)
-  }
-  for (const name of runningRoles) {
-    const slot = assignSlot(name, occupied)
-    if (slot != null) {
-      states[slot - 1] = 'working'
-      occupied.add(slot)
-    }
-  }
-  return states
 }
 
 /** 看板 4 大角色组的展示顺序与固定成员(产品/设计/研发/测试)。 */

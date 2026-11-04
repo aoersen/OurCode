@@ -7,6 +7,14 @@ import { v4 as uuidv4 } from 'uuid'
 import type { Checkpoint } from '@/types'
 import { writeToolPaths } from './tools/writePaths'
 
+/** A missing file is a normal "didn't exist yet". Any OTHER read failure means
+ *  the pre-image is unknown — recording it as "did not exist" would make a
+ *  revert DELETE an existing file. */
+function isMissingFile(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null
+  return e?.code === 'ENOENT' || /ENOENT|no such file or directory/i.test(String(e?.message ?? error))
+}
+
 export async function captureCheckpoint(
   sessionId: string,
   tc: { name: string; arguments?: Record<string, any> },
@@ -17,15 +25,21 @@ export async function captureCheckpoint(
   const targets = writeToolPaths(tc.name, tc.arguments)
   if (targets.length === 0) return null
 
-  const files: Array<{ path: string; content: string; existed: boolean }> = []
+  const files: Array<{ path: string; content: string; existed: boolean; snapshotFailed?: boolean }> = []
   if (tc.name !== 'create_directory') {
     for (const target of targets) {
       try {
         const { content } = await window.electronAPI.readFile(target)
         files.push({ path: target, content, existed: true })
-      } catch {
-        // File doesn't exist yet (write_file creating a new file)
-        files.push({ path: target, content: '', existed: false })
+      } catch (error) {
+        if (isMissingFile(error)) {
+          // File doesn't exist yet (write_file creating a new file).
+          files.push({ path: target, content: '', existed: false })
+        } else {
+          // Exists but unreadable (locked / permission / I/O). Keep the entry
+          // so the write is not blocked, but mark it so revert skips it.
+          files.push({ path: target, content: '', existed: false, snapshotFailed: true })
+        }
       }
     }
   }

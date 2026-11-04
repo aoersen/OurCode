@@ -24,8 +24,8 @@ export function isUntrustedError(e: unknown): boolean {
  * the trusted workspace. Returns the raw content, or rethrows the original
  * error when permission is refused (or the trust request itself fails).
  *
- * `mode` is the session's project edit mode (手动确认 / 自动编辑 / 计划模式 /
- * 完全访问). It only shapes which native dialog the main process shows —
+ * `mode` is the session's project edit mode (手动 / 自动 / 计划 / 自主 /
+ * 完全). It only shapes which native dialog the main process shows —
  * per-file buttons, or with a session-wide "全部允许" option; the native
  * answer is the only thing that can grant anything.
  */

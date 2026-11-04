@@ -104,20 +104,44 @@ export const useClawStore = create<ClawStoreState>((set, get) => {
       set({ initialized: true })
 
       const off = window.electronAPI.onClawEvent((ev: ClawGatewayEvent) => {
+        // 其他窗口保存了配置 / 拨了渠道开关：重新拉取，别让本窗口停在旧快照。
+        // 主进程用这条事件替代「谁操作谁自己刷新」的局部更新。
+        if (ev.event === 'configChanged') {
+          // 拉取失败不改变本地可用性：下次刷新/事件还会再来一次。
+          void get().refreshStatus().catch(() => {})
+          void get().loadConfigs().catch(() => {})
+          return
+        }
         const id = ev.channel
         if (!id || !CLAW_CHANNEL_IDS.includes(id)) return
         switch (ev.event) {
-          case 'status':
+          case 'status': {
+            const state = ev.state
+            const accountId = ev.accountId
             patchChannel(id, {
-              state: ev.state,
-              ...(ev.state === 'loggingIn'
+              state,
+              ...(state === 'loggingIn'
                 ? { scanned: false, needVerifyCode: false, verifyBlocked: false, notice: null }
                 : {}),
-              ...(ev.state === 'connected'
+              ...(state === 'connected'
                 ? { qrUrl: null, scanned: false, needVerifyCode: false, verifyBlocked: false, notice: null, lastError: null }
                 : {}),
             })
+            // 面板头部的徽标与指标读 hub；只更新 channels 会让「在线渠道」停在旧值。
+            set((s) =>
+              s.hub
+                ? {
+                    hub: {
+                      ...s.hub,
+                      channels: s.hub.channels.map((c) =>
+                        c.id === id ? { ...c, state, ...(accountId !== undefined ? { accountId } : {}) } : c,
+                      ),
+                    },
+                  }
+                : {},
+            )
             break
+          }
           case 'qr':
             patchChannel(id, { qrUrl: ev.qrcodeUrl, scanned: false, needVerifyCode: false, verifyBlocked: false })
             break

@@ -638,11 +638,17 @@ export class SQLiteStore {
         archivedAt: session.archived_at || undefined,
         // Legacy 'plan' mode was merged into 'agent' — map old sessions on load
         agentMode: (session.agent_mode === 'plan' ? 'agent' : session.agent_mode || 'chat') as 'chat' | 'agent',
-        // Per-session edit mode (手动确认/完全访问/自动编辑/计划) — persisted so
-        // a restored session keeps the user's choice across windows/restarts.
-        projectEditMode: (['confirm_before_change', 'auto_edit', 'plan', 'full_access'].includes(session.project_edit_mode)
-          ? session.project_edit_mode
-          : undefined) as ChatSession['projectEditMode'],
+        // Per-session edit mode (手动/自动/计划/自主/完全) — persisted so a
+        // restored session keeps the user's choice across windows/restarts.
+        // Legacy 'full_access' (旧「完全访问」= 免审批+危险命令确认) migrates to
+        // 'guarded' — NEVER to 'yolo', which would silently drop the brake.
+        projectEditMode: (
+          session.project_edit_mode === 'full_access'
+            ? 'guarded'
+            : ['confirm_before_change', 'auto_edit', 'plan', 'guarded', 'yolo'].includes(session.project_edit_mode)
+              ? session.project_edit_mode
+              : undefined
+        ) as ChatSession['projectEditMode'],
         // Sort anchor: last time the user sent a message. 0 = unset (renderer
         // backfills from messages / falls back to updatedAt).
         lastUserMessageAt: session.last_user_message_at > 0 ? session.last_user_message_at : undefined,
@@ -978,7 +984,7 @@ export class SQLiteStore {
     const id = uuidv4()
     const now = Date.now()
     this.db.prepare('INSERT INTO memories (id, content, scope, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, content), scope || 'global', projectPath || '', now, now
+      .run(id, content, scope || 'global', projectPath || '', now, now)
     return { id, content, scope: scope || 'global', projectPath, createdAt: now, updatedAt: now }
   }
 
@@ -1062,6 +1068,19 @@ export class SQLiteStore {
       'SELECT * FROM workspace_checkpoints WHERE task_id = ? ORDER BY created_at ASC'
     ).all(taskId) as any[]
     return rows.map((row) => this.workspaceCheckpointFromRow(row))
+  }
+
+  /** The project's baseline ("initial state") snapshot, if one was taken. */
+  getBaselineCheckpoint(projectPath: string): WorkspaceCheckpoint | null {
+    if (!projectPath) return null
+    const row = this.db
+      .prepare(
+        `SELECT * FROM workspace_checkpoints
+          WHERE kind = 'baseline' AND lower(project_path) = lower(?)
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(projectPath) as any
+    return row ? this.workspaceCheckpointFromRow(row) : null
   }
 
   getWorkspaceCheckpointByToolCall(sessionId: string, toolCallId: string): WorkspaceCheckpoint | null {
@@ -1199,7 +1218,7 @@ export class SQLiteStore {
     const id = uuidv4()
     const now = Date.now()
     this.db.prepare('INSERT INTO workflows (id, name, description, prompt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, input.name || '未命名工作流', input.description || '', input.prompt), now, now
+      .run(id, input.name || '未命名工作流', input.description || '', input.prompt, now, now)
     return { id, name: input.name || '未命名工作流', description: input.description || '', prompt: input.prompt, createdAt: now, updatedAt: now }
   }
 

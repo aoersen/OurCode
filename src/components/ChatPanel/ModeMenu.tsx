@@ -10,19 +10,33 @@ interface ModeMenuProps {
   onChange: (mode: EditMode) => void
 }
 
+/** 菜单项警示级别：warning=琥珀（自主），danger=红（完全）。 */
+type ModeTone = 'warning' | 'danger'
+
 /** 菜单项：图标 + 模式名 + 一句话说明（i18n 表在 chat.projectEditMode*Hint）。 */
-const MODE_ITEMS: Array<{ mode: EditMode; icon: string; labelKey: TranslationKey; hintKey: TranslationKey; warning?: boolean }> = [
+const MODE_ITEMS: Array<{ mode: EditMode; icon: string; labelKey: TranslationKey; hintKey: TranslationKey; tone?: ModeTone }> = [
   { mode: 'confirm_before_change', icon: 'back_hand', labelKey: 'chat.projectEditModeConfirm', hintKey: 'chat.projectEditModeConfirmHint' },
   { mode: 'auto_edit', icon: 'edit', labelKey: 'chat.projectEditModeAuto', hintKey: 'chat.projectEditModeAutoHint' },
   { mode: 'plan', icon: 'checklist', labelKey: 'chat.projectEditModePlan', hintKey: 'chat.projectEditModePlanHint' },
-  { mode: 'full_access', icon: 'bolt', labelKey: 'chat.projectEditModeFull', hintKey: 'chat.projectEditModeFullHint', warning: true },
+  { mode: 'guarded', icon: 'smart_toy', labelKey: 'chat.projectEditModeGuarded', hintKey: 'chat.projectEditModeGuardedHint', tone: 'warning' },
+  { mode: 'yolo', icon: 'bolt', labelKey: 'chat.projectEditModeFull', hintKey: 'chat.projectEditModeFullHint', tone: 'danger' },
 ]
+
+const TONE_TEXT: Record<ModeTone, string> = {
+  warning: 'text-orange-400',
+  danger: 'text-red-500',
+}
+
+const TONE_TRIGGER: Record<ModeTone, string> = {
+  warning: 'border-orange-500/50 bg-orange-500/10 text-orange-400',
+  danger: 'border-red-500/50 bg-red-500/10 text-red-500',
+}
 
 /**
  * 编辑方式下拉菜单（权限模式重设计 C2）：替换原生的 <select>。
- * 弹出面板向上展开（模式栏位于面板底部），列出四档模式（图标 + 名称 + 一句话
- * 说明），当前项高亮；完全访问用琥珀警示色。底部提示 ⇧Tab 快速循环。
- * 目标模式开启时只保留 手动确认/完全访问（其自身流程取代 auto_edit/plan）。
+ * 弹出面板向上展开（模式栏位于面板底部），列出五档模式（图标 + 名称 + 一句话
+ * 说明），当前项高亮；自主用琥珀警示色、完全用红色。底部提示 ⇧Tab 快速循环。
+ * 目标模式开启时只保留 手动/自主（其自身流程取代 auto_edit/plan）。
  */
 export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps) {
   const [open, setOpen] = useState(false)
@@ -39,9 +53,10 @@ export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps)
     return () => document.removeEventListener('mousedown', onPointerDown)
   }, [open])
 
-  const items = targetMode ? MODE_ITEMS.filter((i) => i.mode === 'confirm_before_change' || i.mode === 'full_access') : MODE_ITEMS
+  const items = targetMode ? MODE_ITEMS.filter((i) => i.mode === 'confirm_before_change' || i.mode === 'guarded') : MODE_ITEMS
   const current = items.find((i) => i.mode === value)
   const label = current ? t(current.labelKey) : t('chat.projectEditModeLabel')
+  const tone = current?.tone
 
   return (
     <div ref={rootRef} className="relative">
@@ -49,8 +64,8 @@ export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps)
         onClick={() => setOpen((o) => !o)}
         title={t('chat.projectEditModeLabel')}
         className={`text-xs rounded-md px-2 py-1 border outline-none cursor-pointer transition-colors flex items-center gap-1 ${
-          value === 'full_access'
-            ? 'border-orange-500/50 bg-orange-500/10 text-orange-400'
+          tone
+            ? TONE_TRIGGER[tone]
             : 'border-nova-border bg-nova-input-bg text-nova-text-primary hover:border-nova-accent focus:border-nova-accent'
         }`}
       >
@@ -68,6 +83,7 @@ export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps)
           <div className="py-1">
             {items.map((item) => {
               const active = item.mode === value
+              const toneText = item.tone ? TONE_TEXT[item.tone] : ''
               return (
                 <button
                   key={item.mode}
@@ -78,10 +94,10 @@ export default function ModeMenu({ value, targetMode, onChange }: ModeMenuProps)
                 >
                   <MSIcon
                     name={item.icon}
-                    className={`text-[16px] leading-none shrink-0 ${active ? 'text-nova-accent' : item.warning ? 'text-orange-400' : 'text-nova-text-muted'}`}
+                    className={`text-[16px] leading-none shrink-0 ${active ? 'text-nova-accent' : toneText || 'text-nova-text-muted'}`}
                   />
                   <span className="flex-1 min-w-0">
-                    <span className={`block text-[12px] font-semibold ${item.warning && !active ? 'text-orange-400' : 'text-nova-text-primary'}`}>
+                    <span className={`block text-[12px] font-semibold ${!active && toneText ? toneText : 'text-nova-text-primary'}`}>
                       {t(item.labelKey)}
                     </span>
                     <span className="block text-[11px] text-nova-text-muted truncate">{t(item.hintKey)}</span>

@@ -92,10 +92,11 @@ export function createApprovalPreHook(opts: ApprovalPreHookOptions): (
         : { deny: true, reason: verdict.reason }
     }
     // Destructive / irreversible / remote-execution shapes force the dialog
-    // even when every exemption (full_access / batch / allowlist / denylist) is
+    // even when every exemption (guarded / batch / allowlist / denylist) is
     // active — when all other gates are off, this is the last line of defense.
-    // no-limits 的「危险命令豁免」是唯一能关掉它的开关（用户显式开启，默认关）：
-    // 此时危险命令退化成普通命令，由 needsApproval 决定，不再强制人工确认。
+    // 两个豁免开关：no-limits 的「危险命令豁免」（用户显式开启，默认关），
+    // 或「完全」档（yolo，仿 ZCode：免审批含危险命令）；其余档位（含「自主」
+    // guarded）危险命令退化前仍强制人工确认一次。
     const rawDanger = toolCall.name === 'run_command'
       ? analyzeDangerousCommand(String(toolCall.arguments?.command || ''))
       : null

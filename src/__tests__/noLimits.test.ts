@@ -203,8 +203,9 @@ describe('提示词覆盖层', () => {
 })
 
 describe('审批模式', () => {
-  it('免审批时锁 full_access，关闭时原样返回', () => {
+  it('免审批时锁 yolo（完全），关闭时原样返回', () => {
     const on = cfg({ enabled: true, permissions: true })
+    expect(NO_LIMITS_EDIT_MODE).toBe('yolo')
     expect(effectiveEditMode('confirm_before_change', on)).toBe(NO_LIMITS_EDIT_MODE)
     expect(effectiveEditMode('plan', on)).toBe(NO_LIMITS_EDIT_MODE)
     const off = cfg({ enabled: true, permissions: false })

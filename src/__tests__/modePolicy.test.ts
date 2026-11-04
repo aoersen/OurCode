@@ -5,6 +5,7 @@ import {
   targetPathsOf,
   isPathInScope,
   MODE_CYCLE,
+  migrateEditMode,
   type ToolKind,
   type EditMode,
 } from '@/services/permissions/modePolicy'
@@ -24,6 +25,7 @@ describe('kindOf', () => {
     expect(kindOf('multi_edit_file')).toBe('file_write')
     expect(kindOf('create_directory')).toBe('file_write')
     expect(kindOf('delete_file')).toBe('file_write')
+    expect(kindOf('restore_changes')).toBe('file_write')
 
     expect(kindOf('run_command')).toBe('command')
     expect(kindOf('git_commit')).toBe('git_write')
@@ -59,10 +61,14 @@ describe('resolveApproval — the per-mode matrix', () => {
     { kind: 'file_write', mode: 'auto_edit', plan: { approved: false }, inScope: false, want: 'auto' },
     { kind: 'command', mode: 'auto_edit', plan: { approved: false }, inScope: false, want: 'confirm' },
     { kind: 'git_write', mode: 'auto_edit', plan: { approved: false }, inScope: false, want: 'confirm' },
-    // 完全访问：全部自动
-    { kind: 'file_write', mode: 'full_access', plan: { approved: false }, inScope: false, want: 'auto' },
-    { kind: 'command', mode: 'full_access', plan: { approved: false }, inScope: false, want: 'auto' },
-    { kind: 'mcp', mode: 'full_access', plan: { approved: false }, inScope: false, want: 'auto' },
+    // 自主（guarded，旧「完全访问」语义）：全部自动
+    { kind: 'file_write', mode: 'guarded', plan: { approved: false }, inScope: false, want: 'auto' },
+    { kind: 'command', mode: 'guarded', plan: { approved: false }, inScope: false, want: 'auto' },
+    { kind: 'mcp', mode: 'guarded', plan: { approved: false }, inScope: false, want: 'auto' },
+    // 完全（yolo，仿 ZCode）：全部自动
+    { kind: 'file_write', mode: 'yolo', plan: { approved: false }, inScope: false, want: 'auto' },
+    { kind: 'command', mode: 'yolo', plan: { approved: false }, inScope: false, want: 'auto' },
+    { kind: 'mcp', mode: 'yolo', plan: { approved: false }, inScope: false, want: 'auto' },
     // 计划模式 · 只读期：写入类全部拦截
     { kind: 'file_write', mode: 'plan', plan: { approved: false }, inScope: false, want: 'block' },
     { kind: 'command', mode: 'plan', plan: { approved: false }, inScope: false, want: 'block' },
@@ -83,8 +89,23 @@ describe('resolveApproval — the per-mode matrix', () => {
     })
   }
 
-  it('MODE_CYCLE follows the ZCode order', () => {
-    expect(MODE_CYCLE).toEqual(['confirm_before_change', 'auto_edit', 'plan', 'full_access'])
+  it('MODE_CYCLE follows the ZCode five-tier order', () => {
+    expect(MODE_CYCLE).toEqual(['confirm_before_change', 'auto_edit', 'plan', 'guarded', 'yolo'])
+  })
+})
+
+describe('migrateEditMode — legacy persistence migration', () => {
+  it('maps legacy full_access to guarded (old semantics = 自主, never yolo)', () => {
+    expect(migrateEditMode('full_access')).toBe('guarded')
+  })
+
+  it('passes through every current tier and rejects junk', () => {
+    for (const mode of ['confirm_before_change', 'auto_edit', 'plan', 'guarded', 'yolo'] as const) {
+      expect(migrateEditMode(mode)).toBe(mode)
+    }
+    expect(migrateEditMode('bogus')).toBeNull()
+    expect(migrateEditMode(null)).toBeNull()
+    expect(migrateEditMode(undefined)).toBeNull()
   })
 })
 

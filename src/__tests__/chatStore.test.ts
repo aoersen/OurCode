@@ -1377,12 +1377,25 @@ describe('chatStore session user-activity sort anchor', () => {
   })
 
   it('createSession seeds the last-picked edit mode and forces agent mode', () => {
+    localStorage.setItem('lastProjectEditMode', 'yolo')
+    try {
+      useChatStore.getState().createSession('cfg-1', 'C:/proj')
+      const s = useChatStore.getState().sessions[0]
+      expect(s.agentMode).toBe('agent')
+      expect(s.projectEditMode).toBe('yolo')
+    } finally {
+      localStorage.removeItem('lastProjectEditMode')
+    }
+  })
+
+  it('createSession migrates the legacy full_access pick to guarded', () => {
     localStorage.setItem('lastProjectEditMode', 'full_access')
     try {
       useChatStore.getState().createSession('cfg-1', 'C:/proj')
       const s = useChatStore.getState().sessions[0]
       expect(s.agentMode).toBe('agent')
-      expect(s.projectEditMode).toBe('full_access')
+      // 旧「完全访问」语义 = 免审批+危险命令确认 → 迁移为「自主」，绝不放宽到 yolo。
+      expect(s.projectEditMode).toBe('guarded')
     } finally {
       localStorage.removeItem('lastProjectEditMode')
     }

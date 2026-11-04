@@ -19,18 +19,41 @@
 import { execFile } from 'child_process'
 import { createHash } from 'crypto'
 import { existsSync, mkdirSync, readdirSync, rmdirSync, rmSync, statSync } from 'fs'
+import { promises as fsp } from 'fs'
+import type { Dirent } from 'fs'
 import { dirname, join, relative, resolve, sep } from 'path'
 
-/** Generated directories are rebuildable; keep them out of full-tree snapshots. */
+/** Generated directories are rebuildable; keep them out of full-tree snapshots.
+ *  Anything NOT listed here is snapshotted with `-f` (so `.env`,
+ *  `local.properties` and other gitignored files are still revertable) —
+ *  the list must therefore only contain build output, dependency caches and
+ *  IDE scratch state, never source. */
 const DEFAULT_EXCLUDES = [
   '.git',
   'node_modules',
+  'bower_components',
   'dist',
   'build',
   'out',
+  'target',
   'coverage',
   '.next',
+  '.nuxt',
   '.cache',
+  '.turbo',
+  '.parcel-cache',
+  // Toolchains that rewrite their cache on every build. Leaving these in made
+  // every snapshot diff look dirty and slowed the whole command path down.
+  '.gradle',
+  '.dart_tool',
+  '.pub-cache',
+  '.venv',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  // IDE index state
+  '.idea',
 ]
 
 export class CheckpointError extends Error {
@@ -127,10 +150,11 @@ function runGit(
   repoDir: string,
   args: string[],
   opts: { allowFailure?: boolean } = {},
+  gitBin = 'git',
 ): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(
-      'git',
+      gitBin,
       ['--git-dir', repoDir, '--work-tree', normalizeRoot(projectRoot), ...args],
       {
         cwd: normalizeRoot(projectRoot),
@@ -157,10 +181,10 @@ function runGit(
 }
 
 /** `git init` rejects --work-tree; run it with only --git-dir. */
-function runGitDir(repoDir: string, args: string[]): Promise<string> {
+function runGitDir(repoDir: string, args: string[], gitBin = 'git'): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(
-      'git',
+      gitBin,
       ['--git-dir', repoDir, ...args],
       {
         timeout: 30_000,
@@ -242,14 +266,85 @@ function pruneEmptyParents(projectRoot: string, fileAbs: string): void {
   }
 }
 
+export interface CheckpointRepoOptions {
+  /** Git executable; tests point this at a missing path to exercise the
+   *  filesystem fallback. Defaults to `git` on PATH. */
+  gitBin?: string
+}
+
+/** Filesystem-snapshot commit ids (used when the git binary is unavailable). */
+const FS_COMMIT_PREFIX = 'fs1:'
+const FS_MAX_FILES = 50_000
+const FS_MAX_BYTES = 512 * 1024 * 1024
+const FS_MAX_FILE_BYTES = 64 * 1024 * 1024
+
+interface FsWalkEntry {
+  abs: string
+  rel: string
+  kind: 'file' | 'symlink'
+  size: number
+  link?: string
+}
+
+function fsCommitId(commit: string): string | null {
+  if (!commit.startsWith(FS_COMMIT_PREFIX)) return null
+  const id = commit.slice(FS_COMMIT_PREFIX.length)
+  return /^[A-Za-z0-9_-]{1,100}$/.test(id) ? id : null
+}
+
+/** Relative POSIX path from the project root (for both walkers). */
+function relPosix(projectRoot: string, abs: string): string {
+  return relative(projectRoot, abs).split(sep).join('/')
+}
+
 export class CheckpointRepo {
-  constructor(private readonly rootDir: string) {}
+  private readonly gitBin: string
+  /** null = not probed yet; false = use the filesystem fallback. */
+  private gitAvailable: boolean | null = null
+
+  constructor(
+    private readonly rootDir: string,
+    opts: CheckpointRepoOptions = {},
+  ) {
+    this.gitBin = opts.gitBin || 'git'
+  }
+
+  private git(projectRoot: string, repoDir: string, args: string[], opts?: { allowFailure?: boolean }): Promise<string> {
+    return runGit(projectRoot, repoDir, args, opts, this.gitBin)
+  }
+
+  private gitDir(repoDir: string, args: string[]): Promise<string> {
+    return runGitDir(repoDir, args, this.gitBin)
+  }
+
+  /** Is the git binary usable? Probed once per repo instance. A project does
+   *  NOT need git: when the binary is missing we fall back to a plain
+   *  filesystem snapshot under the same shadow directory. */
+  private async detectGit(): Promise<boolean> {
+    if (this.gitAvailable !== null) return this.gitAvailable
+    this.gitAvailable = await new Promise<boolean>((resolveProbe) => {
+      execFile(this.gitBin, ['--version'], { timeout: 10_000, windowsHide: true }, (error) => {
+        resolveProbe(!error)
+      })
+    })
+    return this.gitAvailable
+  }
 
   private repoDirFor(projectRoot: string): string {
     return join(this.rootDir, projectKey(projectRoot), 'repo.git')
   }
 
-  private async ensureRepo(projectRoot: string): Promise<string> {
+  private fsRootFor(projectRoot: string): string {
+    return join(this.rootDir, projectKey(projectRoot), 'fs')
+  }
+
+  private fsTreeFor(projectRoot: string, commit: string): string {
+    const id = fsCommitId(commit)
+    if (!id) throw new CheckpointError(`不是文件系统快照：${commit}`)
+    return join(this.fsRootFor(projectRoot), id, 'tree')
+  }
+
+  private async ensureGitRepo(projectRoot: string): Promise<string> {
     const root = normalizeRoot(projectRoot)
     let st
     try {
@@ -263,13 +358,13 @@ export class CheckpointRepo {
     const head = join(repoDir, 'HEAD')
     if (!existsSync(head)) {
       mkdirSync(repoDir, { recursive: true })
-      await runGitDir(repoDir, ['init', '--bare', '-q'])
+      await this.gitDir(repoDir, ['init', '--bare', '-q'])
       // Byte-exact restores: no CRLF conversion, no mode noise, no global
       // config/hooks leaking in from the user's environment.
-      await runGit(root, repoDir, ['config', 'core.autocrlf', 'false'])
-      await runGit(root, repoDir, ['config', 'core.safecrlf', 'false'])
-      await runGit(root, repoDir, ['config', 'core.fileMode', 'false'])
-      await runGit(root, repoDir, ['config', 'core.symlinks', 'true'], { allowFailure: true })
+      await this.git(root, repoDir, ['config', 'core.autocrlf', 'false'])
+      await this.git(root, repoDir, ['config', 'core.safecrlf', 'false'])
+      await this.git(root, repoDir, ['config', 'core.fileMode', 'false'])
+      await this.git(root, repoDir, ['config', 'core.symlinks', 'true'], { allowFailure: true })
     }
     return repoDir
   }
@@ -296,17 +391,23 @@ export class CheckpointRepo {
       if (!isWithin(root, p)) throw new CheckpointError(`路径在工作区外，无法快照：${p}`)
     }
     return this.withLock(root, async () => {
-      const repoDir = await this.ensureRepo(root)
+      // The project does NOT need git: the shadow repo is ours, and when the
+      // git binary itself is unavailable we fall back to a plain filesystem
+      // snapshot (copy + manifest-by-walk) under the same directory.
+      if (!(await this.detectGit())) {
+        return this.snapshotFsLocked(root, opts, targeted)
+      }
+      const repoDir = await this.ensureGitRepo(root)
       const paths = targeted.length > 0 ? pathspecFor(root, targeted) : ['.', ...excludesPathspec(!!opts.includeGenerated)]
       // -f: include files ignored by the project's .gitignore; the pathspec
       // excludes above still keep generated directories out of full snapshots.
-      await runGit(root, repoDir, ['add', '-A', '-f', '--', ...paths])
+      await this.git(root, repoDir, ['add', '-A', '-f', '--', ...paths])
 
-      const tree = (await runGit(root, repoDir, ['write-tree'])).trim()
+      const tree = (await this.git(root, repoDir, ['write-tree'])).trim()
       if (!tree) throw new CheckpointError('git write-tree 未返回树对象')
-      const commit = (await runGit(root, repoDir, ['commit-tree', tree, '-m', `checkpoint ${opts.id}`])).trim()
+      const commit = (await this.git(root, repoDir, ['commit-tree', tree, '-m', `checkpoint ${opts.id}`])).trim()
       if (!commit) throw new CheckpointError('git commit-tree 未返回提交')
-      await runGit(root, repoDir, ['update-ref', `refs/checkpoints/${opts.id}`, commit])
+      await this.git(root, repoDir, ['update-ref', `refs/checkpoints/${opts.id}`, commit])
 
       let emptyDirs: string[] = []
       if (opts.collectEmptyDirs) {
@@ -325,7 +426,8 @@ export class CheckpointRepo {
   async diff(projectRoot: string, commit: string, paths?: string[]): Promise<WorkspaceDiffEntryFs[]> {
     const root = normalizeRoot(projectRoot)
     return this.withLock(root, async () => {
-      const repoDir = await this.ensureRepo(root)
+      if (fsCommitId(commit)) return this.diffFsLocked(root, commit, paths)
+      const repoDir = await this.ensureGitRepo(root)
       const targeted = (paths || []).map((p) => resolve(p))
       for (const p of targeted) {
         if (!isWithin(root, p)) throw new CheckpointError(`路径在工作区外：${p}`)
@@ -334,9 +436,9 @@ export class CheckpointRepo {
       // (a deleted directory no longer matches an add pathspec). Generated
       // dirs are normally excluded, but a scope inside one needs them staged.
       const excludes = scopeTouchesGenerated(targeted) ? [] : excludesPathspec(false)
-      await runGit(root, repoDir, ['add', '-A', '-f', '--', '.', ...excludes])
+      await this.git(root, repoDir, ['add', '-A', '-f', '--', '.', ...excludes])
       const diffSpec = targeted.length > 0 ? pathspecFor(root, targeted) : ['.']
-      const out = await runGit(root, repoDir, [
+      const out = await this.git(root, repoDir, [
         'diff', '--cached', '--name-status', '--no-renames', '-z', commit, '--', ...diffSpec,
       ], { allowFailure: true })
       return parseNameStatusZ(out).map((e) => ({
@@ -362,22 +464,23 @@ export class CheckpointRepo {
       if (!isWithin(root, p)) throw new CheckpointError(`路径在工作区外，无法恢复：${p}`)
     }
     return this.withLock(root, async () => {
-      const repoDir = await this.ensureRepo(root)
+      if (fsCommitId(commit)) return this.restoreFsLocked(root, commit, opts)
+      const repoDir = await this.ensureGitRepo(root)
       const targeted = scope.length > 0 ? scope : []
       // Full staging (with generated-dir excludes) + scoped diff: a deleted
       // directory has no pathspec to stage, but the diff still reports its
       // files as deleted and checkout restores them. A generated-dir scope
       // must be staged without the excludes (see scopeTouchesGenerated).
       const excludes = (opts.includeGenerated || scopeTouchesGenerated(targeted)) ? [] : excludesPathspec(false)
-      await runGit(root, repoDir, ['add', '-A', '-f', '--', '.', ...excludes])
+      await this.git(root, repoDir, ['add', '-A', '-f', '--', '.', ...excludes])
       const diffSpec = targeted.length > 0 ? pathspecFor(root, targeted) : ['.']
-      const diffOut = await runGit(root, repoDir, [
+      const diffOut = await this.git(root, repoDir, [
         'diff', '--cached', '--name-status', '--no-renames', '-z', commit, '--', ...diffSpec,
       ], { allowFailure: true })
       const changed = parseNameStatusZ(diffOut)
 
       // One ls-tree for the whole commit: much faster than one cat-file per path.
-      const treeOut = await runGit(root, repoDir, ['ls-tree', '-r', '--name-only', '-z', commit], { allowFailure: true })
+      const treeOut = await this.git(root, repoDir, ['ls-tree', '-r', '--name-only', '-z', commit], { allowFailure: true })
       const inCommit = new Set(treeOut.split('\0').filter(Boolean))
 
       let restored = 0
@@ -398,7 +501,7 @@ export class CheckpointRepo {
         }
         try {
           if (inCommit.has(entry.rel)) {
-            await runGit(root, repoDir, ['checkout', commit, '--', `:(literal)${entry.rel}`])
+            await this.git(root, repoDir, ['checkout', commit, '--', `:(literal)${entry.rel}`])
             restored++
           } else {
             // Created after the checkpoint → remove it. The diff lists files,
@@ -434,12 +537,306 @@ export class CheckpointRepo {
     })
   }
 
+  // ── Filesystem fallback (no git binary / no project git needed) ─────────
+
+  /**
+   * Walk files under `walkRoot` into a rel→entry map. `strict` is used while
+   * taking a snapshot: an unreadable file must fail the snapshot instead of
+   * silently disappearing (a missing snapshot entry would make a later restore
+   * treat it as command-created and DELETE it). Diff walks are non-strict so a
+   * locked file never aborts a restore.
+   */
+  private async walkFs(
+    walkRoot: string,
+    opts: { excludeGenerated: boolean; strict?: boolean },
+    out: Map<string, FsWalkEntry>,
+    relPrefix = '',
+  ): Promise<void> {
+    let entries: Dirent[]
+    try {
+      entries = await fsp.readdir(walkRoot, { withFileTypes: true })
+    } catch (error) {
+      if (opts.strict) throw new CheckpointError(`无法读取目录：${walkRoot}`)
+      return
+    }
+    for (const entry of entries) {
+      const abs = join(walkRoot, entry.name)
+      const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name
+      if (entry.isSymbolicLink()) {
+        let link = ''
+        try {
+          link = await fsp.readlink(abs)
+        } catch {
+          if (opts.strict) throw new CheckpointError(`无法读取符号链接：${abs}`)
+          continue
+        }
+        out.set(rel, { abs, rel, kind: 'symlink', size: 0, link })
+        continue
+      }
+      if (entry.isDirectory()) {
+        if (opts.excludeGenerated && GENERATED_DIR_NAMES.has(entry.name)) continue
+        await this.walkFs(abs, opts, out, rel)
+        continue
+      }
+      if (entry.isFile()) {
+        try {
+          const st = await fsp.stat(abs)
+          out.set(rel, { abs, rel, kind: 'file', size: st.size })
+        } catch {
+          if (opts.strict) throw new CheckpointError(`无法读取文件信息：${abs}`)
+        }
+      }
+    }
+  }
+
+  /** Collect the live side of a diff: the whole tree or the given scopes. */
+  private async collectLiveFs(
+    projectRoot: string,
+    scope: string[] | undefined,
+    excludeGenerated: boolean,
+    strict = false,
+  ): Promise<Map<string, FsWalkEntry>> {
+    const out = new Map<string, FsWalkEntry>()
+    if (scope && scope.length > 0) {
+      for (const p of scope) {
+        const abs = resolve(p)
+        if (!isWithin(projectRoot, abs)) continue
+        const rel = relPosix(projectRoot, abs)
+        // Mirror the git pathspec excludes: a scope inside a generated dir is
+        // not part of a full snapshot.
+        if (excludeGenerated && rel.split('/').some((seg) => GENERATED_DIR_NAMES.has(seg))) continue
+        let st
+        try {
+          st = await fsp.lstat(abs)
+        } catch {
+          // Missing (e.g. deleted by the operation) → the snapshot side wins.
+          continue
+        }
+        if (st.isDirectory()) {
+          await this.walkFs(abs, { excludeGenerated, strict }, out, rel)
+        } else if (st.isSymbolicLink()) {
+          try {
+            out.set(rel, { abs, rel, kind: 'symlink', size: 0, link: await fsp.readlink(abs) })
+          } catch {
+            if (strict) throw new CheckpointError(`无法读取符号链接：${abs}`)
+          }
+        } else if (st.isFile()) {
+          out.set(rel, { abs, rel, kind: 'file', size: st.size })
+        }
+      }
+      return out
+    }
+    await this.walkFs(projectRoot, { excludeGenerated, strict }, out)
+    return out
+  }
+
+  private async snapshotFsLocked(
+    root: string,
+    opts: SnapshotOptions,
+    targeted: string[],
+  ): Promise<SnapshotResult> {
+    const fsBase = join(this.fsRootFor(root), opts.id)
+    rmSync(fsBase, { recursive: true, force: true })
+    const treeRoot = join(fsBase, 'tree')
+    mkdirSync(treeRoot, { recursive: true })
+
+    const entries =
+      targeted.length > 0
+        ? await this.collectLiveFs(root, targeted, false, true)
+        : await this.collectLiveFs(root, undefined, !opts.includeGenerated, true)
+    if (entries.size > FS_MAX_FILES) {
+      throw new CheckpointError(`文件过多（${entries.size}），无法使用文件系统快照`)
+    }
+    let totalBytes = 0
+    for (const entry of entries.values()) {
+      if (entry.kind === 'file') {
+        if (entry.size > FS_MAX_FILE_BYTES) {
+          throw new CheckpointError(`文件过大，无法使用文件系统快照：${entry.rel}`)
+        }
+        totalBytes += entry.size
+        if (totalBytes > FS_MAX_BYTES) {
+          throw new CheckpointError('项目过大，无法使用文件系统快照')
+        }
+      }
+      const dest = join(treeRoot, ...entry.rel.split('/'))
+      mkdirSync(dirname(dest), { recursive: true })
+      if (entry.kind === 'symlink') {
+        try {
+          await fsp.symlink(entry.link || '', dest)
+        } catch {
+          throw new CheckpointError(`无法快照符号链接：${entry.rel}`)
+        }
+      } else {
+        await fsp.copyFile(entry.abs, dest)
+      }
+    }
+
+    let emptyDirs: string[] = []
+    if (opts.collectEmptyDirs) {
+      const roots = targeted.length > 0 ? targeted : [root]
+      emptyDirs = roots.flatMap((p) => collectEmptyDirs(p, targeted.length > 0))
+    }
+    return { commit: `${FS_COMMIT_PREFIX}${opts.id}`, paths: targeted, emptyDirs }
+  }
+
+  private async diffFsLocked(
+    root: string,
+    commit: string,
+    paths?: string[],
+  ): Promise<WorkspaceDiffEntryFs[]> {
+    const tree = this.fsTreeFor(root, commit)
+    if (!existsSync(tree)) throw new CheckpointError('快照不存在')
+    const snapEntries = new Map<string, FsWalkEntry>()
+    // Strict: an unreadable snapshot tree must fail the diff/restore instead of
+    // making every live file look "added" (a restore would then DELETE them).
+    await this.walkFs(tree, { excludeGenerated: false, strict: true }, snapEntries)
+
+    const scope = (paths || []).map((p) => resolve(p))
+    for (const p of scope) {
+      if (!isWithin(root, p)) throw new CheckpointError(`路径在工作区外：${p}`)
+    }
+    // Same staging rule as the git path: generated dirs are excluded unless
+    // the restore scope explicitly targets one (a targeted dir-delete).
+    const includeGenerated = scope.length > 0 && scopeTouchesGenerated(scope)
+    const liveEntries = await this.collectLiveFs(
+      root,
+      scope.length > 0 ? scope : undefined,
+      !includeGenerated,
+    )
+
+    const out: WorkspaceDiffEntryFs[] = []
+    const keys = new Set<string>([...snapEntries.keys(), ...liveEntries.keys()])
+    for (const rel of keys) {
+      const abs = hostPath(root, rel)
+      if (scope.length > 0 && !scope.some((p) => isWithin(p, abs))) continue
+      const s = snapEntries.get(rel)
+      const l = liveEntries.get(rel)
+      let status: WorkspaceDiffEntryFs['status'] | null = null
+      if (s && l) {
+        if (s.kind !== l.kind) status = 'modified'
+        else if (s.kind === 'symlink') status = s.link !== l.link ? 'modified' : null
+        else if (s.size !== l.size) status = 'modified'
+        else {
+          const snapHash = createHash('sha1').update(await fsp.readFile(s.abs)).digest('hex')
+          const liveHash = createHash('sha1').update(await fsp.readFile(l.abs)).digest('hex')
+          status = snapHash !== liveHash ? 'modified' : null
+        }
+      } else if (l) {
+        status = 'added'
+      } else if (s) {
+        status = 'deleted'
+      }
+      if (status) out.push({ path: abs, status })
+    }
+    return out
+  }
+
+  private async copyFsEntry(snapAbs: string, destAbs: string): Promise<void> {
+    const st = await fsp.lstat(snapAbs)
+    await fsp.mkdir(dirname(destAbs), { recursive: true })
+    try {
+      const cur = await fsp.lstat(destAbs)
+      if (cur.isDirectory()) await fsp.rm(destAbs, { recursive: true, force: true })
+      else await fsp.unlink(destAbs)
+    } catch {
+      /* absent — nothing to replace */
+    }
+    if (st.isSymbolicLink()) {
+      await fsp.symlink(await fsp.readlink(snapAbs), destAbs)
+    } else {
+      await fsp.copyFile(snapAbs, destAbs)
+    }
+  }
+
+  private async restoreFsLocked(
+    root: string,
+    commit: string,
+    opts: { paths?: string[]; emptyDirs?: string[]; createdDirs?: string[]; conflicts?: string[]; includeGenerated?: boolean },
+  ): Promise<RestoreResultFs> {
+    const tree = this.fsTreeFor(root, commit)
+    const scope = (opts.paths || []).map((p) => resolve(p))
+    const conflicts = new Set((opts.conflicts || []).map((p) => resolve(p)))
+    for (const p of scope) {
+      if (!isWithin(root, p)) throw new CheckpointError(`路径在工作区外，无法恢复：${p}`)
+    }
+
+    const diffs = await this.diffFsLocked(root, commit, opts.paths)
+    let restored = 0
+    let deleted = 0
+    let skipped = 0
+    const conflictHits: string[] = []
+    for (const entry of diffs) {
+      const abs = entry.path
+      if (!isWithin(root, abs)) {
+        skipped++
+        continue
+      }
+      if (conflicts.has(abs)) {
+        conflictHits.push(abs)
+        skipped++
+        continue
+      }
+      const rel = relPosix(root, abs)
+      const snapAbs = join(tree, ...rel.split('/'))
+      try {
+        if (entry.status === 'added') {
+          // Created after the checkpoint → remove it.
+          if (existsSync(abs)) rmSync(abs, { force: true, recursive: true })
+          pruneEmptyParents(root, abs)
+          deleted++
+        } else {
+          if (!existsSync(snapAbs)) {
+            skipped++
+            continue
+          }
+          await this.copyFsEntry(snapAbs, abs)
+          restored++
+        }
+      } catch {
+        skipped++
+      }
+    }
+
+    // Empty directories that existed at snapshot time (not tracked as files).
+    for (const dir of opts.emptyDirs || []) {
+      try {
+        if (isWithin(root, dir)) mkdirSync(dir, { recursive: true })
+      } catch {
+        skipped++
+      }
+    }
+    // Directories created by the operation — remove only when empty.
+    for (const dir of opts.createdDirs || []) {
+      try {
+        if (isWithin(root, dir) && existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir)
+      } catch {
+        skipped++
+      }
+    }
+
+    return { restored, deleted, skipped, conflicts: conflictHits }
+  }
+
   /** Delete a checkpoint ref (call when its metadata row is deleted). */
   async deleteRef(projectRoot: string, id: string): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) return
     const root = normalizeRoot(projectRoot)
     await this.withLock(root, async () => {
-      const repoDir = await this.ensureRepo(root)
-      await runGit(root, repoDir, ['update-ref', '-d', `refs/checkpoints/${id}`], { allowFailure: true })
+      // Filesystem fallback snapshot (if any).
+      try {
+        rmSync(join(this.fsRootFor(root), id), { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+      // Git ref (if a shadow repo exists). Never create a repo just to delete.
+      const repoDir = this.repoDirFor(root)
+      if (!existsSync(join(repoDir, 'HEAD'))) return
+      if (!(await this.detectGit())) return
+      try {
+        await this.git(root, repoDir, ['update-ref', '-d', `refs/checkpoints/${id}`], { allowFailure: true })
+      } catch {
+        /* project may be gone; the ref is only disk */
+      }
     })
   }
 
@@ -447,9 +844,15 @@ export class CheckpointRepo {
   async gc(projectRoot: string): Promise<void> {
     const root = normalizeRoot(projectRoot)
     await this.withLock(root, async () => {
-      const repoDir = await this.ensureRepo(root)
-      await runGit(root, repoDir, ['reflog', 'expire', '--expire=now', '--all'], { allowFailure: true })
-      await runGit(root, repoDir, ['gc', '--prune=now', '--quiet'], { allowFailure: true })
+      if (!(await this.detectGit())) return
+      const repoDir = this.repoDirFor(root)
+      if (!existsSync(join(repoDir, 'HEAD'))) return
+      try {
+        await this.git(root, repoDir, ['reflog', 'expire', '--expire=now', '--all'], { allowFailure: true })
+        await this.git(root, repoDir, ['gc', '--prune=now', '--quiet'], { allowFailure: true })
+      } catch {
+        /* best-effort */
+      }
     })
   }
 }

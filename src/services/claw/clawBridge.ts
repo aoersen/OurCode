@@ -171,7 +171,8 @@ export function repairSession(sessionId: string): void {
   const ws = currentWorkspacePath()
   if (ws && session.projectPath !== ws) chat.updateSessionProjectPath(sessionId, ws)
   const st = agentState()
-  const editMode = st?.approvalMode === 'full_access' ? 'full_access' : 'confirm_before_change'
+  // Claw「免审批」= 免审批+危险命令仍确认 → 自主档（guarded）。
+  const editMode = st?.approvalMode === 'full_access' ? 'guarded' : 'confirm_before_change'
   if (session.projectEditMode !== editMode) chat.setProjectEditMode(sessionId, editMode, false)
 }
 
@@ -211,7 +212,8 @@ export function ensureSession(channel: ClawChannelId, contactId: string): string
   const sessionId = chat.createSession(configGroupId, projectPath, { mode: 'claw' })
   if (!sessionId) return null
   if (modelId) chat.updateSessionModel(sessionId, modelId)
-  chat.setProjectEditMode(sessionId, st?.approvalMode === 'full_access' ? 'full_access' : 'confirm_before_change', false)
+  // Claw「免审批」= 免审批+危险命令仍确认 → 自主档（guarded）。
+  chat.setProjectEditMode(sessionId, st?.approvalMode === 'full_access' ? 'guarded' : 'confirm_before_change', false)
   sessionByContact.set(key, sessionId)
   contactBySession.set(sessionId, key)
   channelBySession.set(sessionId, channel)
@@ -992,9 +994,20 @@ function handleGatewayEvent(ev: ClawGatewayEvent): void {
 /** 应用启动时调用一次（App.tsx）。返回清理函数。 */
 export function initClawBridge(): () => void {
   if (initialized) return () => {}
-  // Claw Agent 只在对话窗口（main）运行；一人公司窗口不重复处理入站消息。
-  if (IS_OFFICE) return () => {}
   initialized = true
+  // UI 接线（网关事件订阅 + 首次状态/配置拉取）每个窗口都要跑：一人公司窗口
+  // 的 Claw 面板与设置页读的是同一份主进程状态，跳过它面板会永远停在
+  // 「0/5、全部已停用」的初始值。只有入站消息的 agent 处理才限定在对话窗口。
+  const offStore = useClawStore.getState().init()
+  // Claw Agent 状态是全局共享的只读快照，两个窗口的设置页都要显示。
+  void useClawStore.getState().loadAgentState()
+  // Claw Agent 只在对话窗口（main）运行；一人公司窗口不重复处理入站消息。
+  if (IS_OFFICE) {
+    return () => {
+      offStore()
+      initialized = false
+    }
+  }
 
   try {
     const saved = localStorage.getItem(SESSION_MAP_KEY)
@@ -1013,10 +1026,8 @@ export function initClawBridge(): () => void {
     // 忽略损坏的映射
   }
 
-  const offStore = useClawStore.getState().init()
-  // Claw Agent 状态与接入会话（mode='claw'）从主进程拉取；会话并入本窗口状态
-  // 供 runAgentLoop 定位，但不显示在主界面列表。
-  void useClawStore.getState().loadAgentState()
+  // 接入会话（mode='claw'）从主进程拉取；会话并入本窗口状态供 runAgentLoop
+  // 定位，但不显示在主界面列表。
   void (async () => {
     try {
       const list = await window.electronAPI.getSessions('claw')

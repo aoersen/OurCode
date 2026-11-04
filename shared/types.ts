@@ -90,12 +90,16 @@ export interface ChatSession {
   agentMode?: 'chat' | 'agent'
   // Lightweight records of past agent runs (shown in the Agent tasks panel)
   agentRuns?: AgentRun[]
-  // Project edit mode: controls tool-approval behavior in agent mode
-  // 'confirm_before_change' — ask before every file-modifying tool
-  // 'auto_edit' — auto-approve file edits (write/edit files)
-  // 'plan' — read-only → submit plan → approve → execute
-  // 'full_access' — auto-approve all tool calls
-  projectEditMode?: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access'
+  // Project edit mode: controls tool-approval behavior in agent mode (五档，
+  // 对齐 ZCode：手动/自动/计划/自主/完全)
+  // 'confirm_before_change' — ask before every file-modifying tool (手动)
+  // 'auto_edit' — auto-approve file edits (write/edit files) (自动)
+  // 'plan' — read-only → submit plan → approve → execute (计划)
+  // 'guarded' — auto-approve all tool calls; dangerous commands still ask once (自主)
+  // 'yolo' — auto-approve all tool calls, dangerous commands included (完全)
+  // Legacy persisted 'full_access' means the old guarded semantics — migrate
+  // to 'guarded' on load (chatStore / sqlite-store).
+  projectEditMode?: 'confirm_before_change' | 'auto_edit' | 'plan' | 'guarded' | 'yolo'
   // Target mode (agent mode only): the agent runs autonomously — auto-approves
   // tool calls and auto-continues after rounds are exhausted — until the user
   // decides the goal is done and stops it.
@@ -241,6 +245,10 @@ export interface CheckpointFile {
   path: string
   content: string
   existed: boolean
+  /** The pre-image could not be read (locked file, EIO, permission) — "existed:
+   *  false" then means "unknown", not "did not exist". Revert MUST skip such
+   *  entries instead of deleting the file. */
+  snapshotFailed?: boolean
 }
 
 // Checkpoint: file snapshots taken right before a write tool ran, so the user
@@ -275,7 +283,19 @@ export interface RevertedFileRecord {
 // run_command side effects, MCP/plugin writes and non-git projects. They are
 // backed by a shadow git repository under userData (never the project's .git).
 
-export type WorkspaceCheckpointKind = 'files' | 'command' | 'restore-safety' | 'mkdir' | 'dir-delete'
+export type WorkspaceCheckpointKind =
+  | 'files'
+  | 'command'
+  | 'restore-safety'
+  | 'mkdir'
+  | 'dir-delete'
+  /** Whole-tree anchor taken before a company task's first tool call. The
+   *  "恢复整个任务" action restores this — it covers per-file write/edit
+   *  checkpoints that are not tied to a taskId. */
+  | 'task-start'
+  /** The project's initial state: "回到初始状态" restores to this snapshot.
+   *  Created once per project (or on demand), never pruned. */
+  | 'baseline'
 
 export interface WorkspaceCheckpoint {
   id: string
@@ -818,32 +838,12 @@ export interface UsageSummary {
   recent: UsageRecentRow[]
 }
 
-// ───────────────────────── 3D 办公室 × 目标模式 ─────────────────────────
-// 状态类型供 officeBridge（IDE）与 OfficeView 使用；场景为源码库化（vendored
-// office-v3），直接函数调用驱动，不再走 iframe/postMessage。
+// ───────────────────────── 一人公司（目标模式看板） ─────────────────────────
 
-/** 3D 场景 9 种工位状态（对应 office-v3 statusMeta 的 key）。 */
+/** 工位状态（看板状态元数据 officeTheme.OFFICE_STATE_META 的 key）。 */
 export type OfficeStatus =
   | 'working' | 'idle' | 'transfer' | 'thinking' | 'receiving'
   | 'reviewing' | 'completed' | 'error' | 'offline'
-
-export interface OfficeLog {
-  t: string
-  k: string
-  title: string
-  desc: string
-}
-
-/** 一个工位的完整可视化状态。 */
-export interface OfficeAgentState {
-  id: number // 1..8
-  role: string
-  codeName: string
-  status: OfficeStatus
-  task: string
-  progress: number // 0-100
-  logs: OfficeLog[]
-}
 
 /** One agent-owned pty run, as the main process reports it through `term:list`. */
 export interface AgentTerminalRun {
@@ -989,6 +989,17 @@ export interface ClawSentEvent {
   error?: string
 }
 
+/**
+ * 渠道配置/启停变更（主进程广播，不来自网关子进程）。
+ *
+ * 只表示「配置已经变了，去重新拉一次」：不携带数据，避免各窗口各自缓存出
+ * 一份不一致的配置。多窗口（对话窗口 + 一人公司窗口）必须靠它在保存设置、
+ * 拨动渠道开关或切换总开关后保持一致。
+ */
+export interface ClawConfigChangedEvent {
+  event: 'configChanged'
+}
+
 export type ClawGatewayEvent =
   | ClawStatusEvent
   | ClawQrEvent
@@ -1001,6 +1012,7 @@ export type ClawGatewayEvent =
   | ClawInboundEvent
   | ClawSentEvent
   | { event: 'error'; channel: ClawChannelId; message: string }
+  | ClawConfigChangedEvent
 
 // ── Claw Agent 状态（ClawAgentState）───────────────────────────────────────
 // Claw 接入是一个独立的常驻 agent：状态与用户偏好（user_preferences）分离，

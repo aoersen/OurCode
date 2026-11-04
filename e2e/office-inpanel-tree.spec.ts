@@ -21,7 +21,7 @@ async function officeWindow(app: ElectronApplication, main: Page): Promise<Page>
     for (const p of app.windows()) {
       if (p === main) continue
       try {
-        if (await p.evaluate(() => typeof window.electronAPI !== 'undefined' && document.getElementById('office3d-root') !== null)) { office = p; return true }
+        if (await p.evaluate(() => typeof window.electronAPI !== 'undefined' && document.getElementById('office-root') !== null)) { office = p; return true }
       } catch { /* */ }
     }
     return false
@@ -44,21 +44,22 @@ test('office: double-click project opens file tree IN the office panel', async (
   await expect(officeBtn).toBeVisible({ timeout: 15000 })
   await officeBtn.click()
   const office = await officeWindow(app, main)
-  await expect(office.locator('#office3d-root')).toBeVisible({ timeout: 30000 })
+  await expect(office.locator('#office-root')).toBeVisible({ timeout: 30000 })
   await dismissOnboarding(office)
 
   // 打开项目（mock 对话框）→ 树应在办公室左侧栏内就地打开，办公室视图不退出
   await app.evaluate(({ dialog }, folder) => {
-    ;(dialog as any).showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    const d = dialog as unknown as { showOpenDialog: (opts: unknown) => Promise<{ canceled: boolean; filePaths: string[] }> }
+    d.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
   }, dir)
-  const openBtn = office.locator('#office3d-root button:has-text("打开项目")').first()
+  const openBtn = office.locator('#office-root button:has-text("打开项目")').first()
   await expect(openBtn).toBeVisible({ timeout: 10000 })
   await openBtn.click()
   await office.waitForTimeout(2500)
 
   // 办公室视图应保持显示（不退出），且左侧栏出现该项目的文件树
-  const officeStill = await office.locator('#office3d-root').isVisible().catch(() => false)
-  const inPanelTree = await office.locator('#office3d-root #file-tree-root').first().isVisible().catch(() => false)
+  const officeStill = await office.locator('#office-root').isVisible().catch(() => false)
+  const inPanelTree = await office.locator('#office-root #file-tree-root').first().isVisible().catch(() => false)
   const treeText = await office.evaluate(() => document.getElementById('file-tree-root')?.innerText || '')
   console.log('OFFICE STILL VISIBLE:', officeStill, '| IN-PANEL TREE:', inPanelTree, '| TREE:', JSON.stringify(treeText.slice(0, 80)))
   expect(officeStill).toBe(true)
@@ -66,17 +67,17 @@ test('office: double-click project opens file tree IN the office panel', async (
   expect(treeText).toContain('src')
 
   // 双击项目卡片也应就地打开树（先返回项目列表）
-  const backBtn = office.locator('#office3d-root button[title="返回项目"]').first()
+  const backBtn = office.locator('#office-root button[title="返回项目"]').first()
   await backBtn.click()
   await office.waitForTimeout(500)
-  const card = office.locator('#office3d-root div[title*="双击打开项目"]').filter({ hasText: 'officetree-' }).first()
+  const card = office.locator('#office-root div[title*="双击打开项目"]').filter({ hasText: 'officetree-' }).first()
   const n = await card.count()
   console.log('CARD COUNT:', n)
   if (n > 0) {
     await card.dblclick()
     await office.waitForTimeout(2000)
-    const officeStill2 = await office.locator('#office3d-root').isVisible().catch(() => false)
-    const tree2 = await office.locator('#office3d-root #file-tree-root').first().isVisible().catch(() => false)
+    const officeStill2 = await office.locator('#office-root').isVisible().catch(() => false)
+    const tree2 = await office.locator('#office-root #file-tree-root').first().isVisible().catch(() => false)
     const taskPanel = await office.locator('aside h2:has-text("任务面板")').first().isVisible().catch(() => false)
     console.log('DBLCLICK → office still:', officeStill2, '| in-panel tree:', tree2, '| 任务面板:', taskPanel)
     expect(officeStill2).toBe(true)
@@ -85,11 +86,11 @@ test('office: double-click project opens file tree IN the office panel', async (
   }
 
   // 点文件树里的文件 → 应进入工作区编辑器（办公室视图让位）
-  const fileRow = office.locator('#office3d-root #file-tree-root >> text=main.ts').first()
+  const fileRow = office.locator('#office-root #file-tree-root >> text=main.ts').first()
   if (await fileRow.isVisible().catch(() => false)) {
     await fileRow.click()
     await office.waitForTimeout(2000)
-    const officeGone = await office.locator('#office3d-root').isVisible().catch(() => false)
+    const officeGone = await office.locator('#office-root').isVisible().catch(() => false)
     console.log('AFTER FILE CLICK → office overlay gone:', !officeGone)
   }
 

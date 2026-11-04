@@ -1,6 +1,6 @@
 /**
- * 3D 办公室 × 目标模式：映射层纯函数单测。
- * 覆盖：8 槽初始化、角色→槽位分配、子 Agent 状态→场景状态、进度估计、任务摘要。
+ * 目标模式看板：映射层纯函数单测。
+ * 覆盖：8 工位编制、角色→槽位分配、进度估计、任务摘要。
  */
 import { describe, expect, it } from 'vitest'
 import type { SubAgentProgress } from '@shared/types'
@@ -8,26 +8,14 @@ import {
   OFFICE_SLOTS,
   SLOT_GROUP,
   assignSlot,
-  buildInitialOfficeAgents,
   computeSlotAssignments,
-  computeSlotStates,
   envelopeRole,
   estimateProgress,
-  subagentStatusToOffice,
   summarizeTask,
 } from '@/services/office/mapping'
 
-describe('office/mapping: buildInitialOfficeAgents', () => {
-  it('构造 8 个全空闲工位', () => {
-    const agents = buildInitialOfficeAgents()
-    expect(agents).toHaveLength(8)
-    expect(agents.map((a) => a.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
-    expect(agents.every((a) => a.status === 'idle')).toBe(true)
-    expect(agents.every((a) => a.progress === 0)).toBe(true)
-    expect(agents.every((a) => Array.isArray(a.logs) && a.logs.length === 0)).toBe(true)
-  })
-
-  it('槽位静态信息与 office-v3 agentsData 对齐', () => {
+describe('office/mapping: OFFICE_SLOTS', () => {
+  it('槽位静态信息与编制（M4 定稿）一致', () => {
     expect(OFFICE_SLOTS[0]).toMatchObject({ id: 1, role: '总监', codeName: 'Director-01' })
     expect(OFFICE_SLOTS[6]).toMatchObject({ id: 7, role: '测试-1', codeName: 'QA-07' })
   })
@@ -64,19 +52,6 @@ describe('office/mapping: assignSlot', () => {
 
   it('未知角色返回 null', () => {
     expect(assignSlot('unknown-role', new Set())).toBeNull()
-  })
-})
-
-describe('office/mapping: subagentStatusToOffice', () => {
-  it('running → working（含思考的子状态由桥接层按 steps 细化）', () => {
-    expect(subagentStatusToOffice('running')).toBe('working')
-  })
-  it('done → completed', () => {
-    expect(subagentStatusToOffice('done')).toBe('completed')
-  })
-  it('error / stopped → error', () => {
-    expect(subagentStatusToOffice('error')).toBe('error')
-    expect(subagentStatusToOffice('stopped')).toBe('error')
   })
 })
 
@@ -134,43 +109,6 @@ type: task
   })
   it('无信封时返回 null', () => {
     expect(envelopeRole('普通任务描述')).toBeNull()
-  })
-})
-
-describe('office/mapping: computeSlotStates', () => {
-  it('无运行角色且监管空闲 → 全部 idle', () => {
-    expect(computeSlotStates([], false)).toEqual(Array(8).fill('idle'))
-  })
-
-  it('监管生成中 → Director-01 working，其余 idle', () => {
-    expect(computeSlotStates([], true)).toEqual([
-      'working', 'idle', 'idle', 'idle', 'idle', 'idle', 'idle', 'idle',
-    ])
-  })
-
-  it('运行中角色按槽位池占位，未占用工位保持 idle', () => {
-    // developer → 槽 4；tester → 槽 7；需求分析 → 槽 2
-    expect(computeSlotStates(['tm-developer', 'tm-tester', 'tm-requirement-analyst'], false)).toEqual([
-      'idle', 'working', 'idle', 'working', 'idle', 'idle', 'working', 'idle',
-    ])
-  })
-
-  it('同池多角色依序占槽，池满后溢出角色不占位', () => {
-    // 三个 developer 占 4/5/6，第四个无处可去（不挤占其他池）
-    expect(computeSlotStates(['tm-developer', 'tm-developer', 'tm-developer', 'tm-developer'], false)).toEqual([
-      'idle', 'idle', 'idle', 'working', 'working', 'working', 'idle', 'idle',
-    ])
-  })
-
-  it('监管工位不被子 Agent 覆盖：developer 只进 4-6 池', () => {
-    const states = computeSlotStates(['tm-developer'], true)
-    expect(states[0]).toBe('working')
-    expect(states[3]).toBe('working')
-    expect(states.filter((s) => s === 'working')).toHaveLength(2)
-  })
-
-  it('未知角色不影响既有工位状态', () => {
-    expect(computeSlotStates(['unknown-role'], false)).toEqual(Array(8).fill('idle'))
   })
 })
 

@@ -19,7 +19,8 @@ describe('computer-use permission matrix', () => {
     ['confirm_before_change', 'confirm'],
     ['auto_edit', 'confirm'],
     ['plan', 'block'],
-    ['full_access', 'auto'],
+    ['guarded', 'auto'],
+    ['yolo', 'auto'],
   ])('%s → %s', (mode, expected) => {
     expect(resolveApproval('computer_write', mode, plan(false), true)).toBe(expected)
   })

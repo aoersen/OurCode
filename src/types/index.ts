@@ -33,7 +33,7 @@ export interface ElectronAPI {
   trustRequest: (path: string) => Promise<boolean>
   /** One-time READ permission for a chat attachment outside the workspace (native dialog; `mode` is the session's project edit mode and shapes the dialog) */
   requestFileTrust: (path: string, mode?: string) => Promise<boolean>
-  /** Session-wide read policy for full-access mode — armed only by a native confirmation */
+  /** Session-wide read policy for 自主/完全 modes — armed only by a native confirmation */
   armReadPolicy: () => Promise<boolean>
   /** Withdraw the session-wide read policy (safe direction; no dialog) */
   disarmReadPolicy: () => Promise<boolean>
@@ -247,7 +247,7 @@ export interface ElectronAPI {
   checkpointList: (sessionId: string) => Promise<import('@shared/types').Checkpoint[]>
   checkpointCreate: (checkpoint: import('@shared/types').Checkpoint) => Promise<import('@shared/types').Checkpoint>
   checkpointDelete: (sessionId: string) => Promise<void>
-  checkpointRevert: (checkpointId: string) => Promise<{ ok: boolean; restored: number; error?: string }>
+  checkpointRevert: (checkpointId: string) => Promise<{ ok: boolean; restored: number; skipped?: number; error?: string }>
   checkpointListReverted: (sessionId: string) => Promise<string[]>
   checkpointRestore: (sessionId: string, filePaths: string[]) => Promise<{ ok: boolean; restored: number; failed?: string[]; error?: string }>
   checkpointGetRevertedRecord: (sessionId: string, filePath: string) => Promise<import('@shared/types').RevertedFileRecord | null>
@@ -272,8 +272,25 @@ export interface ElectronAPI {
   checkpointWorkspaceRestore: (id: string, opts?: { paths?: string[]; force?: boolean }) => Promise<import('@shared/types').WorkspaceRestoreResult>
   checkpointWorkspaceRestoreBefore: (sessionId: string, toolCallId: string) => Promise<import('@shared/types').WorkspaceRestoreResult>
   checkpointWorkspaceRestoreTask: (taskId: string) => Promise<import('@shared/types').WorkspaceRestoreResult>
+  checkpointWorkspaceTaskStart: (projectPath: string, sessionId: string, taskId: string) => Promise<import('@shared/types').WorkspaceCheckpoint>
+  checkpointWorkspaceBaseline: (projectPath: string, sessionId?: string, opts?: { force?: boolean }) => Promise<import('@shared/types').WorkspaceCheckpoint>
+  checkpointWorkspaceRestoreBaseline: (projectPath: string, opts?: { paths?: string[] }) => Promise<import('@shared/types').WorkspaceRestoreResult>
   checkpointWorkspaceDelete: (sessionId: string) => Promise<void>
   checkpointWorkspaceDiscard: (id: string) => Promise<void>
+
+  /** 越界访问审计：主进程 fs allowlist 拒绝过的读写尝试（公司模式用来说明
+   *  "这次任务碰过项目外几次"——外部写不在回退范围，但不能没有记录）。 */
+  fsOutsideAccess: (opts?: { clear?: boolean }) => Promise<Array<{ path: string; kind: 'read' | 'write'; at: number }>>
+
+  /** 远端动作审计：git push / publish / deploy / 集群变更等。它们写的是远端，
+   *  本地 checkpoint 救不回来——记录用于事后交代"哪几步离开了本机"。 */
+  shellRemoteActions: (opts?: { clear?: boolean }) => Promise<Array<{
+    kind: string
+    label: string
+    command: string
+    cwd?: string
+    at: number
+  }>>
 
   // MCP (Model Context Protocol)
   mcpListTools: () => Promise<Array<{ server: string; name: string; description?: string; inputSchema?: Record<string, any> }>>

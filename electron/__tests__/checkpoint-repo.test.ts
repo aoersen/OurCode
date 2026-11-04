@@ -129,3 +129,124 @@ describe('CheckpointRepo (shadow git)', () => {
     expect(s2.commit).toMatch(/^[0-9a-f]{40}$/)
   })
 })
+
+// The project does NOT need git, and neither does the machine: when the git
+// binary is unavailable the repo falls back to a plain filesystem snapshot
+// under the same shadow directory.
+describe('CheckpointRepo (filesystem fallback, no git binary)', () => {
+  let base: string
+  let project: string
+  let repo: CheckpointRepo
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'ourcode-cp-fs-'))
+    project = join(base, 'project')
+    mkdirSync(project, { recursive: true })
+    repo = new CheckpointRepo(join(base, 'checkpoints'), {
+      gitBin: join(base, 'definitely-no-git-binary'),
+    })
+  })
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  it('snapshots and restores a non-git project without creating a project .git', async () => {
+    write(join(project, 'src', 'a.txt'), 'hello')
+    write(join(project, 'src', 'sub', 'b.txt'), 'world')
+    write(join(project, '.env'), 'SECRET=1')
+
+    const snap = await repo.snapshot(project, { id: 'fs1' })
+    expect(snap.commit).toBe('fs1:fs1')
+    expect(existsSync(join(project, '.git'))).toBe(false)
+
+    writeFileSync(join(project, 'src', 'a.txt'), 'changed', 'utf-8')
+    rmSync(join(project, 'src', 'sub'), { recursive: true, force: true })
+    writeFileSync(join(project, 'new.txt'), 'created', 'utf-8')
+
+    const diff = await repo.diff(project, snap.commit)
+    const byPath = new Map(diff.map((d) => [d.path.replace(/\\/g, '/'), d.status]))
+    expect(byPath.get(`${project.replace(/\\/g, '/')}/src/a.txt`)).toBe('modified')
+    expect(byPath.get(`${project.replace(/\\/g, '/')}/src/sub/b.txt`)).toBe('deleted')
+    expect(byPath.get(`${project.replace(/\\/g, '/')}/new.txt`)).toBe('added')
+
+    const result = await repo.restore(project, snap.commit)
+    expect(result.skipped).toBe(0)
+    expect(readFileSync(join(project, 'src', 'a.txt'), 'utf-8')).toBe('hello')
+    expect(readFileSync(join(project, 'src', 'sub', 'b.txt'), 'utf-8')).toBe('world')
+    expect(existsSync(join(project, 'new.txt'))).toBe(false)
+    expect(readFileSync(join(project, '.env'), 'utf-8')).toBe('SECRET=1')
+  })
+
+  it('restores a deleted directory including empty subdirectories', async () => {
+    mkdirSync(join(project, 'legacy', 'empty'), { recursive: true })
+    write(join(project, 'legacy', 'a.txt'), 'a')
+    write(join(project, 'legacy', 'sub', 'b.txt'), 'b')
+
+    const snap = await repo.snapshot(project, {
+      id: 'fs-dir',
+      paths: [join(project, 'legacy')],
+      collectEmptyDirs: true,
+    })
+    expect(snap.emptyDirs.map((p) => p.replace(/\\/g, '/')).some((p) => p.endsWith('/legacy/empty'))).toBe(true)
+
+    rmSync(join(project, 'legacy'), { recursive: true, force: true })
+    const result = await repo.restore(project, snap.commit, {
+      paths: [join(project, 'legacy')],
+      emptyDirs: snap.emptyDirs,
+    })
+    expect(result.skipped).toBe(0)
+    expect(readFileSync(join(project, 'legacy', 'a.txt'), 'utf-8')).toBe('a')
+    expect(readFileSync(join(project, 'legacy', 'sub', 'b.txt'), 'utf-8')).toBe('b')
+    expect(existsSync(join(project, 'legacy', 'empty'))).toBe(true)
+  })
+
+  it('keeps generated directories out of full snapshots and includes targeted ones', async () => {
+    write(join(project, 'src', 'main.ts'), 'src')
+    write(join(project, 'node_modules', 'pkg', 'index.js'), 'pkg')
+
+    const snap = await repo.snapshot(project, { id: 'fs-gen' })
+    rmSync(join(project, 'src'), { recursive: true, force: true })
+    rmSync(join(project, 'node_modules'), { recursive: true, force: true })
+
+    await repo.restore(project, snap.commit)
+    expect(readFileSync(join(project, 'src', 'main.ts'), 'utf-8')).toBe('src')
+    expect(existsSync(join(project, 'node_modules'))).toBe(false)
+
+    // A targeted snapshot of a generated dir includes its content.
+    write(join(project, 'node_modules', 'pkg', 'index.js'), 'pkg')
+    const targeted = await repo.snapshot(project, {
+      id: 'fs-nm',
+      paths: [join(project, 'node_modules')],
+      collectEmptyDirs: true,
+    })
+    rmSync(join(project, 'node_modules'), { recursive: true, force: true })
+    const result = await repo.restore(project, targeted.commit, {
+      paths: [join(project, 'node_modules')],
+      emptyDirs: targeted.emptyDirs,
+    })
+    expect(result.skipped).toBe(0)
+    expect(readFileSync(join(project, 'node_modules', 'pkg', 'index.js'), 'utf-8')).toBe('pkg')
+  })
+
+  it('restores a specific file scope without touching sibling changes', async () => {
+    write(join(project, 'src', 'a.txt'), 'a0')
+    write(join(project, 'src', 'b.txt'), 'b0')
+    const snap = await repo.snapshot(project, { id: 'fs-file' })
+
+    writeFileSync(join(project, 'src', 'a.txt'), 'a1', 'utf-8')
+    writeFileSync(join(project, 'src', 'b.txt'), 'b1', 'utf-8')
+
+    await repo.restore(project, snap.commit, { paths: [join(project, 'src', 'a.txt')] })
+    expect(readFileSync(join(project, 'src', 'a.txt'), 'utf-8')).toBe('a0')
+    expect(readFileSync(join(project, 'src', 'b.txt'), 'utf-8')).toBe('b1')
+  })
+
+  it('deleteRef removes the filesystem snapshot', async () => {
+    write(join(project, 'a.txt'), 'a')
+    const snap = await repo.snapshot(project, { id: 'fs-del' })
+    expect((await repo.diff(project, snap.commit)).length).toBe(0)
+    await repo.deleteRef(project, 'fs-del')
+    await expect(repo.diff(project, snap.commit)).rejects.toThrow()
+  })
+})

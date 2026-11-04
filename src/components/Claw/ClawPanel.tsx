@@ -18,6 +18,7 @@ export default function ClawPanel() {
   const configs = useClawStore((s) => s.configs)
   const drops = useClawStore((s) => s.drops)
   const clearDrops = useClawStore((s) => s.clearDrops)
+  const refreshStatus = useClawStore((s) => s.refreshStatus)
   const setChannelEnabled = useClawStore((s) => s.setChannelEnabled)
 
   const enabledCount = hub?.channels.filter((c) => c.enabled).length ?? 0
@@ -128,7 +129,15 @@ export default function ClawPanel() {
         style={{ borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}
       >
         <span>{t('claw.gatewayFooter', { count: CLAW_CHANNELS.length })}</span>
-        <button style={{ color: 'var(--accent-text)' }} onClick={() => useClawStore.getState().loadConfigs()}>
+        <button
+          style={{ color: 'var(--accent-text)' }}
+          onClick={() => {
+            // 状态（徽标/指标/连接态）与配置（开关/策略）是两个来源，只拉配置
+            // 会出现「开关已开但徽标仍是 0/N」的前后矛盾。
+            void refreshStatus()
+            void useClawStore.getState().loadConfigs()
+          }}
+        >
           {t('claw.refresh')}
         </button>
       </div>

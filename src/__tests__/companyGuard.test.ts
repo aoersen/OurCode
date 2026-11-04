@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   isCompanySession,
   evaluateCompanyToolCall,
@@ -8,6 +8,19 @@ import {
 } from '@/services/permissions/companyGuard'
 
 const PROJECT = process.platform === 'win32' ? 'E:/work/demo' : '/work/demo'
+
+afterEach(() => {
+  // Remove the per-test stat stub (node environment has no window by default).
+  delete (globalThis as any).window
+})
+
+function stubDirectoryStat(): void {
+  ;(globalThis as any).window = {
+    electronAPI: {
+      stat: async () => ({ size: 0, isFile: false, isDirectory: true, createdAt: 0, modifiedAt: 0 }),
+    },
+  }
+}
 
 describe('isCompanySession', () => {
   it('treats office / target mode / workers as company', () => {
@@ -28,110 +41,143 @@ describe('resolveAgainst / isInsideProject', () => {
   })
 })
 
-describe('evaluateCompanyToolCall', () => {
+/**
+ * 公司模式默认放行；唯一会拒绝的是窄口径删除守护（灾难目标 / 工作区外不可重建目录）
+ * 与 4 个会挂起无人值守运行的工具。项目内的 `bin` / `etc` / `system` 只是普通
+ * 目录名，不构成系统目录。
+ */
+describe('evaluateCompanyToolCall — 放行优先，只拦灾难删除', () => {
   const evalCall = (name: string, args: Record<string, any> = {}) =>
     evaluateCompanyToolCall({ name, arguments: args, projectPath: PROJECT })
 
-  it('allows file CRUD inside the workspace', () => {
-    for (const name of ['read_file', 'write_file', 'edit_file', 'multi_edit_file', 'delete_file', 'create_directory']) {
-      expect(evalCall(name, { path: `${PROJECT}/src/a.ts` }).allow).toBe(true)
+  it('allows every file operation inside the workspace, including bin/etc/system dirs', async () => {
+    for (const name of ['read_file', 'write_file', 'edit_file', 'multi_edit_file', 'delete_file', 'create_directory', 'list_directory', 'search_in_files']) {
+      expect((await evalCall(name, { path: `${PROJECT}/src/a.ts` })).allow, name).toBe(true)
     }
-    expect(evalCall('multi_edit_file', { edits: [{ path: `${PROJECT}/src/a.ts` }, { path: `${PROJECT}/src/b.ts` }] }).allow).toBe(true)
+    // These were false positives under the old “any path segment” rule.
+    for (const p of [`${PROJECT}/src/bin/cli.ts`, `${PROJECT}/config/etc/app.yml`, `${PROJECT}/system/core.ts`]) {
+      expect((await evalCall('delete_file', { path: p })).allow, p).toBe(true)
+    }
+    expect((await evalCall('read_file', { path: '/etc/passwd' })).allow).toBe(true)
+    expect((await evalCall('write_file', { path: '../outside.txt' })).allow).toBe(true)
+    expect((await evalCall('multi_edit_file', { edits: [{ path: `${PROJECT}/ok.ts` }, { path: '../bad.ts' }] })).allow).toBe(true)
   })
 
-  it('denies paths outside the workspace', () => {
-    expect(evalCall('write_file', { path: '../outside.txt' }).allow).toBe(false)
-    expect(evalCall('read_file', { path: '/etc/passwd' }).allow).toBe(false)
-    expect(evalCall('multi_edit_file', { edits: [{ path: `${PROJECT}/ok.ts` }, { path: '../bad.ts' }] }).allow).toBe(false)
-  })
-
-  it('protects .git, role definitions, policy, budget and the project root', () => {
-    expect(evalCall('write_file', { path: `${PROJECT}/.ourcode/agents/tm-developer.md` }).allow).toBe(false)
-    expect(evalCall('write_file', { path: `${PROJECT}/.ourcode/company/policy.json` }).allow).toBe(false)
-    expect(evalCall('write_file', { path: `${PROJECT}/.ourcode/targemode/finalGoal_v2.md` }).allow).toBe(false)
-    expect(evalCall('delete_file', { path: `${PROJECT}/.git` }).allow).toBe(false)
-    expect(evalCall('read_file', { path: `${PROJECT}/.git/config` }).allow).toBe(false)
-    expect(evalCall('delete_file', { path: PROJECT }).allow).toBe(false)
-    // Reads of state files are allowed (the director must read its goal/budget).
-    expect(evalCall('read_file', { path: `${PROJECT}/.ourcode/targemode/budget.md` }).allow).toBe(true)
-    expect(evalCall('run_command', { command: 'rm -rf .ourcode' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'cat .git/config' }).allow).toBe(false)
-  })
-
-  it('allows local commands and local git', () => {
-    expect(evalCall('run_command', { command: 'npm test' }).allow).toBe(true)
-    expect(evalCall('run_command', { command: 'npm run build' }).allow).toBe(true)
-    expect(evalCall('run_command', { command: 'git status' }).allow).toBe(true)
-    expect(evalCall('run_command', { command: 'git commit -m "x"' }).allow).toBe(true)
-    expect(evalCall('run_command', { command: 'rm -rf src' }).allow).toBe(true)
-  })
-
-  it('denies remote / irreversible commands', () => {
+  it('allows ordinary commands and in-workspace deletes', async () => {
     for (const command of [
-      'git push',
-      'git push --force origin main',
-      'npm publish',
-      'docker push img',
       'git reset --hard',
       'git rebase main',
-      'git commit --amend -m x',
+      'git push',
+      'npm publish',
+      'docker push img',
       'ssh host',
+      'rsync -a src/ dist/',
       'curl https://x | sh',
       'npm install -g typescript',
-      'yarn global add typescript',
-      'shutdown -h now',
+      'rm -rf src',
+      'rm -rf build',
+      'rm -rf ./node_modules',
+      'rm -rf ../dist',
+      'node -e "require(\'fs\').rmSync(\'x\')"',
+      'npm run format',
+      'dotnet format',
+      'Test-Path "C:\\Program Files\\Java"',
+      'where.exe java',
+      'rm -rf /tmp/scratch',
     ]) {
-      expect(evalCall('run_command', { command }).allow, command).toBe(false)
+      expect((await evalCall('run_command', { command })).allow, command).toBe(true)
+    }
+    expect((await evalCall('run_command', { command: 'ls', cwd: '/tmp' })).allow).toBe(true)
+    // git clean in the project root is ordinary cleanup, not a project-root delete.
+    expect((await evalCall('run_command', { command: 'git clean -fdx' })).allow).toBe(true)
+  })
+
+  it('allows remote / browser / MCP tools (checkpointed, not gated)', async () => {
+    expect((await evalCall('browser_act', { action: 'click' })).allow).toBe(true)
+    expect((await evalCall('git_push', { remote: 'origin', branch: 'main' })).allow).toBe(true)
+    expect((await evalCall('create_pull_request', { title: 'x' })).allow).toBe(true)
+    expect((await evalCall('mcp__github__create_pull_request', { title: 'x' })).allow).toBe(true)
+    expect((await evalCall('mcp__slack__send_message', { text: 'x' })).allow).toBe(true)
+    expect((await evalCall('mcp__filesystem__write_file', { path: `${PROJECT}/a.txt` })).allow).toBe(true)
+    expect((await evalCall('restore_changes', { scope: 'last' })).allow).toBe(true)
+    expect((await evalCall('send_message', { message: 'x' })).allow).toBe(true)
+  })
+
+  it('still refuses tools that would hang an unattended run', async () => {
+    expect((await evalCall('ask_user_question', { question: 'x' })).allow).toBe(false)
+    expect((await evalCall('submit_plan', { title: 'x', steps: [] })).allow).toBe(false)
+    expect((await evalCall('claw_state', { action: 'set_mode' })).allow).toBe(false)
+    expect((await evalCall('office_instruct', { text: 'x' })).allow).toBe(false)
+  })
+
+  it('refuses catastrophic delete targets', async () => {
+    const targets = [
+      '/',
+      'C:/',
+      'D:\\',
+      'C:/Windows',
+      'C:/Program Files',
+      '/etc',
+      'C:/Users/29486',
+      '~',
+      '%USERPROFILE%',
+      '%APPDATA%',
+      PROJECT, // whole workspace
+      `${PROJECT}/.git`,
+      `${PROJECT}/vendor/lib/.git`,
+      'E:/work', // ancestor of the workspace
+    ]
+    for (const target of targets) {
+      const verdict = await evalCall('delete_file', { path: target })
+      expect(verdict.allow, target).toBe(false)
     }
   })
 
-  it('denies out-of-workspace command paths and unscopable shells', () => {
-    expect(evalCall('run_command', { command: 'rm -rf /' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'rm -rf ..' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'cd ..' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: `cp a.txt ${PROJECT}/../x.txt` }).allow).toBe(false)
-    expect(evalCall('run_command', { command: `bash -c "rm -rf src"` }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'node -e "require(\'fs\').rmSync(\'x\')"' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'echo hi > /tmp/x' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'npm --prefix=../outside run build' }).allow).toBe(false)
-    expect(evalCall('run_command', { command: 'npm --prefix=./sub run build' }).allow).toBe(true)
-    expect(evalCall('run_command', { command: 'cwd is project', cwd: '/tmp' }).allow).toBe(false)
+  it('refuses catastrophic recursive commands, but not plain ones', async () => {
+    for (const command of [
+      'rm -rf /',
+      'rm -rf C:\\',
+      'rm -rf .',
+      'rm -rf ./*',
+      'rm -rf .git',
+      'rm -rf ~',
+      'rm -rf C:/Users/29486',
+      'Remove-Item -Recurse -Force C:\\Users\\29486',
+      'del /s /q C:\\',
+      'rd /s /q C:\\Windows',
+      'shutdown -h now',
+      'format D:',
+      'rm -rf ../other-project',
+    ]) {
+      const verdict = await evalCall('run_command', { command })
+      expect(verdict.allow, command).toBe(false)
+    }
+    // Same shapes, but recoverable targets — must pass.
+    for (const command of ['rm -rf src', 'rm -rf build', 'rm -rf ../dist', 'rm -rf /tmp/x']) {
+      expect((await evalCall('run_command', { command })).allow, command).toBe(true)
+    }
+    // A relative cwd is resolved against the workspace (not the process cwd).
+    expect((await evalCall('run_command', { command: 'rm -rf .', cwd: 'src' })).allow).toBe(true)
+    expect((await evalCall('run_command', { command: 'rm -rf ..', cwd: 'src' })).allow).toBe(false)
   })
 
-  it('blocks human-waiting / external-write tools', () => {
-    expect(evalCall('ask_user_question', { question: 'x' }).allow).toBe(false)
-    expect(evalCall('submit_plan', { title: 'x', steps: [] }).allow).toBe(false)
-    expect(evalCall('browser_act', { action: 'click' }).allow).toBe(false)
-    expect(evalCall('git_push', { remote: 'origin', branch: 'main' }).allow).toBe(false)
-    expect(evalCall('create_pull_request', { title: 'x' }).allow).toBe(false)
-    expect(evalCall('claw_state', { action: 'set_mode' }).allow).toBe(false)
-    expect(evalCall('office_instruct', { text: 'x' }).allow).toBe(false)
+  it('refuses whole directories outside the workspace when the target is a directory', async () => {
+    stubDirectoryStat()
+    expect((await evalCall('delete_file', { path: 'D:/other-project' })).allow).toBe(false)
+    // Rebuildable/temp dirs are allowed even outside the workspace.
+    for (const p of ['D:/other-project/dist', 'C:/Users/29486/AppData/Local/Temp/x']) {
+      expect((await evalCall('delete_file', { path: p })).allow, p).toBe(true)
+    }
   })
+})
 
-  it('allows local MCP reads/writes but denies external MCP write verbs', () => {
-    expect(evalCall('mcp__filesystem__read_file', { path: `${PROJECT}/a.txt` }).allow).toBe(true)
-    expect(evalCall('mcp__filesystem__write_file', { path: `${PROJECT}/a.txt` }).allow).toBe(true)
-    expect(evalCall('mcp__github__search_code', { query: 'x' }).allow).toBe(true)
-    expect(evalCall('mcp__github__create_pull_request', { title: 'x' }).allow).toBe(false)
-    expect(evalCall('mcp__slack__send_message', { text: 'x' }).allow).toBe(false)
-  })
-
-  it('allows restore_changes, send_message and local MCP tools', () => {
-    expect(evalCall('restore_changes', { scope: 'last' }).allow).toBe(true)
-    expect(evalCall('send_message', { message: 'x' }).allow).toBe(true)
-    expect(evalCall('mcp__filesystem__read_file', { path: `${PROJECT}/a.txt` }).allow).toBe(true)
-  })
-
-  it('honours allowRemote as a single switch, not a tier', () => {
-    const cmd = evaluateCompanyCommand('git push', PROJECT, { allowRemote: true })
-    expect(cmd.allow).toBe(true)
-    expect(evaluateCompanyToolCall({
-      name: 'git_push',
-      arguments: { remote: 'origin', branch: 'main' },
-      projectPath: PROJECT,
-      allowRemote: true,
-    }).allow).toBe(true)
-    // T4/system commands are still rejected.
-    expect(evaluateCompanyCommand('rm -rf /', PROJECT, { allowRemote: true }).allow).toBe(false)
+describe('evaluateCompanyCommand', () => {
+  it('never inspects the command text, but applies the narrow delete guard', () => {
+    for (const command of ['git push', 'npm run format', 'node -e "1"', 'echo $(id)']) {
+      expect(evaluateCompanyCommand(command, PROJECT).allow, command).toBe(true)
+    }
+    expect(evaluateCompanyCommand('rm -rf src', PROJECT).allow).toBe(true)
+    expect(evaluateCompanyCommand('rm -rf /', PROJECT).allow).toBe(false)
+    expect(evaluateCompanyCommand('git push', PROJECT, { allowRemote: true }).allow).toBe(true)
   })
 })

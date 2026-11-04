@@ -75,6 +75,43 @@ describe('clawStore', () => {
     expect(useClawStore.getState().channels.wechat.scanned).toBe(false)
   })
 
+  it('status 事件同时更新 hub：面板「在线渠道」指标不停在旧值', async () => {
+    useClawStore.getState().init()
+    await vi.waitFor(() => expect(useClawStore.getState().hub).not.toBeNull())
+
+    push({ event: 'status', channel: 'wechat', state: 'connected', accountId: 'bot-1' })
+
+    const hub = useClawStore.getState().hub
+    expect(hub?.channels.find((c) => c.id === 'wechat')).toMatchObject({
+      state: 'connected',
+      accountId: 'bot-1',
+      enabled: true,
+    })
+  })
+
+  it('configChanged 事件触发状态与配置重拉（多窗口同步）', async () => {
+    useClawStore.getState().init()
+    await vi.waitFor(() => expect(useClawStore.getState().hub).not.toBeNull())
+    expect(electronApi.getClawStatus).toHaveBeenCalledTimes(1)
+    expect(electronApi.getClawChannels).toHaveBeenCalledTimes(1)
+
+    const changedHub: ClawHubStatus = {
+      channels: HUB.channels.map((c) => (c.id === 'wechat' ? { ...c, enabled: false, state: 'stopped' as const } : c)),
+    }
+    electronApi.getClawStatus.mockImplementationOnce(async () => changedHub)
+    electronApi.getClawChannels.mockImplementationOnce(
+      async () => [{ id: 'wechat', enabled: false, values: {}, policy: {}, updatedAt: 1 }] as never,
+    )
+
+    push({ event: 'configChanged' })
+
+    await vi.waitFor(() => expect(useClawStore.getState().hub?.channels[0].enabled).toBe(false))
+    expect(useClawStore.getState().configs).toHaveLength(1)
+    expect(useClawStore.getState().configs[0].enabled).toBe(false)
+    expect(electronApi.getClawStatus).toHaveBeenCalledTimes(2)
+    expect(electronApi.getClawChannels).toHaveBeenCalledTimes(2)
+  })
+
   it('needVerifyCode / verifyBlocked / loginFailed 通知（按渠道隔离）', async () => {
     useClawStore.getState().init()
 

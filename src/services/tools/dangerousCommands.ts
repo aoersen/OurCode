@@ -2,11 +2,13 @@
  * Static dangerous-command analysis for run_command.
  *
  * The approval pipeline can be exempted wholesale (plan-mode auto-approve,
- * full_access edit mode, batch approval, per-project allowlist) — when every
+ * guarded/yolo edit modes, batch approval, per-project allowlist) — when every
  * other gate is off, this check is the last line of defense. It is deliberately
  * conservative: a "dangerous" verdict never blocks the command, it only forces
  * the approval dialog (even under exemptions) and annotates the preview, so a
- * false positive costs one extra click, never a broken workflow.
+ * false positive costs one extra click, never a broken workflow. Only the
+ * 「完全」yolo tier (and no-limits dangerGuard) silence it — 「自主」guarded
+ * keeps this brake.
  *
  * Pure and side-effect free: the verdict depends only on the command string.
  */

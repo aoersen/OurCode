@@ -1,7 +1,7 @@
 /**
  * 阶段级 checkpoint（git tag）与回滚 —— 目标模式 SPEC 第十章落地。
  *
- * 每次子 Agent 完成（officeBridge 收到 done）自动打 tag；任务行提供「回滚到
+ * 每次子 Agent 完成（chatStore 事件流收到 done）自动打 tag；任务行提供「回滚到
  * 此」入口。回滚 = 从该 tag 新建工作分支并切过去（非破坏：原分支与后续改动
  * 全部保留，符合 SPEC「后续改动保留在工作区/分支，不删除」语义）。
  *

@@ -148,8 +148,8 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
     useChatStore.getState().subagentProgress[toolCallId || '']?.steps || []
 
   const session = useChatStore.getState().sessions.find((s) => s.id === opts.sessionId)
-  // Company subagents inherit the default-allow + checkpoint model. They are
-  // not exempt from the external/outside-workspace boundary.
+  // Company subagents inherit the default-allow + checkpoint model; only the
+  // narrow deletion guard (catastrophic / non-restorable targets) can refuse.
   const companyParent = isCompanySession(session)
   const companyTaskId = session?.targetMode
     ? session.id
@@ -477,11 +477,11 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           continue
         }
 
-        // Company subagents use the same default-allow boundary as their parent:
-        // outside-workspace and remote/irreversible calls are denied without a
-        // dialog. Everything else is allowed and checkpointed.
+        // Company subagents inherit the parent's default-allow policy; only the
+        // narrow deletion guard can refuse (catastrophic targets / non-restorable
+        // outside directories).
         if (companyParent) {
-          const verdict = evaluateCompanyToolCall({
+          const verdict = await evaluateCompanyToolCall({
             name: tc.name,
             arguments: tc.arguments,
             projectPath: opts.projectPath,
@@ -492,13 +492,13 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
           }
         }
 
-        // Whole-tree snapshot for commands / mkdir / MCP / directory deletes;
-        // plain write tools keep the fast per-file checkpoint.
+        // Whole-tree snapshot for commands / MCP / directory deletes; plain
+        // write tools keep the fast per-file checkpoint. mkdir is trivially
+        // reversible and is not snapshot-gated.
         let wsCp: Awaited<ReturnType<typeof captureWorkspaceCheckpointForTool>> = null
         if (
           companyParent &&
-          (tc.name === 'run_command' || tc.name === 'create_directory' ||
-            tc.name === 'delete_file' || tc.name.startsWith('mcp__'))
+          (tc.name === 'run_command' || tc.name === 'delete_file' || tc.name.startsWith('mcp__'))
         ) {
           try {
             wsCp = await captureWorkspaceCheckpointForTool({
@@ -508,8 +508,9 @@ export async function runSubAgent(opts: SubAgentOptions): Promise<string> {
               toolCall: tc,
             })
           } catch (error) {
-            messages.push({ role: 'tool', content: `Error: ${(error as Error).message}`, toolCallId: tc.id })
-            continue
+            // Snapshot engine unavailable → keep working; deletion is guarded
+            // separately and file writes still take their per-file pre-image.
+            console.warn('[subagent checkpoint] 工作区快照失败，继续执行：', (error as Error).message)
           }
         }
 

@@ -1,17 +1,32 @@
 /**
  * 权限模式行为矩阵（纯函数，无 UI / 无 store 依赖，可单测）。
  *
- * 四种编辑模式（projectEditMode）下，工具按「操作类别」得到三种处置：
+ * 五种编辑模式（projectEditMode，对齐 ZCode 五档）下，工具按「操作类别」
+ * 得到三种处置：
  *   auto    — 免审批直接执行
  *   confirm — 弹审批卡片，用户逐条决定
  *   block   — 拒绝执行（计划模式只读期 / 计划外写入），走对应的拦截路径
+ *
+ * 手动 / 自动 / 计划 / 自主 / 完全：「自主」(guarded) 免审批但保留危险命令
+ * 人工确认一次（= 旧「完全访问」的语义）；「完全」(yolo) 仿 ZCode Yolo，
+ * 连危险命令也自动放行。历史持久化值 'full_access' 语义等同 guarded，
+ * 加载时迁移为 guarded（见 chatStore.getLastProjectEditMode 与 sqlite-store）。
  *
  * 优先级（在 approvalHook 中落实）：危险命令 > 黑名单 > 会话白名单 >
  * 项目白名单 > 本矩阵。
  */
 import type { ToolCall } from '@/services/tools/types'
 
-export type EditMode = 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access'
+export type EditMode = 'confirm_before_change' | 'auto_edit' | 'plan' | 'guarded' | 'yolo'
+
+/** 合法档位（持久化校验用）。 */
+export const EDIT_MODES: readonly EditMode[] = ['confirm_before_change', 'auto_edit', 'plan', 'guarded', 'yolo']
+
+/** 历史值迁移：旧 'full_access'（免审批+危险命令确认）→ 'guarded'。 */
+export function migrateEditMode(raw: string | null | undefined): EditMode | null {
+  if (raw === 'full_access') return 'guarded'
+  return EDIT_MODES.includes(raw as EditMode) ? (raw as EditMode) : null
+}
 
 export type ToolKind =
   | 'read'          // 读文件/搜索/列出/只读 git/网页浏览读/技能
@@ -25,7 +40,7 @@ export type ToolKind =
   | 'interactive'   // 提问/计划/todo/记忆/会话间消息 —— 永远免审
 
 const KIND_SETS: Record<Exclude<ToolKind, 'read' | 'interactive' | 'mcp'>, readonly string[]> = {
-  file_write: ['write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file'],
+  file_write: ['write_file', 'edit_file', 'multi_edit_file', 'create_directory', 'delete_file', 'restore_changes'],
   command: ['run_command'],
   git_write: ['git_commit', 'git_push', 'git_split_commit'],
   browser_write: ['browser_act', 'create_pull_request'],
@@ -76,7 +91,9 @@ export function resolveApproval(
   if (kind === 'read' || kind === 'interactive') return 'auto'
 
   switch (mode) {
-    case 'full_access':
+    // 自主/完全：全部免审。危险命令的差异在 approvalHook（yolo 免弹、guarded 仍弹）。
+    case 'guarded':
+    case 'yolo':
       return 'auto'
     case 'auto_edit':
       return kind === 'file_write' ? 'auto' : 'confirm'
@@ -99,8 +116,9 @@ export function resolveApproval(
   }
 }
 
-/** Shift+Tab 循环顺序（与 ZCode 一致）；目标模式开启时只轮换前两者。 */
-export const MODE_CYCLE: EditMode[] = ['confirm_before_change', 'auto_edit', 'plan', 'full_access']
+/** Shift+Tab 循环顺序（手动→自动→计划→自主→完全，对齐 ZCode 五档）；
+ *  目标模式开启时只轮换 手动/自主 两档。 */
+export const MODE_CYCLE: EditMode[] = ['confirm_before_change', 'auto_edit', 'plan', 'guarded', 'yolo']
 
 /** 提取一次写工具调用的目标路径（可多个，multi_edit_file 一组 edits）。 */
 export function targetPathsOf(tc: Pick<ToolCall, 'name' | 'arguments'>): string[] {

@@ -64,14 +64,22 @@ describe.skipIf(!sqliteUsable)('SQLiteStore session persistence', () => {
 
   it('persists projectEditMode (完全访问) and lastUserMessageAt across save/load', () => {
     const session = makeSession({
-      projectEditMode: 'full_access',
+      projectEditMode: 'yolo',
       lastUserMessageAt: 5_000,
     })
     store.saveSession(session)
 
     const [loaded] = store.getSessions()
-    expect(loaded.projectEditMode).toBe('full_access')
+    expect(loaded.projectEditMode).toBe('yolo')
     expect(loaded.lastUserMessageAt).toBe(5_000)
+  })
+
+  it('migrates legacy full_access to guarded on load (old semantics = 自主, never yolo)', () => {
+    // The legacy value is no longer part of the union — cast to simulate a raw
+    // row written by an older build.
+    store.saveSession(makeSession({ projectEditMode: 'full_access' as unknown as ChatSession['projectEditMode'] }))
+    const [loaded] = store.getSessions()
+    expect(loaded.projectEditMode).toBe('guarded')
   })
 
   it('isolates office-mode sessions from conversation-mode sessions (mode column)', () => {
@@ -96,7 +104,7 @@ describe.skipIf(!sqliteUsable)('SQLiteStore session persistence', () => {
   })
 
   it('round-trips every project edit mode value', () => {
-    for (const mode of ['confirm_before_change', 'auto_edit', 'plan', 'full_access'] as const) {
+    for (const mode of ['confirm_before_change', 'auto_edit', 'plan', 'guarded', 'yolo'] as const) {
       store.saveSession(makeSession({ id: `sess-${mode}`, projectEditMode: mode }))
       const loaded = store.getSessions().find((s) => s.id === `sess-${mode}`)
       expect(loaded?.projectEditMode).toBe(mode)
@@ -107,10 +115,10 @@ describe.skipIf(!sqliteUsable)('SQLiteStore session persistence', () => {
     const session = makeSession({ projectEditMode: 'confirm_before_change', lastUserMessageAt: 1_000 })
     store.saveSession(session)
     // Second save — must hit the UPDATE branch, not INSERT.
-    store.saveSession({ ...session, projectEditMode: 'full_access', lastUserMessageAt: 9_000 })
+    store.saveSession({ ...session, projectEditMode: 'yolo', lastUserMessageAt: 9_000 })
 
     const [loaded] = store.getSessions()
-    expect(loaded.projectEditMode).toBe('full_access')
+    expect(loaded.projectEditMode).toBe('yolo')
     expect(loaded.lastUserMessageAt).toBe(9_000)
   })
 

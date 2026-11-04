@@ -35,7 +35,12 @@ export default function CheckpointCenterCard({ active = true }: { active?: boole
   }, [active, sessionId])
 
   const workspaceRows = useMemo(
-    () => [...workspaceCheckpoints].filter((c) => c.kind !== 'restore-safety').sort((a, b) => b.createdAt - a.createdAt).slice(0, 8),
+    () => [...workspaceCheckpoints]
+      // baseline / task-start are project anchors, not "recent steps" — the
+      // “恢复最近一步” button must never pick them.
+      .filter((c) => c.kind !== 'restore-safety' && c.kind !== 'baseline' && c.kind !== 'task-start')
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 8),
     [workspaceCheckpoints],
   )
   const fileRows = useMemo(
@@ -64,6 +69,16 @@ export default function CheckpointCenterCard({ active = true }: { active?: boole
     scope: 'last',
     sessionId: sessionId || undefined,
   }))
+
+  // 项目基线不再挂在某个会话名下（删对话不丢基线），所以这里用 scope=baseline
+  // 直接恢复；按钮只对总监会话显示，员工由 store 侧拒绝。
+  const restoreBaseline = () => {
+    if (!window.confirm(t('office.restoreBaselineConfirm'))) return
+    void run(() => useChatStore.getState().restoreChanges({
+      scope: 'baseline',
+      sessionId: sessionId || undefined,
+    }))
+  }
 
   const restoreTask = () => {
     if (!session?.targetMode || session.workerRole) {
@@ -107,6 +122,22 @@ export default function CheckpointCenterCard({ active = true }: { active?: boole
         <span className="text-[13px] font-bold" style={{ color: '#0f172a' }}>
           {t('office.restoreCard')}
         </span>
+        {session?.targetMode && !session.workerRole && (
+          <button
+            onClick={restoreBaseline}
+            disabled={disabled}
+            className="rounded-md px-2 py-0.5 mr-1.5 transition-colors"
+            style={{
+              fontSize: 11,
+              border: '1px solid rgba(15,23,42,0.12)',
+              color: disabled ? MONO.t3 : '#0058BC',
+              background: 'transparent',
+              cursor: disabled ? 'default' : 'pointer',
+            }}
+          >
+            {t('office.restoreBaseline')}
+          </button>
+        )}
         <button
           onClick={restoreLast}
           disabled={disabled || !hasAny}

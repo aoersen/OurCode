@@ -6,7 +6,7 @@
  * 开关，外加一个总开关，全部默认关闭：
  *
  *   prompt       系统提示词覆盖（破甲提示词，预设逐字取自 dsh-purge）
- *   permissions 免审批：等效权限模式 full_access（不再弹审批卡）
+ *   permissions 免审批：等效权限模式 yolo「完全」（不再弹审批卡，含危险命令）
  *   dangerGuard 危险命令豁免（rm -rf / curl|sh / git push 等不再强制人工确认）
  *
  * 边界：一人公司（office / 目标模式 / 角色员工）会话带硬边界，no-limits 对它们
@@ -43,7 +43,7 @@ export interface NoLimitsConfig {
   enabled: boolean
   /** 层 1：注入破甲提示词。 */
   prompt: boolean
-  /** 层 2：免审批（等效 full_access）。 */
+  /** 层 2：免审批（等效 yolo「完全」档）。 */
   permissions: boolean
   /** 层 3：危险命令豁免（只有 permissions 生效时才起作用）。 */
   dangerGuard: boolean
@@ -84,8 +84,9 @@ export const NO_LIMITS_MAX_PROMPT_CHARS = 200_000
 /** 覆盖层标记：便于在请求日志 / 抓包里一眼认出这段来自 no-limits。 */
 export const NO_LIMITS_MARKER = 'ourcode:no-limits'
 
-/** 免审批时锁定的编辑模式（与 modePolicy 的 EditMode 对齐，避免本文件依赖它）。 */
-export const NO_LIMITS_EDIT_MODE = 'full_access'
+/** 免审批时锁定的编辑模式（= EditMode 的 'yolo'「完全」档；与本文件不依赖
+ *  modePolicy 的约定一致，只保留字符串字面量）。 */
+export const NO_LIMITS_EDIT_MODE = 'yolo'
 
 /** 硬边界会话被排除时给 UI 的说明。 */
 export const NO_LIMITS_COMPANY_EXCLUDED_NOTE =
@@ -184,7 +185,7 @@ export function composeNoLimitsPrompt(
 }
 
 /**
- * 免审批时的生效编辑模式：permissions 层生效 → full_access，否则原样返回。
+ * 免审批时的生效编辑模式：permissions 层生效 → yolo「完全」，否则原样返回。
  * 只影响本次运行的审批判定，**不写回会话状态**（关掉开关立刻回到用户原来的模式）。
  */
 export function effectiveEditMode<T extends string>(

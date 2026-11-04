@@ -222,17 +222,40 @@ export function createToolRegistry(): Tool[] {
     },
     {
       name: 'delete_file',
-      description: 'Delete a file or directory. Use with caution!',
+      description:
+        'Delete a file or directory. Use with caution! ' +
+        '公司模式：删除前会做一次预检（是否项目内、是否可回退、是否位于用户数据/系统目录）。' +
+        '请用 reason 说明"为什么必须删除、删掉后由什么替代"——笼统的理由会被标记为 questionable。' +
+        '盘根、系统目录、用户主目录根、工作区根、.git 以及工作区外不可重建的目录会被拒绝。',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Absolute path to delete' },
+          reason: {
+            type: 'string',
+            description:
+              'Why this deletion is necessary (what it unblocks, or what replaces it). ' +
+              'Empty or vague reasons mark the node questionable in the UI.',
+          },
         },
         required: ['path'],
       },
-      execute: async (args) => {
+      execute: async (args, context) => {
         const { deleteFileOrDir } = await import('@/services/tools/helpers')
-        return deleteFileOrDir(args.path)
+        const { preflightDeletion } = await import('@/services/company/deletionPreflight')
+        const target = String(args.path || '')
+        const report = await preflightDeletion({
+          path: target,
+          projectPath: context?.projectPath,
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
+        })
+        if (report.blockReason) {
+          return `已拒绝：${report.blockReason}\n${report.summary}`
+        }
+        const result = await deleteFileOrDir(target)
+        return `${report.summary}\n${result}${
+          report.necessity === 'questionable' ? '\n提示：删除理由较笼统，已标记为 questionable（可在时间线里查看并回退）。' : ''
+        }`
       },
       requiresApproval: true,
     },
@@ -780,13 +803,14 @@ export function createToolRegistry(): Tool[] {
         'A safety checkpoint is created before restoring, so the restore itself can be undone. ' +
         'scope=last restores the most recent change in this session; file/path restores a specific path; ' +
         'checkpoint restores a specific checkpoint id; task restores an entire one-person-company task ' +
-        '(director/user only). Set dryRun=true to preview without writing.',
+        '(director/user only); baseline rolls the whole project back to its initial-state snapshot. ' +
+        'Set dryRun=true to preview without writing.',
       parameters: {
         type: 'object',
         properties: {
           scope: {
             type: 'string',
-            enum: ['last', 'file', 'path', 'checkpoint', 'task'],
+            enum: ['last', 'file', 'path', 'checkpoint', 'task', 'baseline'],
             description: 'What to restore. Default: last (most recent change in this session).',
           },
           path: { type: 'string', description: 'File or directory path for scope=file/path.' },
@@ -798,8 +822,8 @@ export function createToolRegistry(): Tool[] {
       },
       execute: async (args, context) => {
         const { useChatStore } = await import('@/stores/chatStore')
-        const scope = ['last', 'file', 'path', 'checkpoint', 'task'].includes(String(args.scope))
-          ? (String(args.scope) as 'last' | 'file' | 'path' | 'checkpoint' | 'task')
+        const scope = ['last', 'file', 'path', 'checkpoint', 'task', 'baseline'].includes(String(args.scope))
+          ? (String(args.scope) as 'last' | 'file' | 'path' | 'checkpoint' | 'task' | 'baseline')
           : 'last'
         return useChatStore.getState().restoreChanges({
           scope,

@@ -63,7 +63,9 @@ const READ_FILE_MAX_BYTES = 50 * 1024
  *  grants anything itself. */
 function sessionEditMode(): string {
   const mode = getActiveToolContext()?.projectEditMode
-  return mode === 'auto_edit' || mode === 'plan' || mode === 'full_access' ? mode : 'confirm_before_change'
+  return mode === 'auto_edit' || mode === 'plan' || mode === 'guarded' || mode === 'yolo'
+    ? mode
+    : 'confirm_before_change'
 }
 
 /** Read a file with line numbers */

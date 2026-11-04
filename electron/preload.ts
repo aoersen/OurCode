@@ -326,8 +326,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkpointWorkspaceRestore: (id: string, opts?: { paths?: string[]; force?: boolean }) => ipcRenderer.invoke('checkpoint:workspaceRestore', id, opts),
   checkpointWorkspaceRestoreBefore: (sessionId: string, toolCallId: string) => ipcRenderer.invoke('checkpoint:workspaceRestoreBefore', sessionId, toolCallId),
   checkpointWorkspaceRestoreTask: (taskId: string) => ipcRenderer.invoke('checkpoint:workspaceRestoreTask', taskId),
+  checkpointWorkspaceTaskStart: (projectPath: string, sessionId: string, taskId: string) =>
+    ipcRenderer.invoke('checkpoint:workspaceTaskStart', projectPath, sessionId, taskId),
+  // Baseline ("回到初始状态"): one per project, never pruned.
+  checkpointWorkspaceBaseline: (projectPath: string, sessionId?: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke('checkpoint:workspaceBaseline', projectPath, sessionId, opts),
+  checkpointWorkspaceRestoreBaseline: (projectPath: string, opts?: { paths?: string[] }) =>
+    ipcRenderer.invoke('checkpoint:workspaceRestoreBaseline', projectPath, opts),
   checkpointWorkspaceDelete: (sessionId: string) => ipcRenderer.invoke('checkpoint:workspaceDelete', sessionId),
   checkpointWorkspaceDiscard: (id: string) => ipcRenderer.invoke('checkpoint:workspaceDiscard', id),
+
+  // 越界访问审计（C 档）：工作区外的写入不在回退范围，至少要留账可查。
+  fsOutsideAccess: (opts?: { clear?: boolean }) => ipcRenderer.invoke('fs:outsideAccess', opts),
+
+  // 远端动作审计（git push / publish / deploy）：写远端，本地回退不到。
+  shellRemoteActions: (opts?: { clear?: boolean }) => ipcRenderer.invoke('shell:remoteActions', opts),
 
   // MCP
   mcpListTools: () => ipcRenderer.invoke('mcp:listTools'),

@@ -1,7 +1,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { ChatSession, ChatMessage, MessageAttachment, ChatBranch, ModelParams, LLMToolCall, DEFAULT_MODEL_PARAMS, TodoItem, Checkpoint, WorkspaceCheckpoint, UserQuestion, AgentRun, AgentTraceEntry, AgentToolKind, UsageEvent, SubAgentProgress, AgentRunPhase, resolveThinkingLevel } from '@/types'
 import { TOOL_ALLOWLIST_PREFIX, TOOL_DENYLIST_PREFIX, QUESTION_AUTO_CONTINUE_MS, DEFAULT_SESSION_TITLE, lookupModelMetadata } from '@shared/constants'
-import { kindOf, resolveApproval, targetPathsOf, isPathInScope, MODE_CYCLE, type EditMode } from '@/services/permissions/modePolicy'
+import { kindOf, resolveApproval, targetPathsOf, isPathInScope, MODE_CYCLE, migrateEditMode, type EditMode } from '@/services/permissions/modePolicy'
 import { isCompanySession, evaluateCompanyToolCall } from '@/services/permissions/companyGuard'
 import { captureWorkspaceCheckpointForTool, finalizeWorkspaceCheckpoint } from '@/services/checkpoint/workspaceCheckpoint'
 import { IS_OFFICE, WINDOW_MODE, modeKey } from '@/utils/windowMode'
@@ -172,11 +172,11 @@ const LAST_SESSION_KEY = modeKey('lastActiveSessionId')
  *  pattern as the last-model persistence in configStore. */
 const LAST_PROJECT_EDIT_MODE_KEY = 'lastProjectEditMode'
 
-/** Last project edit mode chosen by the user (手动确认/完全访问/自动编辑/计划). */
-function getLastProjectEditMode(): 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access' | null {
+/** Last project edit mode chosen by the user (手动/自动/计划/自主/完全).
+ *  旧值 'full_access'（旧「完全访问」语义）迁移为 'guarded'（自主）。 */
+function getLastProjectEditMode(): EditMode | null {
   try {
-    const v = localStorage.getItem(LAST_PROJECT_EDIT_MODE_KEY)
-    return v === 'confirm_before_change' || v === 'auto_edit' || v === 'plan' || v === 'full_access' ? v : null
+    return migrateEditMode(localStorage.getItem(LAST_PROJECT_EDIT_MODE_KEY))
   } catch {
     return null
   }
@@ -855,7 +855,7 @@ export function buildRepeatReminder(toolName: string, count: number): string {
 
 /** Agent 会话默认编辑模式——与 Claude Code 默认一致：直接动手，但改文件前
  *  先征求用户确认。计划模式（plan）改为用户主动选择，不再作为默认。 */
-const DEFAULT_PROJECT_EDIT_MODE: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access' = 'confirm_before_change'
+const DEFAULT_PROJECT_EDIT_MODE: EditMode = 'confirm_before_change'
 
 // Undo stack for message deletion
 interface UndoEntry {
@@ -889,7 +889,9 @@ function deriveLastUserMessageAt(s: ChatSession): number {
 }
 
 export interface RestoreChangesInput {
-  scope: 'last' | 'file' | 'path' | 'checkpoint' | 'task'
+  /** `baseline` rolls the whole project back to its initial-state snapshot
+   *  (the anchor taken when the company first touched the project). */
+  scope: 'last' | 'file' | 'path' | 'checkpoint' | 'task' | 'baseline'
   sessionId?: string
   path?: string
   checkpointId?: string
@@ -1073,10 +1075,17 @@ export interface ChatState {
   revertedFiles: string[]
   loadCheckpoints: (sessionId: string) => Promise<void>
   loadWorkspaceCheckpoints: (sessionId: string) => Promise<void>
-  revertCheckpoint: (checkpointId: string) => Promise<{ ok: boolean; restored: number; error?: string } | null>
+  revertCheckpoint: (checkpointId: string) => Promise<{ ok: boolean; restored: number; skipped?: number; error?: string } | null>
   /** Restore changes for the AI tool / UI: last operation, a file/path, a
-   *  checkpoint, or a whole task. Creates a safety checkpoint first. */
+   *  checkpoint, a whole task, or the project baseline (initial state).
+   *  Creates a safety checkpoint first. */
   restoreChanges: (input: RestoreChangesInput) => Promise<string>
+  /** Take the project baseline once (no-op when it already exists). This is
+   *  the "回到初始状态" target; company runs call it lazily before their first
+   *  checkpointed operation. */
+  ensureBaseline: (projectPath: string) => Promise<void>
+  /** Roll the whole project back to its baseline snapshot. */
+  restoreToBaseline: (projectPath: string) => Promise<string>
 
   // Session management
   loadSessions: () => Promise<void>
@@ -1110,7 +1119,7 @@ export interface ChatState {
   rollActiveSessionAwayFrom: (projectPath: string) => void
 
   // Agent mode + plan approval
-  setProjectEditMode: (sessionId: string, mode: 'confirm_before_change' | 'auto_edit' | 'plan' | 'full_access', recordLast?: boolean) => void
+  setProjectEditMode: (sessionId: string, mode: EditMode, recordLast?: boolean) => void
   // Target mode: the agent keeps working autonomously (auto-approve tool calls,
   // auto-continue after rounds are exhausted) until the user stops it.
   setTargetMode: (sessionId: string, enabled: boolean) => void
@@ -2357,7 +2366,9 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
   requestEditModeChange: async (sessionId, mode) => {
     const session = get().sessions.find((s) => s.id === sessionId)
     if (!session) return false
-    if (mode === 'full_access') {
+    // 自主/完全两档都会免审批跑完工作区外的读取，进入前都需要过一次原生
+    // 读授权确认（拒绝则留在原档位）；离开这两档即撤掉会话级读政策。
+    if (mode === 'guarded' || mode === 'yolo') {
       let armed = false
       try {
         armed = await window.electronAPI.armReadPolicy()
@@ -2381,8 +2392,9 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     const session = get().sessions.find((s) => s.id === sessionId)
     if (!session) return
     const targetMode = session.targetMode === true
-    // 目标模式开启时其自身流程取代 auto_edit/plan，只轮换 手动确认/完全访问
-    const cycle: EditMode[] = targetMode ? ['confirm_before_change', 'full_access'] : MODE_CYCLE
+    // 目标模式开启时其自身流程取代 auto_edit/plan，只轮换 手动/自主 两档
+    //（旧「完全访问」的免审批语义归入自主；公司裁决仍兜底不可恢复动作）。
+    const cycle: EditMode[] = targetMode ? ['confirm_before_change', 'guarded'] : MODE_CYCLE
     const current = session.projectEditMode || 'confirm_before_change'
     const index = cycle.indexOf(current)
     const next = cycle[(index + 1) % cycle.length]
@@ -2392,7 +2404,8 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
         confirm_before_change: t('chat.projectEditModeConfirm'),
         auto_edit: t('chat.projectEditModeAuto'),
         plan: t('chat.projectEditModePlan'),
-        full_access: t('chat.projectEditModeFull'),
+        guarded: t('chat.projectEditModeGuarded'),
+        yolo: t('chat.projectEditModeFull'),
       }
       useUIStore.getState().showNotification(t('chat.modeCycleToast', { mode: labels[next] }), 'info')
     }
@@ -2559,6 +2572,41 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     }
   },
 
+  // 项目基线 = "初始状态"。幂等：已存在直接返回，不重拍快照（全量快照在大仓库
+  // 上要几秒，不能每次工具调用都付这个代价）。
+  ensureBaseline: async (projectPath) => {
+    if (!projectPath) return
+    if (typeof window.electronAPI.checkpointWorkspaceBaseline !== 'function') return
+    try {
+      await window.electronAPI.checkpointWorkspaceBaseline(projectPath, get().activeSessionId || undefined)
+    } catch {
+      // 基线拿不到不能阻断工作：单次操作/任务级回退仍然可用。
+    }
+  },
+
+  restoreToBaseline: async (projectPath) => {
+    if (!projectPath) return '无法回到初始状态：缺少项目路径。'
+    if (typeof window.electronAPI.checkpointWorkspaceRestoreBaseline !== 'function') {
+      return '无法回到初始状态：当前版本不支持基线回退。'
+    }
+    try {
+      const r = await window.electronAPI.checkpointWorkspaceRestoreBaseline(projectPath)
+      const activeId = get().activeSessionId
+      if (activeId) {
+        await get().loadWorkspaceCheckpoints(activeId)
+        await get().loadCheckpoints(activeId)
+      }
+      if (!r.ok) return `回到初始状态失败：${r.error || `${r.skipped} 个路径无法恢复`}。`
+      return (
+        `已回到初始状态：恢复 ${r.restored} 个文件、删除 ${r.deleted} 个新建文件` +
+        `${r.safetyCheckpointId ? `（回退前已备份 ${r.safetyCheckpointId}，可用 scope=checkpoint 撤销）` : ''}` +
+        `${r.skipped ? `，跳过 ${r.skipped} 个冲突/失败项` : ''}。`
+      )
+    } catch (error) {
+      return `回到初始状态失败：${error instanceof Error ? error.message : String(error)}。`
+    }
+  },
+
   restoreChanges: async (input) => {
     const state = get()
     const sessionId = input.sessionId || state.activeSessionId
@@ -2569,8 +2617,10 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
       r.ok
         ? `已恢复 ${r.restored} 个文件、删除 ${r.deleted} 个新建文件${r.safetyCheckpointId ? `（安全备份 ${r.safetyCheckpointId}，可用 scope=checkpoint 撤销）` : ''}${r.skipped ? `，跳过 ${r.skipped} 个冲突/失败项` : ''}。`
         : `恢复失败：${r.error || `${r.skipped} 个路径无法恢复`}。`
-    const fmtFile = (r: { ok: boolean; restored: number; error?: string } | null) =>
-      r?.ok ? `已恢复 ${r.restored} 个文件（可再次回退）。` : `恢复失败：${r?.error || '检查点不可用'}。`
+    const fmtFile = (r: { ok: boolean; restored: number; skipped?: number; error?: string } | null) =>
+      r?.ok
+        ? `已恢复 ${r.restored} 个文件${r.skipped ? `，跳过 ${r.skipped} 个无法快照的项` : ''}（可再次回退）。`
+        : `恢复失败：${r?.error || '检查点不可用'}。`
 
     const list = await window.electronAPI
       .checkpointWorkspaceList(sessionId)
@@ -2598,6 +2648,10 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
       if (!input.checkpointId) return '恢复失败：缺少 checkpointId。'
       const ws = sortedWs.find((c) => c.id === input.checkpointId)
       if (ws) {
+        // 员工只能回退自己的单步/文件改动；基线/任务锚点属于项目级动作。
+        if (session?.workerRole && (ws.kind === 'baseline' || ws.kind === 'task-start')) {
+          return '恢复失败：角色员工不能恢复整个项目基线或任务锚点。'
+        }
         if (input.dryRun) {
           const diff = await window.electronAPI.checkpointWorkspaceDiff(ws.id)
           return `将恢复 ${diff.length} 个路径：${diff.map((d) => d.path).slice(0, 10).join('、')}${diff.length > 10 ? '…' : ''}`
@@ -2617,10 +2671,24 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
       return `恢复失败：找不到检查点 ${input.checkpointId}。`
     }
 
+    if (input.scope === 'baseline') {
+      // 员工只能恢复自己的 last/file/path；整个项目基线是总监/用户级别的动作。
+      if (session?.workerRole) return '恢复失败：角色员工不能恢复整个项目基线。'
+      const projectPath = session?.projectPath || getWorkspaceRoot() || ''
+      if (!projectPath) return '无法回到初始状态：当前会话没有绑定项目路径。'
+      if (input.dryRun) {
+        return '将把整个项目回退到基线快照（初始状态）：被改动的文件恢复为原内容，新建的文件删除；生成目录（build/node_modules 等）不逐字节恢复。'
+      }
+      return get().restoreToBaseline(projectPath)
+    }
+
     if (input.scope === 'task') {
       if (session?.workerRole) return '恢复失败：角色员工只能恢复自己的文件/操作，不能恢复整个任务。'
-      const taskId = input.taskId || (session?.targetMode && !session.workerRole ? session.id : '')
-      if (!taskId) return '恢复失败：当前会话不是一人公司任务，无法按任务恢复。'
+      // 任务恢复只能由该任务的总监会话发起，且只能恢复自己的任务；避免普通
+      // 会话（或别的总监）凭一个 session id 回滚不属于它的项目状态。
+      if (!session?.targetMode) return '恢复失败：只有一人公司总监会话可以按任务恢复。'
+      const taskId = input.taskId || session.id
+      if (taskId !== session.id) return '恢复失败：只能恢复当前会话所属的任务。'
       const res = await window.electronAPI.checkpointWorkspaceRestoreTask(taskId)
       if (isActiveSession) {
         await get().loadWorkspaceCheckpoints(sessionId)
@@ -2656,8 +2724,13 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
       return `恢复失败：没有找到路径 ${p} 的检查点。`
     }
 
-    // last: newest workspace checkpoint vs newest per-file checkpoint
-    const latestWs = sortedWs.filter((c) => c.kind !== 'restore-safety').slice(-1)[0]
+    // last: newest workspace checkpoint vs newest per-file checkpoint.
+    // baseline / task-start are whole-project anchors — they must never be
+    // selected as "撤销最近一步", or a single restore would roll the project
+    // (or the whole task) back instead of undoing one edit.
+    const latestWs = sortedWs
+      .filter((c) => c.kind !== 'restore-safety' && c.kind !== 'baseline' && c.kind !== 'task-start')
+      .slice(-1)[0]
     const latestFile = sortedFiles.slice(-1)[0]
     if (latestWs && (!latestFile || latestWs.createdAt >= latestFile.createdAt)) {
       if (input.dryRun) {
@@ -2888,8 +2961,8 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
       updatedAt: Date.now(),
       agentMode: 'agent',
       // 员工自主执行：工具调用自动放行（公司内部信任）。审批对话框只属于
-      // 总监会话（全局单槽），员工会话绝不能往里面塞审批。
-      projectEditMode: 'full_access',
+      // 总监会话（全局单槽），员工会话绝不能往里面塞审批（公司裁决兜底）。
+      projectEditMode: 'guarded',
       todos: [],
       planStatus: 'none',
       projectPath,
@@ -3174,7 +3247,7 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
         }))
       }
       // 'auto_edit' / 'plan' are superseded by target mode's own workflow — the
-      // mode bar only exposes manual-confirm and full-access while it is on.
+      // mode bar only exposes manual-confirm and guarded while it is on.
       if (session.projectEditMode === 'auto_edit' || session.projectEditMode === 'plan') {
         get().setProjectEditMode(sessionId, 'confirm_before_change')
       }
@@ -3248,7 +3321,7 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     await runAgentLoop(sessionId, {
       // Every session runs in agent mode; the read-only planning phase is
       // lifted via planApproved. Tool approval follows the project edit mode
-      // (confirm / auto_edit / full_access) + target mode.
+      // (confirm / auto_edit / guarded / yolo) + target mode.
       agentModeOverride: 'agent',
       extraSystemText: PLAN_APPROVED_PREFIX + planText + scopeText,
       resumeRunId: activeRun?.sessionId === sessionId ? activeRun.runId : undefined,
@@ -4748,6 +4821,9 @@ async function runAgentLoop(
 
   const scopeGate = async (tc: ToolCall): Promise<boolean> => {
     if (!opts?.planApproved) return true
+    // restore_changes 没有文件路径参数，它的目标是已存在的快照；审批矩阵已经
+    // 把它当写操作处理，这里不再用“计划声明文件”去卡它。
+    if (tc.name === 'restore_changes') return true
     if (kindOf(tc.name) !== 'file_write') return true
     const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
     const deliverables = session?.planDeliverables || []
@@ -4779,9 +4855,15 @@ async function runAgentLoop(
     needsApproval,
     getPreview: (tc) => toolExecutor.getPreview(tc),
     isAborted: () => abortController.signal.aborted,
-    // no-limits 层 3（危险命令豁免）：仅在免审批同时开启时生效；默认不提供开关，
-    // 危险命令照旧强制人工确认。
-    relaxDanger: () => noLimitsLayers().dangerGuard,
+    // 危险命令豁免的两个开关：no-limits 层 3（用户显式开启，默认关），
+    // 或「完全」档（yolo，仿 ZCode：免审批含危险命令）。其余档位（含
+    // 「自主」guarded）危险命令照旧强制人工确认一次。
+    relaxDanger: () => {
+      if (noLimitsLayers().dangerGuard) return true
+      // live 读取：反空转提问可能在运行中切换档位。
+      const mode = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.projectEditMode
+      return mode === 'yolo'
+    },
     blockedReason: (name) =>
       isPlanReadOnly() && kindOf(name) !== 'read' && kindOf(name) !== 'interactive'
         ? '计划模式只读，已拒绝该写入'
@@ -4791,8 +4873,9 @@ async function runAgentLoop(
         ? '已自动拒绝（项目黑名单）'
         : null,
     scopeGate,
-    // 公司会话：默认放行工作区内操作，只拒绝工作区外/远端不可逆/无法快照的
-    // 调用。该回调存在时 approvalHook 永远不会走到 onDialog。
+    // 公司会话：默认放行一切，只有窄口径删除守护（灾难目标 / 不可恢复的工作区
+    // 外目录）和 4 个会挂起无人值守运行的工具会被拒。该回调存在时 approvalHook
+    // 永远不会走到 onDialog。
     companyVerdict: company
       ? (tc) => evaluateCompanyToolCall({
           name: tc.name,
@@ -4834,6 +4917,12 @@ async function runAgentLoop(
   // run_command, directory deletes, mkdir and MCP tools. Keyed by tool call id
   // so the post-hook can fill in the changed paths.
   const workspaceCheckpointByCall = new Map<string, WorkspaceCheckpoint | null>()
+  // 公司模式下本项目基线是否已就绪。基线 = "回到初始状态"的回退目标，每个项目
+  // 只拍一次（IPC 侧也幂等），但每次 run 都要重新确认，因为用户可能中途换项目。
+  const baselineReadyFor = new Set<string>()
+  // 任务级锚点（taskId → 已确认）：“恢复整个任务”的目标是任务开始时的整树快照，
+  // 这样 write_file/edit_file 的 per-file 改动也能被一起退回。
+  const taskStartReadyFor = new Set<string>()
   const companyTaskId = targetMode
     ? sessionId
     : session.workerRole
@@ -4859,6 +4948,32 @@ async function runAgentLoop(
     const callId = ctx.toolCallId ?? tc.id
     const runProjectPath = ctx.projectPath || projectPath || getWorkspaceRoot() || ''
 
+    // 公司模式：第一次动手之前先确认基线快照存在。这是"回到初始状态"的锚点，
+    // 也顺带证明了快照引擎在本项目可用（拿不到只是没有基线，不阻断工作）。
+    if (company && runProjectPath && !baselineReadyFor.has(runProjectPath)) {
+      try {
+        if (typeof window.electronAPI.checkpointWorkspaceBaseline === 'function') {
+          await window.electronAPI.checkpointWorkspaceBaseline(runProjectPath, sessionId)
+          baselineReadyFor.add(runProjectPath)
+        }
+      } catch {
+        /* 基线失败不阻断：单次操作/任务级回退仍然可用 */
+      }
+    }
+
+    // 任务锚点：任务第一次动手前拍一张整树快照（按 taskId 幂等）。任务级恢复
+    // 用它，才能把 write_file/edit_file 这类 per-file 改动也一起退掉。
+    if (company && runProjectPath && companyTaskId && !taskStartReadyFor.has(companyTaskId)) {
+      try {
+        if (typeof window.electronAPI.checkpointWorkspaceTaskStart === 'function') {
+          await window.electronAPI.checkpointWorkspaceTaskStart(runProjectPath, sessionId, companyTaskId)
+          taskStartReadyFor.add(companyTaskId)
+        }
+      } catch {
+        /* 任务锚点失败不阻断：单次操作/文件级回退仍然可用 */
+      }
+    }
+
     const wsMeta = {
       sessionId,
       projectPath: runProjectPath,
@@ -4867,15 +4982,16 @@ async function runAgentLoop(
       toolCall: tc,
     }
 
-    // Company mode: commands / mkdir / MCP writes use a whole-tree snapshot.
-    // create_directory targets a path that does not exist yet, so it must be
-    // handled before the per-file branch (which cannot snapshot an empty dir).
-    if (company && (tc.name === 'run_command' || tc.name === 'create_directory' || tc.name.startsWith('mcp__'))) {
+    // Company mode: commands / MCP writes use a whole-tree snapshot. mkdir is
+    // trivially reversible and is deliberately NOT snapshot-gated.
+    if (company && (tc.name === 'run_command' || tc.name.startsWith('mcp__'))) {
       try {
         const cp = await captureWorkspaceCheckpointForTool(wsMeta)
         if (cp) workspaceCheckpointByCall.set(callId, cp)
       } catch (error) {
-        return { deny: true, reason: (error as Error).message }
+        // 快照引擎不可用（没有 git / 项目过大 / IPC 故障）不阻断工作：公司模式
+        // 优先保证能干活；删除由窄口径的删除守护单独兜底。
+        console.warn('[checkpoint] 工作区快照失败，继续执行：', (error as Error).message)
       }
       return { allow: true }
     }
@@ -4891,14 +5007,23 @@ async function runAgentLoop(
           return { allow: true }
         }
       } catch (error) {
-        return { deny: true, reason: (error as Error).message }
+        // 快照失败不阻断删除（目标是工作区内/可重建目录时由删除守护放行）；
+        // 目录树没法用 per-file 快照，直接交给工具执行。
+        console.warn('[checkpoint] 删除前快照失败，继续执行：', (error as Error).message)
+        return { allow: true }
       }
     }
 
     // Snapshot the files a write tool is about to touch (revertable edits).
     // Runs AFTER approval — a rejected call changes nothing, so no snapshot.
     if (CHECKPOINT_TOOLS.has(tc.name)) {
-      await captureCheckpoint(sessionId, tc, assistantMsgIdRef.current)
+      try {
+        await captureCheckpoint(sessionId, tc, assistantMsgIdRef.current)
+      } catch (error) {
+        // 快照写库失败不阻断写入（用户已选择“能放过就不拦”）；读取失败的文件
+        // 会被 captureCheckpoint 标记为 snapshotFailed，回退时不会误删。
+        console.warn('[checkpoint] 文件快照失败，继续执行：', (error as Error).message)
+      }
     } else if (tc.name === 'run_command' && !tc.arguments?.background) {
       const workDir = String(tc.arguments?.cwd || ctx.projectPath || getWorkspaceRoot() || '')
       if (workDir) {
@@ -5524,9 +5649,11 @@ async function runAgentLoop(
         // 语法错误/无法执行，见 isRunCommandInfraFailure），以及工具层抛出的
         // 异常（isError）。命令执行后如实报告的非零退出码（typecheck/测试报红）
         // 不计数——那是验证信号，不是卡死信号，供循环末尾的熔断使用。
+        // 策略拒绝（rejected）同样不计数：它不是「命令没跑成」，把它当成失败
+        // 会让两次正常拒绝直接触发「连续失败」熔断并停掉整条工作流。
         if (tc.name === 'run_command') {
           const text = String(result.result || '')
-          const failed = result.isError || isRunCommandInfraFailure(text)
+          const failed = !result.rejected && (result.isError || isRunCommandInfraFailure(text))
           consecutiveCommandFailures = failed ? consecutiveCommandFailures + 1 : 0
           if (failed) {
             lastFailedCommand = String(tc.arguments?.command || '')

@@ -117,7 +117,7 @@ interface SlotCard {
  *
  * 三栏布局(与设计稿对齐):
  *   栏 1 总任务进度:整体进度条 + 任务分组(进行中/已完成/失败/待办空态)
- *   栏 2 团队状态:8 个工位角色常驻卡(与 3D 办公室工位一致,数量固定不随任务增减),
+ *   栏 2 团队状态:8 个工位角色常驻卡(编制固定,不随任务增减),
  *        按真实状态排列(工作中 → 失败 → 已完成 → 空闲中);点击角色卡 →
  *        右侧工作记录切换为该角色(1 号监管显示经营日志)
  *   栏 3 工作记录 · <角色>:选中角色的时间线(任务开始/工具步骤/结束态 + NOW 实时行)
@@ -143,7 +143,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
   const sessionId = activeSession?.id || ''
   const rawProgress = useChatStore((s) => s.subagentProgress)
   const subagentProgress = useThrottledValue(rawProgress, 800)
-  // 主循环运行相位(驱动 1 号监管工位的状态):与 3D 场景 officeBridge 同源
+  // 主循环运行相位(驱动 1 号监管工位的状态)
   const phaseEntry = useChatStore((s) => (s.activeSessionId ? s.runPhaseBySession[s.activeSessionId] : undefined))
 
   const [status, setStatus] = useState<TargetModeStatus | null>(null)
@@ -613,7 +613,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
               </span>
             </h2>
           </div>
-          {/* 8 工位常驻小方卡(一排 4 个、共 2 行,数量固定与 3D 办公室工位一致),极简结构:
+          {/* 8 工位常驻小方卡(一排 4 个、共 2 行,数量固定与编制一致),极简结构:
               状态点 + 角色名 + 状态词;按状态排列(工作中 → 失败 → 已完成 → 空闲中);
               点击切换右侧工作记录,悬停弹完整工作内容。
               卡片不放 overflow-hidden(会清零固有最小高度、把网格行压扁),

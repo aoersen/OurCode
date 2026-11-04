@@ -252,7 +252,6 @@ export const zhCN = {
 
   // ── 公司看板 ──────────────────────────────────────────────────────────────
   'office.dashboard': '看板',
-  'office.scene': '场景',
   'office.progress': '进度',
   'office.activeTasks': '当前任务',
   'office.deliverables': '交付物',
@@ -354,6 +353,8 @@ export const zhCN = {
   'office.restoreNoPaths': '未记录变更路径',
   'office.restoreTask': '恢复整个任务',
   'office.restoreTaskConfirm': '将把整个任务期间的改动恢复到开始前（恢复前会自动备份当前状态）。继续？',
+  'office.restoreBaseline': '回到初始状态',
+  'office.restoreBaselineConfirm': '将把整个项目回退到基线快照（公司开工前的初始状态）：期间改动的文件恢复原内容、新建的文件删除；恢复前会自动备份当前状态。继续？',
   'office.restoreConfirm': '将恢复「{label}」。恢复前会自动备份当前状态，恢复本身也可撤销。继续？',
   'office.restoreDone': '已恢复（可撤销）',
   'office.budgetPopTitle': '全局 Token 预算',
@@ -397,8 +398,6 @@ export const zhCN = {
   'office.rbWarn': '将新建分支并切到该版本，原分支与后续改动全部保留。',
   'office.rbDone': '已回滚到该版本，当前分支：{branch}',
   'office.rbFail': '回滚失败',
-  'office.scenePending': '待决 {n}',
-  'office.scenePendingTip': '有待你拍板的事项 · 点击前往待决中心',
 
   // ── 状态栏 ─────────────────────────────────────────────────────────────
   'statusBar.switchBranch': '点击切换分支',
@@ -589,8 +588,10 @@ export const zhCN = {
   'chat.projectEditModeAutoHint': '自动编辑文件，命令等仍需确认',
   'chat.projectEditModePlan': '计划模式',
   'chat.projectEditModePlanHint': '先只读调研出计划，批准后仅写最终产物',
+  'chat.projectEditModeGuarded': '自主',
+  'chat.projectEditModeGuardedHint': '全程免审批，仅危险命令需确认一次',
   'chat.projectEditModeFull': '完全访问',
-  'chat.projectEditModeFullHint': '全程免审批（危险命令除外）',
+  'chat.projectEditModeFullHint': '全程免审批，危险命令也自动执行',
   'chat.projectEditModeLabel': '编辑方式',
   'chat.modeMenuSubtitle': '决定 Agent 哪些操作需要你审批',
   'chat.modeSwitchHint': 'Shift+Tab 快速循环切换',
