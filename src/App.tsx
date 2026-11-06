@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import MainLayout from './components/Layout/MainLayout'
+import AppShell from './shell/AppShell'
 import ErrorBoundary from './components/Common/ErrorBoundary'
 import SessionEventNotifier from './components/Common/SessionEventNotifier'
 import PromptDialogHost from './components/Common/PromptDialog'
@@ -135,7 +135,7 @@ export default function App() {
     <ErrorBoundary>
       <SessionEventNotifier />
       <PromptDialogHost />
-      <MainLayout />
+      <AppShell />
       {ready && showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
       {ready && pendingBackups.length > 0 && (
         <RestoreBackupsModal backups={pendingBackups} onClose={() => setPendingBackups([])} />

@@ -65,6 +65,19 @@ interface UIState {
    *  — with all its history — comes back. */
   removedProjects: string[]
 
+  // ── Shell：agent（对话优先） / workbench（现有 IDE 布局） ──────────
+  uiMode: 'agent' | 'workbench'
+  setUiMode: (mode: 'agent' | 'workbench') => void
+  /** agent 壳的会话栏是否收成 48px 图标条 */
+  isRailCollapsed: boolean
+  setRailCollapsed: (collapsed: boolean) => void
+  /** 右栏产物面板（400px，默认关闭） */
+  isArtifactPanelOpen: boolean
+  setArtifactPanelOpen: (open: boolean) => void
+  /** 运行状态气泡按会话记忆展开状态，默认收起 */
+  statusBubbleExpanded: Record<string, boolean>
+  toggleStatusBubble: (sessionId: string) => void
+
   // Chat Panel
   isChatVisible: boolean
   chatWidth: number
@@ -245,6 +258,22 @@ export const useUIStore = create<UIState>((set, get) => ({
   recentProjects: (() => { try { return JSON.parse(localStorage.getItem(modeKey('recentProjects')) || '[]') } catch { return [] } })(),
   recentProjectTimes: (() => { try { return JSON.parse(localStorage.getItem(modeKey('recentProjectTimes')) || '{}') } catch { return {} } })(),
   removedProjects: (() => { try { return JSON.parse(localStorage.getItem(modeKey('removedProjects')) || '[]') } catch { return [] } })(),
+
+  // Shell — agent 壳默认开启；workbench 是原 IDE 布局（可随时切回）
+  uiMode: (() => {
+    try {
+      return localStorage.getItem(modeKey('uiMode')) === 'workbench' ? 'workbench' : 'agent'
+    } catch { return 'agent' }
+  })(),
+  isRailCollapsed: (() => {
+    try { return localStorage.getItem(modeKey('isRailCollapsed')) === 'true' } catch { return false }
+  })(),
+  isArtifactPanelOpen: (() => {
+    try { return localStorage.getItem(modeKey('isArtifactPanelOpen')) === 'true' } catch { return false }
+  })(),
+  statusBubbleExpanded: (() => {
+    try { return JSON.parse(localStorage.getItem(modeKey('statusBubbleExpanded')) || '{}') } catch { return {} }
+  })(),
 
   // Chat Panel — wider default since the AI panel is the primary interface
   isChatVisible: true,
@@ -428,6 +457,26 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
   setChatPosition: (position) => set({ chatPosition: position }),
   setChatSessionListOpen: (open) => set({ isChatSessionListOpen: open }),
+
+  // ── Shell actions ────────────────────────────────────────────────
+  setUiMode: (mode) => {
+    try { localStorage.setItem(modeKey('uiMode'), mode) } catch { /* ignore */ }
+    set({ uiMode: mode })
+  },
+  setRailCollapsed: (collapsed) => {
+    try { localStorage.setItem(modeKey('isRailCollapsed'), String(collapsed)) } catch { /* ignore */ }
+    set({ isRailCollapsed: collapsed })
+  },
+  setArtifactPanelOpen: (open) => {
+    try { localStorage.setItem(modeKey('isArtifactPanelOpen'), String(open)) } catch { /* ignore */ }
+    set({ isArtifactPanelOpen: open })
+  },
+  toggleStatusBubble: (sessionId) =>
+    set((s) => {
+      const next = { ...s.statusBubbleExpanded, [sessionId]: !s.statusBubbleExpanded[sessionId] }
+      try { localStorage.setItem(modeKey('statusBubbleExpanded'), JSON.stringify(next)) } catch { /* ignore */ }
+      return { statusBubbleExpanded: next }
+    }),
   toggleEditorVisible: () => set((s) => {
     // Don't allow hiding the last visible main-area panel (blank screen)
     if (s.isEditorVisible && !s.isChatVisible) return s

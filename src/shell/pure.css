@@ -1,0 +1,148 @@
+/**
+ * OurCode Pure —— agent shell 的视觉层。
+ *
+ * 作用有两个：
+ *  1. 给 `.pure-shell` 作用域重定义 `--surface / --border / --text-primary ...`
+ *     这一批 CSS 变量：现有组件（ChatInput、各种 Dialog）用的都是 `nova-*`
+ *     → `var(--x)`，所以在不再改它们的前提下，整个子树会被直接换成纯白风。
+ *  2. 提供少量 shell 专用 class（卡片、滚动条、气泡阴影）。
+ *
+ * 设计系统：Stitch `OurCode Pure` (assets/12918246474755900073)
+ */
+
+.pure-shell {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --card: #ffffff;
+  --sidebar: #f9f9f9;
+  --editor-bg: #ffffff;
+  --ai-bg: #ffffff;
+  --ai-surface: #fafafa;
+  --border: #ececec;
+  --ai-border: #ececec;
+  --border-strong: #e2e2e2;
+  --hover: #f0f0f0;
+  --input-bg: #ffffff;
+  --bubble-user: #f0f0f0;
+  --text-primary: #0d0d0d;
+  --text-secondary: #5d5d5d;
+  --text-muted: #8f8f8f;
+  --accent: #0d0d0d;
+  --accent-text: #0d0d0d;
+  --accent-ink: #ffffff;
+  --error: #d93f3f;
+  --warning: #b45309;
+  --success: #10a37f;
+
+  --pure-ink: #0d0d0d;
+  --pure-secondary: #5d5d5d;
+  --pure-muted: #8f8f8f;
+  --pure-border: #ececec;
+  --pure-rail: #f9f9f9;
+  --pure-hover: #f0f0f0;
+  --pure-active: #ececec;
+  --pure-code: #f7f7f8;
+  --pure-danger: #d93f3f;
+
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  color: var(--pure-ink);
+  background: #fff;
+}
+
+/* 玻璃拟态在新壳里一律降级为纯白 */
+.pure-shell .glass-chrome,
+.pure-shell .glass-flat {
+  background: #fff !important;
+  backdrop-filter: none !important;
+}
+
+/* 只允许两处阴影：composer、状态气泡 */
+.pure-shell .pure-soft-shadow {
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.pure-shell .pure-card-shadow {
+  box-shadow: 0 10px 34px rgba(15, 23, 42, 0.1), 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.pure-shell .pure-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #dcdcdc transparent;
+}
+.pure-shell .pure-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.pure-shell .pure-scroll::-webkit-scrollbar-thumb {
+  background: #dcdcdc;
+  border-radius: 99px;
+}
+.pure-shell .pure-scroll::-webkit-scrollbar-thumb:hover {
+  background: #c9c9c9;
+}
+.pure-shell .pure-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 消息列里 markdown 的收敛：纯风不画外框、只用浅灰底承载代码 */
+.pure-shell .pure-prose .code-block,
+.pure-shell .pure-prose pre {
+  border-radius: 10px;
+  background: var(--pure-code);
+  border: 1px solid var(--pure-border);
+}
+.pure-shell .pure-prose :not(pre) > code {
+  background: var(--pure-code);
+  border: 1px solid var(--pure-border);
+  border-radius: 6px;
+  padding: 0.05em 0.35em;
+  font-size: 0.92em;
+}
+.pure-shell .pure-prose h1,
+.pure-shell .pure-prose h2,
+.pure-shell .pure-prose h3 {
+  letter-spacing: -0.01em;
+}
+.pure-shell .pure-prose a {
+  color: var(--pure-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ── composer：拖拽提示浮层（只是提示，胶囊本身始终在文档流里） ──────── */
+.pure-shell .pure-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  border-radius: 24px;
+  border: 1.5px dashed var(--pure-ink);
+  background: color-mix(in srgb, var(--pure-ink) 5%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 状态气泡里的进度线 */
+.pure-shell .pure-progress-track {
+  height: 3px;
+  border-radius: 99px;
+  background: #f0f0f0;
+  overflow: hidden;
+}
+.pure-shell .pure-progress-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--pure-ink);
+  transition: width 200ms ease-out;
+}
+.pure-shell .pure-progress-fill--failed {
+  background: var(--pure-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pure-shell * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
