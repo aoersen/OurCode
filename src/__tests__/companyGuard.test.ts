@@ -15,7 +15,8 @@ afterEach(() => {
 })
 
 function stubDirectoryStat(): void {
-  ;(globalThis as any).window = {
+  const g = globalThis as any
+  g.window = {
     electronAPI: {
       stat: async () => ({ size: 0, isFile: false, isDirectory: true, createdAt: 0, modifiedAt: 0 }),
     },

@@ -5,6 +5,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useI18n } from '@/i18n/useI18n'
+import BrandBadge from './BrandBadge'
 
 interface MenuItem {
   label: string
@@ -378,16 +379,8 @@ export default function TitleBar() {
 
   return (
     <div className="h-12 flex items-center drag-region select-none shrink-0 rounded-xl glass-flat px-1">
-      {/* Logo */}
-      <div className="flex items-center pl-3 pr-2 gap-2 no-drag">
-        <div
-          className="w-3.5 h-3.5 rounded-full animate-logo-pulse shrink-0"
-          style={{ background: 'linear-gradient(135deg, #0EA5E9 0%, #6366F1 55%, #A855F7 100%)', boxShadow: '0 0 8px rgba(99,102,241,0.45)' }}
-        />
-        <span className="text-xs font-bold text-nova-text-primary tracking-tight">
-          OurCode&nbsp;<span className="font-extrabold bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent">一人公司</span>
-        </span>
-      </div>
+      {/* Logo —— 模式相关：普通对话窗口 / 一人公司窗口是两套标识 */}
+      <BrandBadge />
 
       {/* Menu bar */}
       <div

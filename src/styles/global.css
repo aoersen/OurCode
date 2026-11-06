@@ -87,6 +87,9 @@
      mode the raw accent (#0058bc on a #151a26 surface = 2.4:1) is unreadable,
      so it is lifted towards white (>= 4.5:1). */
   --accent-text: var(--primary-color, #0058bc);
+  /* 主色填充上的墨色：浅色主题用白，深色主题的 accent 是浅蓝（白字对比度只有
+     2.6:1），必须翻成深色。 */
+  --accent-ink: #ffffff;
   --accent-purple: #7c3aed;
   --primary-color: #0058bc;
   --primary-color-10: rgba(0, 88, 188, 0.1);
@@ -126,6 +129,10 @@
   --bubble-user-hover: #e2e8f0;
   --grad-brand: linear-gradient(135deg, #0ea5e9, #6366f1, #a855f7);
   --grad-avatar: linear-gradient(135deg, #60a5fa, #8b5cf6);
+  /* 品牌方章（一人公司模式的左上角标识）：渐变底上的图标墨色。
+     浅色主题的底是深蓝→紫，墨色取白；深色主题把 --accent / --accent-purple
+     提亮成浅色，墨色必须翻转成深色，否则方章里的楼宇图标糊成一片。 */
+  --brand-seal-ink: #ffffff;
 
   /* Conversation reading measure — the message column stops growing past this
      and centers itself. 80rem (1280px) is a wide ceiling on purpose: an IDE
@@ -172,7 +179,10 @@
   --text-disabled: #565b66;
   --accent: var(--primary-color, #4d94ff);
   --accent-text: color-mix(in srgb, var(--primary-color, #4d94ff) 45%, #ffffff);
+  --accent-ink: #0b1220;
   --accent-purple: #dcaeff;
+  /* 深色主题的方章底是浅蓝→浅紫，墨色翻转为深色（见 :root 的说明）。 */
+  --brand-seal-ink: #0b1220;
   --primary-color: #4d94ff;
   --primary-color-10: rgba(77, 148, 255, 0.12);
   --primary-color-20: rgba(77, 148, 255, 0.2);

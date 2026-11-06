@@ -122,6 +122,8 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
 
   const done = todos.filter((x) => x.status === 'completed').length
   const total = todos.length
+  // 完成百分比 —— 胶囊与展开卡都用它显示「进度到底动没动」
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0
   // 执行状态：会话运行中，或有 in_progress 的 todo —— 胶囊需显示「执行中」
   const executing = isRunning || todos.some((x) => x.status === 'in_progress')
   // 当前正在执行的那一项 todo（胶囊直接显示它的内容）
@@ -238,7 +240,22 @@ export default function AgentStatusMiniPanel({ sessionId }: { sessionId: string 
             <span className="text-[11px] font-bold uppercase tracking-widest text-nova-text-muted shrink-0">
               {t('agent.miniPanelTasks')}
             </span>
-            <span className="ml-auto font-mono text-[11px] text-success">{done}/{total}</span>
+            <span className="ml-auto font-mono text-[11px] text-success">{done}/{total} · {percent}%</span>
+          </div>
+          {/* 进度条 —— 完成一条就推进一格：数字之外再给一条能一眼扫到的量尺 */}
+          <div
+            className="h-1 w-full rounded-full bg-nova-border/60 overflow-hidden mb-1.5"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={total}
+            aria-valuenow={done}
+            aria-valuetext={`${done}/${total}`}
+            aria-label={t('agent.miniPanelTasks')}
+          >
+            <div
+              className="h-full rounded-full bg-nova-accent transition-[width] duration-300 ease-out motion-reduce:transition-none"
+              style={{ width: `${percent}%` }}
+            />
           </div>
           <div className="flex flex-col gap-0.5 max-h-40 overflow-y-auto">
             {todos.map((todo) => (

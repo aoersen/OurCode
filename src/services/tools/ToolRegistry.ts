@@ -773,7 +773,9 @@ export function createToolRegistry(): Tool[] {
         'Each todo: { id (optional), content, status: "pending" | "in_progress" | "completed" | "failed" }. ' +
         'At most ONE todo may be "in_progress" at a time — if multiple are sent, only the first ' +
         'stays in_progress and the rest are demoted to pending. ' +
-        'Use this at the start of a multi-step task and update it as steps progress.',
+        'Use this at the start of a multi-step task and update it as steps progress. ' +
+        'Update it EVERY time a step finishes (mark the finished one "completed" and the next one ' +
+        '"in_progress") — a single call at the start does not move the progress the user sees.',
       parameters: {
         type: 'object',
         properties: {

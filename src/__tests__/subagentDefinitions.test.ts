@@ -396,7 +396,7 @@ describe('SubagentGuard — worker MCP opt-in (节省每轮工具定义 token)',
   it('denies every MCP tool by default for a role without a tools list', () => {
     const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true, denyMcpByDefault: true })
     expect(g.toolAllowed('mcp__aioli__generate_component')).toBe(false)
-    expect(g.checkCall('mcp__aioli__generate_component', {})).toContain('显式列出')
+    expect(g.checkCall('mcp__aioli__generate_component', {})).toContain('未授权')
     // Built-in tools are unaffected.
     expect(g.toolAllowed('read_file')).toBe(true)
   })
@@ -410,5 +410,107 @@ describe('SubagentGuard — worker MCP opt-in (节省每轮工具定义 token)',
     expect(g.toolAllowed('mcp__aioli__generate_component')).toBe(true)
     expect(g.checkCall('mcp__aioli__generate_component', {})).toBeNull()
     expect(g.toolAllowed('mcp__playwright__navigate')).toBe(false)
+  })
+})
+
+describe('SubagentGuard — MCP 授权 v1.2（看板分配 mcpGrant + 角色 mcp/mcpDeny + 写保护）', () => {
+  const workerDef = {
+    name: 'tm-developer',
+    description: '',
+    systemPrompt: 'x',
+    tools: undefined,
+    source: 'builtin' as const,
+  }
+
+  it('员工 + mcpGrant all → 任意 mcp__ 工具放行（含未来新装服务器的未知名）', () => {
+    const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true, denyMcpByDefault: true, mcpGrant: 'all' })
+    expect(g.toolAllowed('mcp__aioli__generate_component')).toBe(true)
+    expect(g.toolAllowed('mcp__brand_new_server__future_tool')).toBe(true)
+    expect(g.checkCall('mcp__aioli__get_tokens', {})).toBeNull()
+  })
+
+  it('员工 + mcpGrant 清单 → 清单内放行，清单外拒绝且文案指路看板分配', () => {
+    const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true, denyMcpByDefault: true, mcpGrant: ['aioli'] })
+    expect(g.toolAllowed('mcp__aioli__check_contrast')).toBe(true)
+    expect(g.toolAllowed('mcp__playwright__navigate')).toBe(false)
+    const blocked = g.checkCall('mcp__playwright__navigate', {})
+    expect(blocked).toContain('playwright')
+    expect(blocked).toContain('MCP 分配')
+  })
+
+  it('mcpDeny 胜利优先：grant all − stitch（排除只挡点名的）', () => {
+    const g = new SubagentGuard(
+      { ...workerDef, mcpDeny: ['stitch'] },
+      'C:/workspace',
+      { workerMode: true, denyMcpByDefault: true, mcpGrant: 'all' },
+    )
+    expect(g.toolAllowed('mcp__stitch__generate_screen_from_text')).toBe(false)
+    expect(g.toolAllowed('mcp__aioli__get_tokens')).toBe(true)
+    expect(g.toolAllowed('mcp__later_installed__tool')).toBe(true)
+  })
+
+  it('授权缺省（fail-closed 角色）→ mcp 全拒（denyMcpByDefault 不再依赖 tools==null）', () => {
+    const g = new SubagentGuard(
+      { ...workerDef, tools: READONLY_AGENT_TOOLS },
+      'C:/workspace',
+      { workerMode: true, denyMcpByDefault: true },
+    )
+    expect(g.toolAllowed('mcp__aioli__get_tokens')).toBe(false)
+  })
+
+  it('普通子智能体（无 opts）：def.mcp 清单精确放行；def.mcp 缺省且无 tools → 继承全集（回归）', () => {
+    const listed = new SubagentGuard({ ...workerDef, mcp: ['aioli'] }, 'C:/workspace')
+    expect(listed.toolAllowed('mcp__aioli__get_tokens')).toBe(true)
+    expect(listed.toolAllowed('mcp__playwright__navigate')).toBe(false)
+    const inherit = new SubagentGuard(workerDef, 'C:/workspace')
+    expect(inherit.toolAllowed('mcp__anything__x')).toBe(true)
+  })
+
+  it('普通子智能体 tools 白名单不含 mcp → 拒绝（回归）', () => {
+    const g = new SubagentGuard({ ...workerDef, tools: ['read_file'] }, 'C:/workspace')
+    expect(g.toolAllowed('mcp__aioli__get_tokens')).toBe(false)
+  })
+
+  it('授权面写保护：写 .ourcode/company.json 或 .ourcode/agents/** 一律拒绝，读写其他路径不受影响', () => {
+    const g = new SubagentGuard(workerDef, 'C:/workspace', { workerMode: true, denyMcpByDefault: true, mcpGrant: 'all' })
+    expect(g.checkCall('write_file', { path: 'C:/workspace/.ourcode/company.json' })).toContain('权限配置')
+    expect(g.checkCall('edit_file', { path: 'C:/workspace/.ourcode/agents/tm-developer.md' })).toContain('权限配置')
+    expect(g.checkCall('multi_edit_file', { edits: [{ path: 'C:/workspace/.ourcode/company.json' }] })).toContain('权限配置')
+    expect(g.checkCall('delete_file', { path: '.ourcode/agents/tm-developer.md' })).toContain('权限配置')
+    // 普通写路径与读路径不受影响
+    expect(g.checkCall('write_file', { path: 'C:/workspace/src/a.ts' })).toBeNull()
+    expect(g.checkCall('read_file', { path: 'C:/workspace/.ourcode/company.json' })).toBeNull()
+  })
+
+  it('parseAgentFrontmatter 能被 definitionFromFile 解析出 mcp / mcpDeny（loadAgentDefinition 链路）', async () => {
+    const root = 'C:/ws2'
+    const agentFile = `${root}/.ourcode/agents/mcp-granter.md`
+    const mockApi = {
+      listDir: vi.fn(async (dir: string) =>
+        dir === `${root}/.ourcode/agents`
+          ? [{ name: 'mcp-granter.md', isDirectory: false, isHidden: false }]
+          : []),
+      readFile: vi.fn(async (path: string) => {
+        if (path !== agentFile) return { content: '', encoding: 'utf-8' }
+        return {
+          content: [
+            '---',
+            'name: mcp-granter',
+            'description: 授权测试',
+            'mcp: [aioli, stitch]',
+            'mcpDeny: [stitch]',
+            '---',
+            '正文。',
+          ].join('\n'),
+          encoding: 'utf-8',
+        }
+      }),
+      stat: vi.fn(async () => ({ size: 1, isFile: true, isDirectory: false, createdAt: 1, modifiedAt: 1000 })),
+      getPath: vi.fn(async () => 'C:/userData'),
+    }
+    vi.stubGlobal('window', { electronAPI: mockApi })
+    const def = await loadAgentDefinition('mcp-granter', root)
+    expect(def.mcp).toEqual(['aioli', 'stitch'])
+    expect(def.mcpDeny).toEqual(['stitch'])
   })
 })

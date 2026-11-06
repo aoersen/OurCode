@@ -4,6 +4,7 @@ import StatusBar from './StatusBar'
 import ActivityBar from './ActivityBar'
 import Sidebar from '../Sidebar/Sidebar'
 import EditorContainer from '../Editor/EditorContainer'
+import WelcomeHub from '../Welcome/WelcomeHub'
 import TabBar from '../Editor/TabBar'
 import ChatPanel from '../ChatPanel/ChatPanel'
 import MemoryModal from '../ChatPanel/MemoryModal'
@@ -65,6 +66,13 @@ export default function MainLayout() {
   // otherwise 查看变更 from the 文件变更历史 panel silently does nothing.
   const hasActiveDiff = useEditorStore((s) => !!s.activeDiff)
   const editorShown = isEditorVisible && (hasOpenTabs || hasActiveDiff)
+  // Welcome hub: the editor slot is empty, so it shows the launch pad instead of
+  // nothing. Gated on the same visibility flag as the editor — a user who hid
+  // the editor keeps the full-width chat panel.
+  const welcomeShown = isEditorVisible && !hasOpenTabs && !hasActiveDiff
+  // Either one occupies the "main" column; the chat panel's fixed width depends
+  // on that column existing at all.
+  const mainColumnShown = editorShown || welcomeShown
   const splitDirection = useEditorStore((s) => s.splitDirection)
   const splitRatios = useEditorStore((s) => s.splitRatios)
   const isProblemsOpen = useProblemsStore((s) => s.isOpen)
@@ -262,6 +270,19 @@ export default function MainLayout() {
             )}
             <div className="flex-1 h-full min-h-0 flex flex-col gap-2 overflow-hidden">
               <div className={`flex-1 h-full min-h-0 flex ${isNarrow ? 'flex-col' : ''} overflow-hidden`}>
+                {welcomeShown && (
+                  <>
+                    <div className="flex-1 h-full min-w-0 min-h-0 overflow-hidden flex rounded-xl glass-flat">
+                      <WelcomeHub />
+                    </div>
+                    {isChatVisible && !isNarrow && (
+                      <div
+                        className="resizer"
+                        onMouseDown={(e) => handlePanelResize('chat', e)}
+                      />
+                    )}
+                  </>
+                )}
                 {editorShown && (
                   <>
                     {/* glass-flat (no backdrop-filter) instead of glass-chrome: on
@@ -319,8 +340,8 @@ export default function MainLayout() {
                 )}
                 {isChatVisible && !IS_OFFICE && (
                   <div
-                    style={isNarrow || !editorShown ? undefined : { width: Math.min(chatWidth, Math.max(360, windowWidth - 100)) + 'px' }}
-                    className={`h-full rounded-xl overflow-hidden glass-chrome ${editorShown && !isNarrow ? 'shrink-0' : 'flex-1 min-w-0'} ${isNarrow ? 'flex-1 min-w-0' : ''}`}
+                    style={isNarrow || !mainColumnShown ? undefined : { width: Math.min(chatWidth, Math.max(360, windowWidth - 100)) + 'px' }}
+                    className={`h-full rounded-xl overflow-hidden glass-chrome ${mainColumnShown && !isNarrow ? 'shrink-0' : 'flex-1 min-w-0'} ${isNarrow ? 'flex-1 min-w-0' : ''}`}
                   ><ChatPanel /></div>
                 )}
               </div>

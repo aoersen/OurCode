@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
-import { DEV_SLOTS, TEST_SLOTS } from '@/services/office/workers'
+import { DEV_SLOTS, TEST_SLOTS, type WorkerKind } from '@/services/office/workers'
 import { readStatus, type TargetModeStatus } from '@/services/targetMode/targetModeService'
 import { readSupervisorLog, type LogEntry } from '@/services/targetMode/dashboardData'
 import {
@@ -19,7 +19,10 @@ import {
 } from '@/services/office/mapping'
 import { buildDirectorActivities, type DirectorActivity } from '@/services/office/taskRequests'
 import { MONO, CANVAS, GRADIENT, roleAvatar } from './officeTheme'
+import RoleMcpSettingsCard from './RoleMcpSettingsCard'
 import { useThrottledValue } from '@/utils/useThrottledValue'
+import { useElementSize } from '@/hooks/useElementSize'
+import { shouldStackDashboard } from '@/services/office/dashboardLayout'
 import type { SubAgentProgress } from '@shared/types'
 
 const POLL_INTERVAL = 5000
@@ -110,6 +113,8 @@ interface SlotCard {
   selection: BoardSelection
   /** 该工位对应的员工会话（M4）——有值才能解雇（− 按钮）。 */
   workerSessionId?: string
+  /** 该工位是否已雇佣员工。8 张卡常驻，空位与「在岗但空闲」必须能区分开。 */
+  staffed: boolean
 }
 
 /**
@@ -137,6 +142,12 @@ interface SlotCard {
 export default function CompanyDashboard({ active = true }: { active?: boolean }) {
   const t = useI18n()
 
+  // 三栏看板可用宽度：窄面板下三栏并排会把每栏压到几十像素（标题全成「需…」、
+  // 工位卡截成两个字），低于阈值时改为纵向堆叠，各栏保底高度、看板整体滚动。
+  const gridRef = useRef<HTMLDivElement>(null)
+  const { width: gridWidth } = useElementSize(gridRef)
+  const stacked = shouldStackDashboard(gridWidth)
+
   const activeSession = useChatStore((s) =>
     s.activeSessionId ? s.sessions.find((x) => x.id === s.activeSessionId) ?? null : null,
   )
@@ -148,6 +159,8 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
 
   const [status, setStatus] = useState<TargetModeStatus | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
+  // 「MCP 分配」面板（v1.2）：按角色分配可用的 MCP 服务器，写 .ourcode/company.json
+  const [mcpPanelOpen, setMcpPanelOpen] = useState(false)
 
   const refresh = useCallback(async () => {
     const root = activeSession?.projectPath || ''
@@ -208,13 +221,36 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
   }, [sessionsThrottled, runningSessionIds, activeSession?.projectPath])
 
   // ── 动态增员/解雇（M4）：研发与测试各最少保留 1 名 ──────────────────────
-  const devWorkerCount = [...workerStates.keys()].filter((n) => DEV_SLOTS.includes(n)).length
-  const testWorkerCount = [...workerStates.keys()].filter((n) => TEST_SLOTS.includes(n)).length
-  const addWorkerFor = (role: 'dev' | 'test') => {
+  // 工位池是固定的（研发 4/5/6、测试 7/8），所以「已雇佣数 / 容量」要直接上屏：
+  // 旧版按钮点完只在满员时弹一次 toast，而 8 张工位卡本来就在，用户看不出雇佣
+  // 生效没有，于是一句「这俩按钮没用」。
+  const occupiedWorkerSlots = useMemo(
+    () => [...workerStates.keys()].filter((n) => DEV_SLOTS.includes(n) || TEST_SLOTS.includes(n)),
+    [workerStates],
+  )
+  const devWorkerCount = occupiedWorkerSlots.filter((n) => DEV_SLOTS.includes(n)).length
+  const testWorkerCount = occupiedWorkerSlots.filter((n) => TEST_SLOTS.includes(n)).length
+  const devFull = devWorkerCount >= DEV_SLOTS.length
+  const testFull = testWorkerCount >= TEST_SLOTS.length
+  const staffedCount = workerStates.size + 1 // +1 = 总监（固定工位）
+
+  const addWorkerFor = (role: WorkerKind) => {
     const projectPath = activeSession?.projectPath
-    if (!projectPath) return
-    const id = useChatStore.getState().addWorker(projectPath, role)
-    if (!id) useUIStore.getState().showNotification(t('office.addWorkerFull'), 'warning')
+    if (!projectPath) {
+      useUIStore.getState().showNotification(t('office.addWorkerNoProject'), 'warning')
+      return
+    }
+    const res = useChatStore.getState().addWorker(projectPath, role)
+    if (res.ok) {
+      useUIStore.getState().showNotification(t('office.addWorkerHired', { name: res.title }), 'success')
+      return
+    }
+    if (res.reason === 'no-model') {
+      useUIStore.getState().showNotification(t('office.addWorkerNoModel'), 'warning')
+      useUIStore.getState().openSettings()
+      return
+    }
+    useUIStore.getState().showNotification(t('office.addWorkerFull'), 'warning')
   }
   const removeWorkerFor = (sessionId: string) => {
     useChatStore.getState().removeWorker(sessionId)
@@ -231,6 +267,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
           st: phase ? 'working' : 'idle',
           doing: phase ? `监管 Agent 调度中 · ${SUPERVISOR_PHASE_TEXT[phase] ?? '处理中'}` : '待命中 · 等待派发任务',
           selection: '监管',
+          staffed: true,
         }
       }
       // 员工会话固定工位优先——降级通道子任务不与其抢位
@@ -242,6 +279,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
           doing: w.doing,
           selection: SLOT_GROUP[slot.id] ?? '研发',
           workerSessionId: w.sessionId,
+          staffed: true,
         }
       }
       const a = assignments[slot.id - 1]
@@ -251,6 +289,8 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
         st: a.status,
         doing: task ? summarizeTask(task.task, 30) : '待命中 · 等待派发任务',
         selection: SLOT_GROUP[slot.id] ?? '研发',
+        // 固定编制的工位卡一直显示，但「没雇人」和「雇了人在空闲」必须能看出来
+        staffed: false,
       }
     })
     const rank: Record<SlotStatus, number> = { working: 0, error: 1, completed: 2, idle: 3 }
@@ -417,7 +457,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
   }
 
   return (
-    <div className="h-full min-h-0 flex flex-col" style={{ background: CANVAS }}>
+    <div className="h-full min-h-0 flex flex-col overflow-y-auto" style={{ background: CANVAS }}>
       {/* 顶部:当前项目看板标题（项目选择统一在左侧项目/任务栏进行） */}
       <div className="shrink-0 px-4 pt-3 pb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
@@ -427,18 +467,45 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
             {t('office.boardTitle')}
           </h1>
         </div>
+        {/* 右侧:MCP 分配入口（员工按角色可用哪些 MCP 服务器,存 .ourcode/company.json） */}
+        {currentPath && (
+          <button
+            className="shrink-0 rounded-md"
+            style={{
+              fontSize: 12, color: '#0058bc', background: '#F8F9FF',
+              border: `1px solid ${HAIRLINE}`, padding: '4px 12px', cursor: 'pointer',
+            }}
+            onClick={() => setMcpPanelOpen(true)}
+          >
+            {t('office.mcpAssign')}
+          </button>
+        )}
       </div>
 
-      {/* 三栏看板(对齐设计稿 V_K 的 3:5:4 栏宽——团队状态栏最宽,容纳一排 4 个工位小方卡) */}
+      {/* MCP 分配面板（模态覆盖层） */}
+      {mcpPanelOpen && currentPath && (
+        <RoleMcpSettingsCard projectPath={currentPath} onClose={() => setMcpPanelOpen(false)} />
+      )}
+
+      {/* 三栏看板(对齐设计稿 V_K 的 3:5:4 栏宽——团队状态栏最宽,容纳一排 4 个工位小方卡)。
+          宽度不足时(中央列被左右栏挤窄)改为纵向堆叠:三栏并排时每栏只剩几十像素,
+          标题被截成「需…」、工位卡截成两个字,属于「显示不全」的另一半原因。 */}
       <div
-        className="flex-1 min-h-0 px-4 pb-2 grid gap-3"
+        ref={gridRef}
+        className="px-4 pb-2 grid gap-3"
         style={{
           minWidth: 0,
-          gridTemplateColumns: 'minmax(0, 3fr) minmax(0, 5fr) minmax(0, 4fr)',
+          flex: '1 1 auto',
+          // 三栏内容保底高度:看板被拖矮时整块看板滚动,而不是把三栏压成零高度
+          // (压扁后栏内 overflow-y-auto 高度归零,内容既看不见也滚不到)。
+          minHeight: stacked ? 0 : 200,
+          gridTemplateColumns: stacked
+            ? 'minmax(0, 1fr)'
+            : 'minmax(0, 3fr) minmax(0, 5fr) minmax(0, 4fr)',
           // 行高必须是可收缩的确定高度(minmax(0,1fr)),不能是默认 auto:
           // auto 行按内容撑高——任一栏内容超高时整行溢出面板,被底部汇报条/
           // 面板裁掉(竖向展示不全),栏内滚动区也因无确定高度而失效。
-          gridTemplateRows: 'minmax(0, 1fr)',
+          gridTemplateRows: stacked ? 'repeat(3, minmax(200px, 1fr))' : 'minmax(0, 1fr)',
         }}
       >
         {/* ── 栏 1:总任务进度 ── */}
@@ -589,40 +656,72 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
             <h2 className="text-[13px] font-bold flex items-center gap-1.5" style={{ color: '#0d1c2d' }}>
               <span style={{ fontSize: 15, color: MONO.t2 }}>◈</span>
               {t('office.teamStatus')}
-              {/* M4 动态编制：研发/测试增员（各最少 1 名，满员提示） */}
+              {/* M4 动态编制：研发/测试增员。按钮上直接显示「已雇佣/容量」，
+                  满员即置灰并说明，而不是点完只弹一次容易被忽略的 toast。 */}
               <span className="flex items-center gap-1 ml-2">
                 <button
                   onClick={() => addWorkerFor('dev')}
-                  title={t('office.addDev')}
-                  className="rounded px-1.5 transition-colors hover:bg-black/5"
-                  style={{ fontSize: 10.5, fontWeight: 500, color: '#0058bc', background: 'transparent', border: `1px solid ${HAIRLINE}`, cursor: 'pointer' }}
+                  disabled={devFull}
+                  title={devFull
+                    ? t('office.addWorkerFullDev', { used: devWorkerCount, cap: DEV_SLOTS.length })
+                    : t('office.addDev')}
+                  className={devFull ? 'rounded px-1.5' : 'rounded px-1.5 transition-colors hover:bg-black/5'}
+                  style={{
+                    fontSize: 10.5, fontWeight: 500,
+                    color: devFull ? '#94A3B8' : '#0058bc',
+                    background: devFull ? 'rgba(148,163,184,0.10)' : 'transparent',
+                    border: `1px solid ${HAIRLINE}`,
+                    cursor: devFull ? 'not-allowed' : 'pointer',
+                  }}
                 >
                   ＋{t('office.devGroup')}
+                  <span style={{ marginLeft: 3, fontFamily: MONO_FONT, fontSize: 9.5, opacity: 0.75 }}>
+                    {devWorkerCount}/{DEV_SLOTS.length}
+                  </span>
                 </button>
                 <button
                   onClick={() => addWorkerFor('test')}
-                  title={t('office.addTest')}
-                  className="rounded px-1.5 transition-colors hover:bg-black/5"
-                  style={{ fontSize: 10.5, fontWeight: 500, color: '#0058bc', background: 'transparent', border: `1px solid ${HAIRLINE}`, cursor: 'pointer' }}
+                  disabled={testFull}
+                  title={testFull
+                    ? t('office.addWorkerFullTest', { used: testWorkerCount, cap: TEST_SLOTS.length })
+                    : t('office.addTest')}
+                  className={testFull ? 'rounded px-1.5' : 'rounded px-1.5 transition-colors hover:bg-black/5'}
+                  style={{
+                    fontSize: 10.5, fontWeight: 500,
+                    color: testFull ? '#94A3B8' : '#0058bc',
+                    background: testFull ? 'rgba(148,163,184,0.10)' : 'transparent',
+                    border: `1px solid ${HAIRLINE}`,
+                    cursor: testFull ? 'not-allowed' : 'pointer',
+                  }}
                 >
                   ＋{t('office.testGroup')}
+                  <span style={{ marginLeft: 3, fontFamily: MONO_FONT, fontSize: 9.5, opacity: 0.75 }}>
+                    {testWorkerCount}/{TEST_SLOTS.length}
+                  </span>
                 </button>
               </span>
               <span className="shrink-0 ml-auto" style={{ fontFamily: MONO_FONT, fontSize: 9.5, fontWeight: 600, color: MONO.t3 }}>
-                {OFFICE_SLOTS.length} 工位
+                {t('office.staffedCount', { n: staffedCount, total: OFFICE_SLOTS.length })}
               </span>
             </h2>
           </div>
-          {/* 8 工位常驻小方卡(一排 4 个、共 2 行,数量固定与编制一致),极简结构:
-              状态点 + 角色名 + 状态词;按状态排列(工作中 → 失败 → 已完成 → 空闲中);
+          {/* 8 工位常驻小方卡(宽面板一排 4 个、共 2 行;面板变窄自动减少每行数量,
+              不把角色名截成「需…」),极简结构:状态点 + 角色名 + 状态词;
+              按状态排列(工作中 → 失败 → 已完成 → 空闲中);
               点击切换右侧工作记录,悬停弹完整工作内容。
               卡片不放 overflow-hidden(会清零固有最小高度、把网格行压扁),
               配合 auto-rows-max 行高始终按内容;高度不够由容器滚动兜底。 */}
           <div
-            className="flex-1 min-h-0 overflow-y-auto p-3 grid grid-cols-4 auto-rows-max content-start gap-2"
-            style={{ background: 'rgba(15,23,42,0.02)' }}
+            className="flex-1 min-h-0 overflow-y-auto p-2 grid auto-rows-max content-start gap-1"
+            style={{
+              background: 'rgba(15,23,42,0.02)',
+              // auto-fit + 最小 92px:面板约 500px 时一排 4~5 个,被挤窄时降为 3 个一行,
+              // 既不把角色名截成「需…」,也不会让 8 张卡撑成需要滚动才看得全的 4 行。
+              // (行距/卡片内边距同时收窄,3 行 ≈149px,常规看板高度内不用滚动。)
+              gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))',
+            }}
           >
-            {slotCards.map(({ slot, st, selection, workerSessionId }) => {
+            {slotCards.map(({ slot, st, selection, workerSessionId, staffed }) => {
               const meta = GROUP_STATUS[st]
               const selected = selection === selectedGroup
               const working = st === 'working'
@@ -640,15 +739,22 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                     setHoveredGroup(selection)
                   }}
                   onMouseLeave={scheduleHoverClose}
-                  className="relative group flex flex-col gap-1 text-left transition-colors"
+                  className="relative group flex flex-col gap-0.5 text-left transition-colors"
                   style={{
-                    padding: '8px 10px',
+                    padding: '4px 8px',
                     borderRadius: 8,
-                    background: '#fff',
-                    border: selected ? `1.5px solid #0058bc` : `1px solid ${HAIRLINE}`,
+                    // 空位：虚线 + 灰底，一眼看出「这张卡还没雇人」（增员后变实线白底）
+                    background: staffed ? '#fff' : 'rgba(148,163,184,0.07)',
+                    // 空位用虚线、在岗用实线；选中态在空位上也保持虚线（只换主色），
+                    // 否则「选中了研发组」会把所有研发空位画成实线，又看不出空位。
+                    border: staffed
+                      ? selected ? '1.5px solid #0058bc' : `1px solid ${HAIRLINE}`
+                      : selected ? '1.5px dashed #0058bc' : '1px dashed rgba(148,163,184,0.55)',
                     cursor: 'pointer',
                   }}
-                  title={`${t('office.viewWorkLog')}: ${slot.role}`}
+                  title={staffed
+                    ? `${t('office.viewWorkLog')}: ${slot.role}`
+                    : t('office.slotVacantHint')}
                 >
                   {removable && (
                     <span
@@ -672,17 +778,31 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
                     <span
                       className="shrink-0 inline-block rounded-full"
                       style={{
-                        width: 6, height: 6, background: meta.dot,
+                        width: 6, height: 6,
+                        background: staffed ? meta.dot : 'rgba(148,163,184,0.45)',
                         animation: working ? 'pulseSoft 1.6s ease-in-out infinite' : undefined,
                       }}
                     />
-                    <span className="truncate text-[12px] font-bold" style={{ color: selected ? '#0058bc' : '#0d1c2d' }}>
+                    <span
+                      className="truncate text-[12px] font-bold"
+                      style={{
+                        color: selected ? '#0058bc' : staffed ? '#0d1c2d' : '#8b94a3',
+                        lineHeight: 1.25,
+                      }}
+                    >
                       {slot.role}
                     </span>
                   </span>
                   {/* 状态词,左缩进与角色名对齐 */}
-                  <span className="truncate w-full" style={{ fontSize: 10, fontWeight: 600, color: meta.text, paddingLeft: 12 }}>
-                    {t(meta.labelKey)}
+                  <span
+                    className="truncate w-full"
+                    style={{
+                      fontSize: 10, fontWeight: 600,
+                      color: staffed ? meta.text : '#a3acba',
+                      paddingLeft: 12, lineHeight: 1.25,
+                    }}
+                  >
+                    {staffed ? t(meta.labelKey) : t('office.slotVacant')}
                   </span>
                 </button>
               )

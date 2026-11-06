@@ -31,6 +31,7 @@ module.exports = {
           'text-muted': 'var(--text-muted, #64748b)',
           accent: 'var(--accent, #0058bc)',
           'accent-text': 'var(--accent-text, var(--accent, #0058bc))',
+          'accent-ink': 'var(--accent-ink, #ffffff)',
         },
         accent: {
           blue: 'var(--accent, #0058bc)',

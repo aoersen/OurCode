@@ -31,6 +31,24 @@ export const WORKER_ROSTER: WorkerDef[] = [
 export const DEV_SLOTS = [4, 5, 6]
 export const TEST_SLOTS = [7, 8]
 
+/** 增员岗位（研发 / 测试）。 */
+export type WorkerKind = 'dev' | 'test'
+
+/** 岗位 → 工位池（容量即池长度：研发 3、测试 2）。 */
+export function workerPool(kind: WorkerKind): number[] {
+  return kind === 'test' ? TEST_SLOTS : DEV_SLOTS
+}
+
+/**
+ * 在岗位池里取第一个空位；满员返回 null。
+ * 增员的成败判定单独抽成纯函数：调用方（store）据此区分「满员」和「没有模型」
+ * 两种失败，看板按钮才能给出准确反馈，而不是一律弹「满员」。
+ */
+export function pickFreeSlot(kind: WorkerKind, occupied: Iterable<number>): number | null {
+  const used = new Set(occupied)
+  return workerPool(kind).find((n) => !used.has(n)) ?? null
+}
+
 /** 增员时可选的动态角色（研发/测试各自按池取号）。 */
 export function roleForSlot(slot: number): string {
   if (DEV_SLOTS.includes(slot)) return 'tm-developer'
@@ -62,8 +80,11 @@ export const WORKER_RULES = `
 7. 不要反复读取已经读过且没有变化的内容；需要局部细节时用 read_file 的
    startLine/endLine 分页读取，不要整文件重读。改完代码后优先用 git_diff
    确认改动，而不是把整个文件再读一遍。
-8. MCP 工具默认不加载（节省每轮工具定义 token）。确实需要时，让用户把
-   对应工具加进 .ourcode/agents/<你的角色>.md 的 tools 列表。
+8. MCP 工具由公司按角色分配：用户在公司看板 →「MCP 分配」为每个角色挑选可用的
+   MCP 服务器（未分配的角色默认可用全部，存储在 .ourcode/company.json）。你需要
+   某个未授权的 MCP、或上下文出现 mcp_grant_warning（授权清单里的服务器已失效）时，
+   停下并在回报里写明「请在公司看板为角色 <你的角色> 分配/修复 MCP 服务器 <名>」，
+   由用户处理；不要反复调用不存在的工具。
 9. 如果改错文件、测试失败或误删了东西，先调用 restore_changes 恢复自己最近的改动
    （scope=last/file/path），再继续修；不要用整文件重写来“覆盖”错误。
    不要恢复其他员工或其他任务的改动，更不要在未确认的情况下恢复整个任务。

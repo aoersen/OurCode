@@ -5,6 +5,8 @@ import {
   TEST_SLOTS,
   roleForSlot,
   titleForSlot,
+  workerPool,
+  pickFreeSlot,
   buildWorkerSystemPrompt,
   isDevWorker,
   isTestWorker,
@@ -49,5 +51,25 @@ describe('office/workers: 8 工位动态编制（M4）', () => {
     expect(isTestWorker(mk(7))).toBe(true)
     expect(isTestWorker(mk(8))).toBe(true)
     expect(isTestWorker(mk(3))).toBe(false)
+  })
+
+  it('pickFreeSlot 按岗位池取第一个空位，满员返回 null（增员按钮据此置灰）', () => {
+    expect(workerPool('dev')).toEqual(DEV_SLOTS)
+    expect(workerPool('test')).toEqual(TEST_SLOTS)
+
+    // 空项目：研发先给 4、测试先给 7
+    expect(pickFreeSlot('dev', [])).toBe(4)
+    expect(pickFreeSlot('test', [])).toBe(7)
+    // 已有最低编制（4/7）：继续给 5 / 8
+    expect(pickFreeSlot('dev', [4])).toBe(5)
+    expect(pickFreeSlot('test', [7])).toBe(8)
+    // 池子填满：null（UI 上就是「满员」而不是静默无反应）
+    expect(pickFreeSlot('dev', [4, 5, 6])).toBeNull()
+    expect(pickFreeSlot('test', [7, 8])).toBeNull()
+    // 单测/工位互不干扰
+    expect(pickFreeSlot('dev', [7, 8])).toBe(4)
+    expect(pickFreeSlot('test', [4, 5, 6])).toBe(7)
+    // 重复/脏数据不改变结果
+    expect(pickFreeSlot('dev', [4, 4, 4])).toBe(5)
   })
 })

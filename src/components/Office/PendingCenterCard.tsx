@@ -1,22 +1,55 @@
 /**
- * 右栏「待决中心」卡（V12 审查 #3）：统一队列 = 工具审批 + 询问（chatStore
- * 单槽）+ 预算触顶 + 目标修订（本地 5s 轮询）。计数同步到 TopBar 铃铛徽章
- * （uiStore.officePendingCount）；铃铛点击通过 officePendingPulse 触发本卡
- * 滚动闪烁。处理/忽略动作直接走 chatStore 现有 resolve 通道。
+ * 右栏「待决中心」卡（V12 审查 #3）：只放**真的需要用户点一下**的东西 =
+ * 工具审批 + 询问（chatStore 单槽）+ 预算触顶（本地 5s 轮询）。计数同步到
+ * TopBar 铃铛徽章（uiStore.officePendingCount）；铃铛点击通过
+ * officePendingPulse 触发本卡滚动闪烁。处理/忽略动作直接走 chatStore 现有通道。
+ *
+ * 目标修订（finalGoal_v{N}.md）**不在**待决中心：那是目标修订的历史快照
+ * （见 services/office/pendingCenter.ts 的说明），当前目标已生效、无需确认。
+ * 旧实现把它们当待办，且「已看过」只存在组件内存里 → 每次进来看板都重新
+ * 报同一条，变成「每次点进来都叫我处理」。现在改成新快照出现时一次性提示，
+ * 用持久化签名去重。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { getProjectBudgetUsage, initBudgetTracking } from '@/services/targetMode/budget'
+import {
+  collectFreshRevisions,
+  mergeSeenRevisions,
+  revisionSignature,
+  type DirEntryLike,
+} from '@/services/office/pendingCenter'
 
 interface PendingItem {
   key: string
-  kind: 'approval' | 'question' | 'budget' | 'revision'
+  kind: 'approval' | 'question' | 'budget'
   type: 'amber' | 'red'
   title: string
   sub: string
   actions: Array<{ label: string; primary?: boolean; run: () => void }>
+}
+
+/** 已提示过的目标修订签名（持久化，跨会话/重启都记住）。 */
+const SEEN_REVISIONS_KEY = 'office.goalRevisionsSeen'
+
+function loadSeenRevisions(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SEEN_REVISIONS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveSeenRevisions(seen: Iterable<string>): void {
+  try {
+    localStorage.setItem(SEEN_REVISIONS_KEY, JSON.stringify([...seen]))
+  } catch {
+    /* localStorage 不可用只是重复提示一次，不影响功能 */
+  }
 }
 
 const FLASH_STYLE = `
@@ -40,8 +73,10 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
   const pendingPulse = useUIStore((s) => s.officePendingPulse)
 
   const [extras, setExtras] = useState<PendingItem[]>([])
-  const seenRevisions = useRef<Set<string>>(new Set())
-  // 按会话记「已忽略」：预算触顶被忽略后不再重复弹，但一旦退出触顶状态
+  // 已提示过的目标修订签名（持久化）：重启/切走再回来都不会把同一份快照
+  // 重新报成待办。
+  const seenRevisions = useRef<Set<string>>(loadSeenRevisions())
+  // 按项目记「预算触顶已忽略」：忽略后不再重复弹，但一旦退出触顶状态
   // （用户调高了 budget.md 上限），标记即清除——下次再触顶会重新提醒。
   const budgetDismissed = useRef<Set<string>>(new Set())
   const cardRef = useRef<HTMLDivElement>(null)
@@ -107,61 +142,39 @@ export default function PendingCenterCard({ active = true }: { active?: boolean 
           budgetDismissed.current.delete(projectPath)
         }
       }
-      // finalGoal_v{N}.md 新增 → 目标修订待确认（每项目只扫一次：取总监会话）。
-      const directors = [...byProject.values()]
-        .map((members) => members.find((s) => s.targetMode === true && !s.workerRole))
-        .filter((s): s is NonNullable<typeof s> => !!s && !!s.projectPath)
+      // finalGoal_v{N}.md = 目标修订的历史快照（当前目标已生效），不进待决中心。
+      // 只在**新快照**出现时给一条一次性提示；签名持久化，重启后不会重复。
+      const projectRoots = [...byProject.keys()]
       void Promise.all(
-        directors.map((session) => {
-          const base = `${session.projectPath!.replace(/[\\/]+$/, '')}/.ourcode/targemode`
-          return window.electronAPI
-            .listDir(base)
-            .then((entries) => {
-              const revisions = entries
-                .filter((e) => !e.isDirectory && /^finalGoal_v\d+\.md$/.test(e.name))
-                .map((e) => e.name)
-              for (const name of revisions) {
-                const revKey = `${session.projectPath}:${name}`
-                if (seenRevisions.current.has(revKey)) continue
-                seenRevisions.current.add(revKey)
-                const v = name.match(/v(\d+)/)?.[1] ?? ''
-                next.push({
-                  key: `revision:${revKey}`,
-                  kind: 'revision',
-                  type: 'amber',
-                  title: `${t('office.pendRevisionTitle', { v })} · ${session.title || t('chat.untitled')}`,
-                  sub: t('office.pendRevisionSub'),
-                  actions: [
-                    {
-                      label: t('office.pendConfirm'),
-                      primary: true,
-                      run: () => {
-                        useUIStore
-                          .getState()
-                          .showNotification(t('office.pendRevisionDone', { v }), 'success')
-                        setExtras((cur) => cur.filter((x) => x.key !== `revision:${revKey}`))
-                      },
-                    },
-                    {
-                      label: t('office.pendIgnore'),
-                      run: () => setExtras((cur) => cur.filter((x) => x.key !== `revision:${revKey}`)),
-                    },
-                  ],
-                })
-              }
-            })
-            .catch(() => {})
-        }),
-      ).then(() => {
-        if (!alive || next.length === 0) return
-        setExtras((cur) => {
-          const merged = [...cur]
-          for (const item of next) {
-            if (!merged.some((x) => x.key === item.key)) merged.push(item)
+        projectRoots.map(async (root) => {
+          const base = `${root.replace(/[\\/]+$/, '')}/.ourcode/targemode`
+          try {
+            const entries: DirEntryLike[] = await window.electronAPI.listDir(base)
+            const fresh = collectFreshRevisions(root, entries, seenRevisions.current)
+            if (fresh.length === 0) return [] as string[]
+            const merged = mergeSeenRevisions(
+              seenRevisions.current,
+              fresh.map((e) => revisionSignature(root, e)),
+            )
+            seenRevisions.current = new Set(merged)
+            saveSeenRevisions(merged)
+            return fresh.map((e) => e.name)
+          } catch {
+            return [] as string[] // 目录还不存在 = 没有修订
           }
-          return merged
-        })
+        }),
+      ).then((lists) => {
+        if (!alive) return
+        const names = lists.flat()
+        if (names.length === 0) return
+        useUIStore.getState().showNotification(
+          t('office.goalRevisionNotice', { file: names[names.length - 1] }),
+          'info',
+          { duration: 6000 },
+        )
       })
+      // 预算项每次轮询整体重建（不在 extras 里残留已经恢复的触顶提示）
+      setExtras(next)
     }
     poll()
     const timer = window.setInterval(poll, 5000)

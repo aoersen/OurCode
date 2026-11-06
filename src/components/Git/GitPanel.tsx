@@ -1,11 +1,17 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
-import { useUIStore } from '@/stores/uiStore'
+import { useUIStore, type ContextMenuItem } from '@/stores/uiStore'
 import { useConfigStore } from '@/stores/configStore'
 import { sendLLMRequest } from '@/services/llm/LLMClient'
 import { runLifeguardCheck, LifeguardFinding } from '@/services/lifeguard'
 import { fetchGitDiffSides, onGitChanged, runGitCommand as gitRun } from '@/services/git'
-import { parseGitStatusPorcelain, committableFiles, conflictedFiles, type GitStatusEntry } from '@/utils/gitStatus'
+import {
+  parseGitStatusPorcelain,
+  committableFiles,
+  conflictedFiles,
+  type GitFileStatus,
+  type GitStatusEntry,
+} from '@/utils/gitStatus'
 import PullRequestSection from './PullRequestSection'
 import { useI18n } from '@/i18n/useI18n'
 import { askText } from '@/components/Common/PromptDialog'
@@ -17,18 +23,372 @@ interface GitCommit {
   date: string
 }
 
+interface SyncState {
+  hasUpstream: boolean
+  ahead: number
+  behind: number
+}
+
+/** Status letter + tint. Everything is a semantic token so dark mode follows. */
+const STATUS_STYLE: Record<GitFileStatus, { letter: string; chip: string }> = {
+  modified: { letter: 'M', chip: 'border-warning-30 bg-warning-10 text-warning-text' },
+  added: { letter: 'A', chip: 'border-success-20 bg-success-10 text-success-text' },
+  deleted: { letter: 'D', chip: 'border-error-20 bg-error-10 text-error-text' },
+  renamed: { letter: 'R', chip: 'border-accent-30 bg-accent-10 text-accent-text' },
+  untracked: { letter: 'U', chip: 'border-nova-border bg-nova-hover text-nova-text-muted' },
+}
+
+function splitPath(file: string): { name: string; dir: string } {
+  const parts = file.split(/[/\\]/)
+  const name = parts.pop() || file
+  return { name, dir: parts.join('/') }
+}
+
+/* ── Icons ────────────────────────────────────────────────────────────────
+   Small inline strokes (1.8px) so the panel keeps one icon language without
+   pulling in the (very small) Material subset. */
+const stroke = {
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.8,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+  'aria-hidden': true,
+}
+
+function IconBranch({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="6" cy="18" r="2.5" />
+      <circle cx="18" cy="6" r="2.5" />
+      <path d="M6 8.5v7M18 8.5v1a4 4 0 0 1-4 4H9" />
+    </svg>
+  )
+}
+
+function IconRefresh({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+      <path d="M20 5v6h-6" />
+    </svg>
+  )
+}
+
+function IconMore({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <circle cx="5" cy="12" r="1.7" />
+      <circle cx="12" cy="12" r="1.7" />
+      <circle cx="19" cy="12" r="1.7" />
+    </svg>
+  )
+}
+
+function IconArrowUp({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 19V5M5 12l7-7 7 7" />
+    </svg>
+  )
+}
+
+function IconArrowDown({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 5v14M19 12l-7 7-7-7" />
+    </svg>
+  )
+}
+
+function IconHistory({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 8v4l2.5 2.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+    </svg>
+  )
+}
+
+function IconCheck({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  )
+}
+
+function IconPlus({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+function IconMinus({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M5 12h14" />
+    </svg>
+  )
+}
+
+function IconChevron({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  )
+}
+
+function IconSearch({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4.5 4.5" />
+    </svg>
+  )
+}
+
+function IconClose({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  )
+}
+
+function IconSparkle({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 3.5 13.7 9l5.5 1.7-5.5 1.7L12 18l-1.7-5.6L4.8 10.7 10.3 9 12 3.5z" />
+      <path d="M18.5 16.5 19.2 18l1.5.7-1.5.7-.7 1.5-.7-1.5-1.5-.7 1.5-.7.7-1.5z" />
+    </svg>
+  )
+}
+
+function IconShield({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 3 4.5 6v5.5c0 4.6 3.2 7.6 7.5 9 4.3-1.4 7.5-4.4 7.5-9V6L12 3z" />
+      <path d="M12 8v4.5M12 15.5h.01" />
+    </svg>
+  )
+}
+
+function IconFile({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" />
+      <path d="M14 3v5h5" />
+    </svg>
+  )
+}
+
+function IconCommit({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M3 12h5.5M15.5 12H21" />
+    </svg>
+  )
+}
+
+function IconWarning({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...stroke}>
+      <path d="M12 3.5 21 20H3l9-16.5z" />
+      <path d="M12 9v5M12 17h.01" />
+    </svg>
+  )
+}
+
+function IconButton({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void
+  disabled?: boolean
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className="flex h-6 w-6 items-center justify-center rounded-md text-nova-text-muted transition-colors hover:bg-nova-hover hover:text-nova-text-primary disabled:opacity-40"
+    >
+      {children}
+    </button>
+  )
+}
+
+function ToolButton({
+  label,
+  title,
+  onClick,
+  disabled,
+  className = '',
+  children,
+}: {
+  label: string
+  title: string
+  onClick: () => void
+  disabled?: boolean
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`inline-flex items-center gap-1 rounded-lg border border-nova-border bg-nova-surface px-2 py-1 text-[10.5px] font-medium text-nova-text-secondary transition-colors hover:bg-nova-hover hover:text-nova-text-primary disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
+    >
+      {children}
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function ChangeGroup({
+  title,
+  count,
+  action,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  title: string
+  count: number
+  action?: ReactNode
+  collapsed: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  return (
+    <section className="mt-1" aria-label={title}>
+      <div className="flex items-center gap-1 px-2.5 py-1">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 items-center gap-1 rounded text-nova-text-muted transition-colors hover:text-nova-text-primary"
+        >
+          <IconChevron className={`h-3 w-3 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+          <span className="text-[10.5px] font-semibold text-nova-text-secondary">{title}</span>
+          <span className="rounded-full bg-nova-hover px-1.5 text-[10px] font-semibold tabular-nums text-nova-text-muted">
+            {count}
+          </span>
+        </button>
+        <div className="ml-auto flex items-center">{action}</div>
+      </div>
+      {!collapsed && <div className="flex flex-col">{children}</div>}
+    </section>
+  )
+}
+
+function FileRow({
+  item,
+  staged,
+  busy,
+  onToggleStage,
+  onOpenDiff,
+  onOpenFile,
+  stageLabel,
+  unstageLabel,
+  openLabel,
+  diffLabel,
+}: {
+  item: GitStatusEntry
+  staged: boolean
+  busy: boolean
+  onToggleStage: () => void
+  onOpenDiff: () => void
+  onOpenFile: () => void
+  stageLabel: string
+  unstageLabel: string
+  openLabel: string
+  diffLabel: string
+}) {
+  const { name, dir } = splitPath(item.file)
+  const status = STATUS_STYLE[item.status]
+  return (
+    <div
+      title={item.file}
+      onClick={onOpenDiff}
+      className="group mx-1.5 flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-nova-hover focus-within:bg-nova-hover"
+    >
+      <span
+        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border font-mono text-[9px] font-bold leading-none ${status.chip}`}
+      >
+        {status.letter}
+      </span>
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenDiff()
+          }}
+          aria-label={`${diffLabel}: ${item.file}`}
+          className="min-w-0 truncate text-left font-mono text-[11.5px] font-medium text-nova-text-primary"
+        >
+          {name}
+        </button>
+        {dir && <span className="max-w-[48%] shrink-0 truncate font-mono text-[9.5px] text-nova-text-muted">{dir}</span>}
+      </span>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+        <IconButton
+          label={staged ? unstageLabel : stageLabel}
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleStage()
+          }}
+        >
+          {staged ? <IconMinus className="h-3.5 w-3.5" /> : <IconPlus className="h-3.5 w-3.5" />}
+        </IconButton>
+        <IconButton
+          label={openLabel}
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenFile()
+          }}
+        >
+          <IconFile className="h-3.5 w-3.5" />
+        </IconButton>
+      </div>
+    </div>
+  )
+}
+
 export default function GitPanel() {
   const [gitStatus, setGitStatus] = useState<GitStatusEntry[]>([])
   const [gitBranch, setGitBranch] = useState('')
+  const [sync, setSync] = useState<SyncState | null>(null)
+  const [hasRepo, setHasRepo] = useState(true)
   const [commitMessage, setCommitMessage] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const [log, setLog] = useState<GitCommit[]>([])
   const [lastCommit, setLastCommit] = useState<GitCommit | null>(null)
   const [showLog, setShowLog] = useState(false)
   const [generatingCommit, setGeneratingCommit] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const t = useI18n()
   const showNotification = useUIStore((s) => s.showNotification)
+  const showContextMenu = useUIStore((s) => s.showContextMenu)
+  const openFile = useEditorStore((s) => s.openFile)
+  const openDiff = useEditorStore((s) => s.openDiff)
 
   /** Report a failed git operation where the user will see it. Before this,
    *  push/pull failures went to console.error only, so the button looked like
@@ -45,55 +405,72 @@ export default function GitPanel() {
     [showNotification],
   )
 
-  // Select the ACTION only — a whole-store subscription would re-render the
-  // git panel on every editorStore change (each cursor move / dirty toggle
-  // while this sidebar tab is open).
-  const openFile = useEditorStore((s) => s.openFile)
-  const openDiff = useEditorStore((s) => s.openDiff)
+  const getRootPath = useCallback(() => useUIStore.getState().rootPath, [])
 
-  // Get root path from store
-  const getRootPath = useCallback(() => {
-    return useUIStore.getState().rootPath
-  }, [])
-
-  /** Resolve a repo-relative path (from `git status --porcelain`) to an absolute path */
-  const resolveFilePath = useCallback((file: string): string => {
-    const rootPath = getRootPath()
-    if (!rootPath) return file
-    const sep = rootPath.includes('/') ? '/' : '\\'
-    return rootPath.replace(/[/\\]$/, '') + sep + file
-  }, [getRootPath])
+  const resolveFilePath = useCallback(
+    (file: string): string => {
+      const rootPath = getRootPath()
+      if (!rootPath) return file
+      const sep = rootPath.includes('/') ? '/' : '\\'
+      return rootPath.replace(/[/\\]$/, '') + sep + file
+    },
+    [getRootPath],
+  )
 
   const runGitCommand = useCallback((args: string[], input?: string) => gitRun(args, input), [])
+
   const refreshStatus = useCallback(async () => {
     const rootPath = getRootPath()
-    if (!rootPath) return
+    if (!rootPath) {
+      setGitStatus([])
+      setGitBranch('')
+      setSync(null)
+      setHasRepo(false)
+      setIsLoading(false)
+      return
+    }
 
     setIsLoading(true)
     try {
-      // Get current branch
-      const branchResult = await runGitCommand(['rev-parse', '--abbrev-ref', 'HEAD'])
-      if (branchResult.success) {
-        setGitBranch(branchResult.output)
-      }
+      const [branchResult, statusResult] = await Promise.all([
+        runGitCommand(['rev-parse', '--abbrev-ref', 'HEAD']),
+        runGitCommand(['status', '--porcelain=v1']),
+      ])
+      const repoOk = statusResult.success
+      setHasRepo(repoOk)
+      setGitBranch(branchResult.success ? branchResult.output.trim() : '')
+      setGitStatus(repoOk ? parseGitStatusPorcelain(statusResult.output) : [])
 
-      // Get status with porcelain format
-      const statusResult = await runGitCommand(['status', '--porcelain=v1'])
-      setGitStatus(statusResult.success ? parseGitStatusPorcelain(statusResult.output) : [])
+      if (repoOk) {
+        // Upstream + divergence drive the ↑/↓ badges. A fresh branch has no
+        // upstream: git exits non-zero here, which is a normal state.
+        const upstream = await runGitCommand(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+        if (upstream.success) {
+          const counts = await runGitCommand(['rev-list', '--left-right', '--count', '@{upstream}...HEAD'])
+          const parts = counts.success ? counts.output.trim().split(/\s+/).map((n) => Number(n) || 0) : []
+          setSync({ hasUpstream: true, ahead: parts[1] || 0, behind: parts[0] || 0 })
+        } else {
+          setSync({ hasUpstream: false, ahead: 0, behind: 0 })
+        }
+      } else {
+        setSync(null)
+      }
     } catch (error) {
       console.error('获取 Git 状态失败:', error)
       setGitStatus([])
       setGitBranch('')
+      setSync(null)
+      setHasRepo(false)
     } finally {
       setIsLoading(false)
     }
 
-    // Keep the recent-commit footer in sync with every status refresh
-    // (Stitch: 最近提交脚注 — history icon + hash + message + time).
     const logResult = await runGitCommand(['log', '-1', '--format=%H|%s|%an|%ar'])
     if (logResult.success && logResult.output) {
       const [hash, message, author, date] = logResult.output.trim().split('|')
       setLastCommit({ hash, message, author, date })
+    } else {
+      setLastCommit(null)
     }
   }, [getRootPath, runGitCommand])
 
@@ -102,32 +479,52 @@ export default function GitPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshStatus])
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'modified': return { icon: 'M', color: 'var(--yellow, #d97706)' }
-      case 'added': return { icon: 'A', color: 'var(--green, #16a34a)' }
-      case 'deleted': return { icon: 'D', color: 'var(--red, #dc2626)' }
-      case 'renamed': return { icon: 'R', color: '#3B82F6' }
-      case 'untracked': return { icon: 'U', color: 'var(--text-muted, #64748b)' }
-      default: return { icon: '?', color: 'var(--text-muted, #64748b)' }
+  useEffect(() => onGitChanged(() => void refreshStatus()), [refreshStatus])
+
+  const stagedChanges = useMemo(() => gitStatus.filter((s) => s.staged && !s.conflict), [gitStatus])
+  const unstagedChanges = useMemo(
+    () => gitStatus.filter((s) => !s.staged && !s.conflict && s.status !== 'untracked'),
+    [gitStatus],
+  )
+  const untrackedFiles = useMemo(() => gitStatus.filter((s) => s.status === 'untracked'), [gitStatus])
+  const conflicts = useMemo(() => conflictedFiles(gitStatus), [gitStatus])
+  const totalFiles = useMemo(() => new Set(gitStatus.map((entry) => entry.file)).size, [gitStatus])
+  const dirCount = useMemo(() => {
+    const dirs = new Set<string>()
+    for (const entry of gitStatus) {
+      const { dir } = splitPath(entry.file)
+      if (dir) dirs.add(dir)
     }
-  }
+    return dirs.size
+  }, [gitStatus])
+
+  const query = filter.trim().toLowerCase()
+  const matches = useCallback(
+    (entry: GitStatusEntry) => !query || entry.file.toLowerCase().includes(query),
+    [query],
+  )
+  const stagedView = stagedChanges.filter(matches)
+  const unstagedView = unstagedChanges.filter(matches)
+  const untrackedView = untrackedFiles.filter(matches)
+  const filteredEmpty = query.length > 0 && stagedView.length + unstagedView.length + untrackedView.length === 0
+
+  const toggleGroup = (id: string) => setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }))
 
   const handleToggleStage = async (file: string, currentlyStaged: boolean) => {
-    if (currentlyStaged) {
-      await runGitCommand(['reset', 'HEAD', file])
-    } else {
-      await runGitCommand(['add', file])
-    }
+    if (busy) return
+    if (currentlyStaged) await runGitCommand(['reset', 'HEAD', file])
+    else await runGitCommand(['add', file])
     refreshStatus()
   }
 
   const handleStageAll = async () => {
+    if (busy) return
     await runGitCommand(['add', '-A'])
     refreshStatus()
   }
 
   const handleUnstageAll = async () => {
+    if (busy) return
     await runGitCommand(['reset', 'HEAD'])
     refreshStatus()
   }
@@ -135,10 +532,8 @@ export default function GitPanel() {
   const handleCommit = async () => {
     const message = commitMessage.trim()
     if (!message) return
-    // Commit exactly what is staged. This used to run `add -A` first, which
-    // silently swept untracked files (and whatever else sat in the worktree)
-    // into the commit — including right after the user deliberately unstaged
-    // something in this panel.
+    // Commit exactly what is staged — no implicit `add -A` (that used to sweep
+    // untracked files into the commit after the user unstaged them).
     const staged = committableFiles(gitStatus)
     if (!staged.length) {
       showNotification(t('git.nothingStaged'), 'warning')
@@ -194,9 +589,7 @@ export default function GitPanel() {
   const handlePush = async () => {
     setBusy('push')
     try {
-      // -u so a first push of a new branch actually creates the remote ref;
-      // without it `git push` fails on branch-name mismatches and the user had
-      // no idea (the error went to console.error).
+      // -u so a first push of a new branch actually creates the remote ref.
       const result = await runGitCommand(['push', '-u', 'origin', 'HEAD'])
       report(t('git.push'), result)
       if (result.success) refreshStatus()
@@ -267,8 +660,7 @@ export default function GitPanel() {
   }
 
   /** Porcelain alone can't tell a merge conflict from a rebase or a stash-pop
-   *  one, and `merge --abort` errors on the latter two — so try them in order
-   *  and report only if every form refused. */
+   *  one, and `merge --abort` errors on the latter two — try them in order. */
   const handleAbortMerge = async () => {
     setBusy('abort')
     try {
@@ -284,36 +676,39 @@ export default function GitPanel() {
     }
   }
 
-  const handleViewDiff = useCallback(async (file: string, staged: boolean, untracked = false) => {
-    // Open the change in the CENTRAL editor area as a Monaco side-by-side diff
-    // (VS Code "Open Changes") — left = HEAD/index, right = index/worktree,
-    // with per-change revert/stage arrows in both gutters.
-    const absPath = resolveFilePath(file)
-    const fileName = file.split(/[/\\]/).pop() || file
-    const sides = await fetchGitDiffSides(file, staged, untracked)
-    openDiff({
-      path: absPath,
-      fileName,
-      original: sides.original,
-      modified: sides.modified,
-      language: useEditorStore.getState().getLanguageByPath(absPath),
-      kind: 'git',
-      git: { repoFile: file, staged, untracked, diffText: sides.diffText },
-    })
-  }, [openDiff, resolveFilePath])
-
-  // Keep the status list in sync when the central diff editor mutates git state
-  // (revert/stage a hunk, revert everything, ...).
-  useEffect(() => onGitChanged(() => void refreshStatus()), [refreshStatus])
+  const handleViewDiff = useCallback(
+    async (file: string, staged: boolean, untracked = false) => {
+      const absPath = resolveFilePath(file)
+      const fileName = file.split(/[/\\]/).pop() || file
+      const sides = await fetchGitDiffSides(file, staged, untracked)
+      openDiff({
+        path: absPath,
+        fileName,
+        original: sides.original,
+        modified: sides.modified,
+        language: useEditorStore.getState().getLanguageByPath(absPath),
+        kind: 'git',
+        git: { repoFile: file, staged, untracked, diffText: sides.diffText },
+      })
+    },
+    [openDiff, resolveFilePath],
+  )
 
   const handleViewLog = async () => {
+    if (showLog) {
+      setShowLog(false)
+      return
+    }
     setShowLog(true)
     const result = await runGitCommand(['log', '--oneline', '-20', '--format=%H|%s|%an|%ar'])
     if (result.success && result.output) {
-      const commits = result.output.split('\n').filter(Boolean).map((line) => {
-        const [hash, message, author, date] = line.split('|')
-        return { hash, message, author, date }
-      })
+      const commits = result.output
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [hash, message, author, date] = line.split('|')
+          return { hash, message, author, date }
+        })
       setLog(commits)
     }
   }
@@ -322,12 +717,13 @@ export default function GitPanel() {
     const diffResult = await runGitCommand(['diff', '--cached'])
     const diffText = diffResult.success ? diffResult.output : ''
 
-    // Prefer the AI-generated message when a model is configured
     const configGroup = useConfigStore.getState().getActiveConfigGroup()
     if (configGroup && configGroup.defaultModel && (diffText || gitStatus.length)) {
       setGeneratingCommit(true)
       try {
-        const diff = diffText || gitStatus.map((s) => `${s.status === 'untracked' ? t('git.newFile') : s.status} ${s.file}`).join('\n')
+        const diff =
+          diffText ||
+          gitStatus.map((s) => `${s.status === 'untracked' ? t('git.newFile') : s.status} ${s.file}`).join('\n')
         const prompt = `请根据以下 git 变更生成一条简洁的提交信息（一行，中文，不要引号，不要前缀 emoji）：\n\n${diff.slice(0, 12000)}`
         const req = {
           model: configGroup.defaultModel,
@@ -366,453 +762,427 @@ export default function GitPanel() {
     }
   }
 
-  const conflicts = conflictedFiles(gitStatus)
-  const stagedChanges = gitStatus.filter((s) => s.staged && !s.conflict)
-  const unstagedChanges = gitStatus.filter((s) => !s.staged && !s.conflict && s.status !== 'untracked')
-  const untrackedFiles = gitStatus.filter((s) => s.status === 'untracked')
+  const openMoreMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const items: ContextMenuItem[] = [
+      { label: t('git.fetch'), action: () => void handleFetch(), disabled: !!busy || !hasRepo },
+      { label: t('git.createBranch'), action: () => void handleCreateBranch(), disabled: !!busy || !hasRepo },
+      { label: t('git.stash'), action: () => void handleStash(), disabled: !!busy || !gitStatus.length },
+      { label: t('git.stashPop'), action: () => void handleStashPop(), disabled: !!busy },
+      ...(conflicts.length
+        ? [{ label: t('git.abortMerge'), action: () => void handleAbortMerge(), disabled: !!busy }]
+        : []),
+      { separator: true, label: '' },
+      { label: t('git.refresh'), action: () => void refreshStatus() },
+    ]
+    showContextMenu(rect.right - 8, rect.bottom + 4, items)
+  }
+
+  const stagedCount = stagedChanges.length
+  const canCommit = hasRepo && stagedCount > 0 && !!commitMessage.trim() && !busy
+  const commitTitle = stagedCount === 0 ? t('git.nothingStaged') : t('git.commit')
 
   return (
-    <div className="h-full flex flex-col text-sm">
-      {/* Header (Stitch: branch capsule + refresh circle button) */}
-      <div className="flex items-center justify-between px-3 py-2.5">
-        <div className="flex items-center gap-1.5 bg-white/70 dark:bg-white/10 border border-glass-border rounded-full px-3 py-1.5 shadow-sm hover:scale-[1.02] transition-transform cursor-pointer">
-          <svg className="w-3.5 h-3.5 text-primary shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5L13 2z" />
-          </svg>
-          <span className="text-[11px] font-mono font-medium tracking-wide truncate max-w-[180px]">
-            {gitBranch || t('git.title')}
+    <div className="flex h-full min-w-0 flex-col text-sm">
+      {/* Branch + sync */}
+      <section
+        aria-label={t('git.title')}
+        className="mx-2 mt-2 shrink-0 overflow-hidden rounded-xl border border-nova-border bg-nova-card shadow-[var(--shadow-sm)]"
+      >
+        <div className="flex items-center gap-1.5 px-3 py-2">
+          <IconBranch className="h-3.5 w-3.5 shrink-0 text-nova-accent" />
+          <span
+            className="min-w-0 truncate font-mono text-[11.5px] font-semibold text-nova-text-primary"
+            title={gitBranch || undefined}
+          >
+            {gitBranch || (hasRepo ? '—' : t('git.noRepo'))}
+          </span>
+          {sync && sync.ahead > 0 && (
+            <span
+              className="shrink-0 rounded-full border border-accent-20 bg-accent-10 px-1.5 py-px font-mono text-[9.5px] font-semibold text-accent-text"
+              title={t('git.prAhead', { count: sync.ahead })}
+            >
+              ↑{sync.ahead}
+            </span>
+          )}
+          {sync && sync.behind > 0 && (
+            <span
+              className="shrink-0 rounded-full border border-nova-border bg-nova-hover px-1.5 py-px font-mono text-[9.5px] font-semibold text-nova-text-muted"
+              title={t('git.pullTitle')}
+            >
+              ↓{sync.behind}
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-0.5">
+            <IconButton label={t('git.refresh')} onClick={() => void refreshStatus()} disabled={isLoading}>
+              <IconRefresh className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            </IconButton>
+            <IconButton label={t('git.moreActions')} onClick={openMoreMenu} disabled={!hasRepo}>
+              <IconMore className="h-3.5 w-3.5" />
+            </IconButton>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 border-t border-nova-border">
+          <SyncButton
+            icon={<IconArrowUp className="h-3.5 w-3.5" />}
+            label={t('git.push')}
+            badge={sync?.ahead || 0}
+            title={t('git.pushTitle')}
+            onClick={() => void handlePush()}
+            disabled={!hasRepo || !!busy}
+          />
+          <SyncButton
+            icon={<IconArrowDown className="h-3.5 w-3.5" />}
+            label={t('git.pull')}
+            badge={sync?.behind || 0}
+            title={t('git.pullTitle')}
+            onClick={() => void handlePull()}
+            disabled={!hasRepo || !!busy}
+            className="border-l border-nova-border"
+          />
+          <button
+            type="button"
+            onClick={() => void handleViewLog()}
+            className="flex items-center justify-center gap-1 border-l border-nova-border px-1 py-1.5 text-[10.5px] font-medium text-nova-text-secondary transition-colors hover:bg-nova-hover hover:text-nova-text-primary"
+          >
+            <IconHistory className="h-3.5 w-3.5" />
+            <span>{t('git.log')}</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Commit composer */}
+      <section className="mx-2 mt-2 shrink-0 rounded-xl border border-nova-border bg-nova-card shadow-[var(--shadow-sm)] transition-colors focus-within:border-accent-40">
+        <div className="flex items-center justify-between px-3 pt-2">
+          <label
+            htmlFor="git-commit-message"
+            className="text-[10px] font-bold uppercase tracking-[0.1em] text-nova-text-muted"
+          >
+            {t('git.commitMessage')}
+          </label>
+          <span
+            className={`text-[10px] tabular-nums ${stagedCount ? 'text-success-text' : 'text-nova-text-muted'}`}
+          >
+            {stagedCount ? t('git.filesToCommit', { count: stagedCount }) : t('git.noneStaged')}
           </span>
         </div>
-        <button
-          onClick={refreshStatus}
-          className="w-8 h-8 flex items-center justify-center rounded-full text-nova-text-muted hover:text-nova-text-primary hover:bg-white/70 dark:hover:bg-white/10 transition-colors"
-          title={t('git.refresh')}
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Commit message input (Stitch: glass block, capsule buttons) */}
-      <div className="mx-2 mb-2 flex flex-col gap-1.5 bg-glass-bg rounded-lg p-3 border border-glass-border">
         <textarea
+          id="git-commit-message"
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
-          placeholder={t('git.commitPlaceholder')}
-          className="w-full bg-white/60 dark:bg-white/10 border border-glass-border rounded-md px-2.5 py-2 text-xs text-nova-text-primary placeholder:text-nova-text-muted outline-none focus:border-nova-accent focus:ring-1 focus:ring-blue-500/30 resize-none transition-all"
-          rows={2}
-          style={{ minHeight: 44, lineHeight: 1.5 }}
+          placeholder={t('git.commitHint')}
+          disabled={!hasRepo}
+          rows={3}
+          className="mt-1 block max-h-28 w-full resize-none border-0 bg-transparent px-3 py-1 text-xs leading-relaxed text-nova-text-primary outline-none placeholder:text-nova-text-muted/70 disabled:opacity-50"
           onKeyDown={(e) => {
-            if (e.ctrlKey && e.key === 'Enter') {
-              handleCommit()
-            }
+            if (e.ctrlKey && e.key === 'Enter') handleCommit()
           }}
         />
-        <div className="flex flex-wrap gap-2">
+        <div className="flex items-center gap-1 px-2 pb-2">
+          {/* Commit first in the DOM (tests and tab order), painted right via order. */}
           <button
-            onClick={handleCommit}
-            disabled={!commitMessage.trim() || !!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-white rounded-full hover:scale-[1.02] hover:brightness-110 active:scale-[0.98] disabled:opacity-30 shadow-sm border border-transparent transition-all"
-            style={{ background: 'linear-gradient(135deg, #0ea5e9, #6366f1, #a855f7)' }}
+            type="button"
+            onClick={() => void handleCommit()}
+            disabled={!canCommit}
+            title={commitTitle}
+            className="order-3 ml-auto inline-flex items-center gap-1 rounded-lg bg-nova-accent px-2.5 py-1 text-[11px] font-semibold text-nova-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-            提交
+            <IconCheck className="h-3.5 w-3.5" />
+            <span>{t('git.commit')}</span>
           </button>
-          <button
-            onClick={handlePush}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40"
-            title={t('git.pushTitle')}
+          <ToolButton
+            className="order-1"
+            label={generatingCommit ? t('git.generatingShort') : t('git.generateShort')}
+            title={t('git.generateCommitHint')}
+            onClick={() => void handleGenerateCommitMessage()}
+            disabled={generatingCommit || !hasRepo || !gitStatus.length}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 19V5M5 12l7-7 7 7" />
-            </svg>
-            推送
-          </button>
-          <button
-            onClick={handlePull}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40"
-            title={t('git.pullTitle')}
+            <IconSparkle className="h-3.5 w-3.5 text-nova-accent" />
+          </ToolButton>
+          <ToolButton
+            className="order-2"
+            label={lifeguardRunning ? t('git.lifeguardChecking') : t('git.lifeguard')}
+            title={t('git.lifeguardHint')}
+            onClick={() => void handleLifeguard()}
+            disabled={lifeguardRunning || !hasRepo}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 5v14M19 12l-7 7-7-7" />
-            </svg>
-            拉取
-          </button>
-          <button
-            onClick={() => { showLog ? setShowLog(false) : handleViewLog() }}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 hover:scale-[1.02] active:scale-[0.98] transition-all"
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 8v4l2.5 2.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
-            </svg>
-            日志
-          </button>
-          <button
-            onClick={handleFetch}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
-            title={t('git.fetchHint')}
-          >
-            {t('git.fetch')}
-          </button>
-          <button
-            onClick={handleCreateBranch}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
-            title={t('git.createBranchHint')}
-          >
-            {t('git.createBranch')}
-          </button>
-          <button
-            onClick={handleStash}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
-            title={t('git.stashHint')}
-          >
-            {t('git.stash')}
-          </button>
-          <button
-            onClick={handleStashPop}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-nova-text-secondary rounded-full bg-white/70 dark:bg-white/10 border border-glass-border hover:bg-white/90 dark:hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-40"
-            title={t('git.stashPopHint')}
-          >
-            {t('git.stashPop')}
+            <IconShield className="h-3.5 w-3.5 text-nova-text-muted" />
+          </ToolButton>
+        </div>
+      </section>
+
+      {/* Lifeguard findings */}
+      {lifeguardError && (
+        <div className="mx-2 mt-1.5 flex items-start gap-1.5 rounded-xl border border-warning-30 bg-warning-10 px-3 py-2 text-[10.5px] font-medium text-warning-text">
+          <IconWarning className="mt-px h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{lifeguardError}</span>
+          <button type="button" onClick={() => setLifeguardError(null)} title={t('common.close')} className="shrink-0">
+            <IconClose className="h-3 w-3" />
           </button>
         </div>
-        <div className="flex flex-col gap-2">
-          <button
-            onClick={handleGenerateCommitMessage}
-            disabled={generatingCommit}
-            className="w-full inline-flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-bold rounded-full border transition-all disabled:opacity-40 hover:scale-[1.01] active:scale-[0.99]"
-            style={{ border: '1px solid color-mix(in srgb, var(--accent, #0058bc) 50%, transparent)', background: 'color-mix(in srgb, var(--accent, #0058bc) 5%, transparent)', color: 'var(--accent)' }}
-            title={t('git.generateCommitHint')}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M12 8V4M9 4h6M6 9h.01M18 9h.01M6 13h.01M18 13h.01M7 17c1 1 3 1.5 5 1.5s4-.5 5-1.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-            {generatingCommit ? t('git.generating') : 'AI 生成提交消息'}
-          </button>
-          <button
-            onClick={handleLifeguard}
-            disabled={lifeguardRunning}
-            className="w-full inline-flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-bold rounded-full border border-nova-border bg-white/30 dark:bg-white/5 text-nova-text-secondary hover:bg-white/60 dark:hover:bg-white/10 transition-all disabled:opacity-40"
-            title={t('git.lifeguardHint')}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3z" />
-              <path d="M12 8v5M12 16.5h.01" />
-            </svg>
-            {lifeguardRunning ? t('git.lifeguardRunning') : '提交前检查'}
-          </button>
+      )}
+      {lifeguardFindings.length > 0 && (
+        <div className="mx-2 mt-1.5 overflow-hidden rounded-xl border border-warning-30 bg-warning-10">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 text-[10.5px] font-semibold text-warning-text">
+            <IconWarning className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">
+              {t('git.lifeguardFindings', { count: lifeguardFindings.length })} ·{' '}
+              {t('git.errorCount', { count: lifeguardFindings.filter((f) => f.severity === 'error').length })} ·{' '}
+              {t('git.warningCount', { count: lifeguardFindings.filter((f) => f.severity === 'warning').length })}
+            </span>
+            <button
+              type="button"
+              onClick={() => setLifeguardFindings([])}
+              title={t('common.close')}
+              className="shrink-0"
+            >
+              <IconClose className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="px-1 pb-1">
+            {lifeguardFindings.map((f, i) => (
+              <div
+                key={i}
+                className="flex items-center justify-between rounded px-2 py-1 text-[10.5px] text-warning-text transition-colors hover:bg-warning-5"
+              >
+                <span className="max-w-full truncate font-mono">
+                  {f.file ? `${f.file}${f.line ? `:${f.line}` : ''} — ` : ''}
+                  {f.message}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pull request */}
+      <PullRequestSection branch={gitBranch} onRefresh={refreshStatus} />
+
+      {/* Working tree changes */}
+      <section className="mx-2 mt-2 flex min-h-[140px] flex-1 flex-col overflow-hidden rounded-xl border border-nova-border bg-nova-card shadow-[var(--shadow-sm)]">
+        <div className="flex items-center justify-between px-3 pb-1.5 pt-2">
+          <div className="flex items-center gap-1.5">
+            <h2 className="text-[10px] font-bold uppercase tracking-[0.1em] text-nova-text-muted">
+              {t('git.changes')}
+            </h2>
+            <span className="rounded-full bg-nova-hover px-1.5 text-[10px] font-semibold tabular-nums text-nova-text-muted">
+              {totalFiles}
+            </span>
+          </div>
+          {unstagedChanges.length + untrackedFiles.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleStageAll()}
+              disabled={!!busy}
+              className="text-[10px] font-medium text-nova-text-muted transition-colors hover:text-nova-accent disabled:opacity-40"
+            >
+              {t('git.stageAllShort')}
+            </button>
+          )}
         </div>
 
-        {/* Lifeguard findings (Stitch: warning panel) */}
-        {lifeguardError && (
-          <div className="mx-2 mb-2 px-3 py-2.5 rounded-lg bg-warning-10 border border-warning-30 flex items-center gap-1.5 text-warning font-semibold text-xs backdrop-blur-md">
-            <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M12 2 1 21h22L12 2zm1 14h-2v2h2v-2zm0-7h-2v5h2V9z" />
-            </svg>
-            {lifeguardError}
+        {gitStatus.length > 5 && (
+          <div className="px-2.5 pb-1.5">
+            <div className="flex items-center gap-1.5 rounded-lg border border-nova-border bg-nova-surface px-2 py-1 focus-within:border-nova-accent">
+              <IconSearch className="h-3 w-3 shrink-0 text-nova-text-muted" />
+              <input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder={t('git.filterPlaceholder')}
+                className="w-full bg-transparent text-[10.5px] text-nova-text-primary outline-none placeholder:text-nova-text-muted"
+              />
+              {filter && (
+                <button
+                  type="button"
+                  onClick={() => setFilter('')}
+                  title={t('git.clearFilter')}
+                  className="shrink-0 text-nova-text-muted hover:text-nova-text-primary"
+                >
+                  <IconClose className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           </div>
         )}
-        {lifeguardFindings.length > 0 && (
-          <div className="mx-2 mb-2 rounded-lg bg-warning-10 border border-warning-30 backdrop-blur-md overflow-hidden">
-            <div className="px-3 py-2.5 flex items-center gap-1.5 text-warning font-semibold text-xs">
-              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M12 2 1 21h22L12 2zm1 14h-2v2h2v-2zm0-7h-2v5h2V9z" />
-              </svg>
-              <span>
-                {t('git.lifeguardFindings', { count: lifeguardFindings.length })} ·{' '}
-                {t('git.errorCount', { count: lifeguardFindings.filter((f) => f.severity === 'error').length })} 错误{' '}
-                {t('git.warningCount', { count: lifeguardFindings.filter((f) => f.severity === 'warning').length })} 警告
-              </span>
-            </div>
-            <div className="px-1 pb-1">
-              {lifeguardFindings.map((f, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between text-[11px] text-warning-90 hover:bg-warning-5 rounded px-2 py-1 transition-colors"
+
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-1">
+          {conflicts.length > 0 && (
+            <div className="mx-2 mt-1 overflow-hidden rounded-lg border border-warning-30 bg-warning-10">
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10.5px] font-semibold text-warning-text">
+                <IconWarning className="h-3.5 w-3.5 shrink-0" />
+                <span>{t('git.conflictCount', { count: conflicts.length })}</span>
+                <button
+                  type="button"
+                  onClick={() => void handleAbortMerge()}
+                  disabled={!!busy}
+                  className="ml-auto text-[10px] underline disabled:opacity-40"
+                  title={t('git.abortMergeHint')}
                 >
-                  <span className="font-code truncate max-w-[230px]">
-                    {f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : ''} — {f.message}
-                  </span>
+                  {t('git.abortMerge')}
+                </button>
+              </div>
+              {conflicts.map((file) => (
+                <button
+                  key={file}
+                  type="button"
+                  onClick={() => void handleViewDiff(file, true)}
+                  className="block w-full truncate px-2.5 py-1 text-left font-mono text-[10.5px] text-warning-text hover:bg-warning-5"
+                >
+                  {file}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {isLoading && gitStatus.length === 0 && (
+            <div className="flex flex-col gap-1 px-2.5 py-2" aria-hidden>
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="h-4 w-4 animate-pulse rounded bg-nova-hover" />
+                  <div
+                    className="h-3 animate-pulse rounded bg-nova-hover"
+                    style={{ width: `${55 + ((i * 13) % 30)}%` }}
+                  />
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </div>
+          )}
 
-      {/* Pull requests (gh CLI) — only when the repo has a remote worth asking */}
-      <PullRequestSection branch={gitBranch} onRefresh={refreshStatus} />
-
-      {/* Changed files */}
-      <div className="flex-1 overflow-y-auto">
-        {/* Merge conflicts — listed separately because they are not "staged
-            changes": git shows them with both columns set, and a commit with
-            them in the index fails. */}
-        {conflicts.length > 0 && (
-          <div className="mx-1 my-2 rounded-lg bg-warning-10 border border-warning-30 backdrop-blur-md overflow-hidden">
-            <div className="px-3 py-2 flex items-center gap-1.5 text-warning font-semibold text-xs">
-              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M12 2 1 21h22L12 2zm1 14h-2v2h2v-2zm0-7h-2v5h2V9z" />
-              </svg>
-              {t('git.conflictCount', { count: conflicts.length })}
-              <button
-                onClick={handleAbortMerge}
-                disabled={!!busy}
-                className="ml-auto text-[10px] font-bold underline disabled:opacity-40"
-                title={t('git.abortMergeHint')}
-              >
-                {t('git.abortMerge')}
-              </button>
-            </div>
-            {conflicts.map((file) => (
-              <button
-                key={file}
-                onClick={() => handleViewDiff(file, true)}
-                className="block w-full text-left px-3 py-1 text-[11px] font-code text-warning-90 hover:bg-warning-5 truncate"
-              >
-                {file}
-              </button>
-            ))}
-          </div>
-        )}
-        {isLoading && (
-          <div className="p-4 text-center text-nova-text-muted text-xs">
-            {t('git.loading')}
-          </div>
-        )}
-
-        {!isLoading && gitStatus.length === 0 && (
-          <div className="p-4 text-center text-nova-text-muted text-xs">
-            {gitBranch ? t('git.noChanges') : t('git.noRepo')}
-          </div>
-        )}
-
-        {/* Staged changes */}
-        {stagedChanges.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between px-3 py-1.5">
-              <span className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted flex items-center gap-1.5">
-                {t('git.staged')}
-                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[11px]">{stagedChanges.length}</span>
+          {!isLoading && hasRepo && gitStatus.length === 0 && (
+            <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full border border-nova-border text-success-text">
+                <IconCheck className="h-4 w-4" />
               </span>
-              <button
-                onClick={handleUnstageAll}
-                className="text-[10px] text-nova-text-muted hover:text-nova-accent"
-                title={t('git.unstageAll')}
-              >
-                {t('git.unstageAllShort')}
-              </button>
+              <p className="text-[11px] text-nova-text-muted">{t('git.noChanges')}</p>
             </div>
-            <div className="flex flex-col gap-0.5">
-              {stagedChanges.map((item) => {
-                const { icon, color } = getStatusIcon(item.status)
-                const fileName = item.file.split(/[/\\]/).pop() || item.file
-                return (
-                  <div
-                    key={item.file}
-                    className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors mx-1 hover:bg-white/70 dark:hover:bg-white/10"
-                    onClick={() => handleViewDiff(item.file, true)}
-                  >
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleStage(item.file, true) }}
-                      className="text-nova-text-muted hover:text-nova-text-primary rounded p-0.5 transition-colors"
-                      title={t('git.unstage')}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                        <path d="M5 12h14" />
-                      </svg>
-                    </button>
-                    <span className="font-mono text-[12px] font-medium w-4 text-center" style={{ color }}>
-                      {icon}
-                    </span>
-                    <span
-                      className="font-mono text-[12px] text-nova-text-primary truncate flex-1 hover:text-nova-accent transition-colors"
-                      onClick={(e) => { e.stopPropagation(); openFile(resolveFilePath(item.file)) }}
-                    >
-                      {fileName}
-                    </span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleViewDiff(item.file, true) }}
-                      className="hidden group-hover:block text-[10px] text-primary font-medium tracking-wide"
-                      title={t('git.viewDiff')}
-                    >
-                      {t('git.viewDiff')}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
+          )}
 
-        {/* Unstaged changes */}
-        {unstagedChanges.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between px-3 py-1.5">
-              <span className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted flex items-center gap-1.5">
-                {t('git.changes')}
-                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[11px]">{unstagedChanges.length}</span>
+          {!isLoading && !hasRepo && (
+            <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full border border-nova-border text-nova-text-muted">
+                <IconBranch className="h-4 w-4" />
               </span>
-              <button
-                onClick={handleStageAll}
-                className="text-[10px] text-nova-text-muted hover:text-nova-accent"
-                title={t('git.stageAll')}
-              >
-                {t('git.stageAllShort')}
-              </button>
+              <p className="text-[11px] text-nova-text-muted">{t('git.noRepo')}</p>
             </div>
-            <div className="flex flex-col gap-0.5">
-              {unstagedChanges.map((item) => {
-                const { icon, color } = getStatusIcon(item.status)
-                const fileName = item.file.split(/[/\\]/).pop() || item.file
-                return (
-                  <div
-                    key={item.file}
-                    className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors mx-1 hover:bg-white/70 dark:hover:bg-white/10"
-                    onClick={() => handleViewDiff(item.file, false)}
-                  >
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleStage(item.file, false) }}
-                      className="text-nova-text-muted hover:text-nova-accent rounded p-0.5 transition-colors"
-                      title={t('git.stage')}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                        <path d="M12 5v14M5 12h14" />
-                      </svg>
-                    </button>
-                    <span className="font-mono text-[12px] font-medium w-4 text-center" style={{ color }}>
-                      {icon}
-                    </span>
-                    <span
-                      className="font-mono text-[12px] text-nova-text-primary truncate flex-1 hover:text-nova-accent transition-colors"
-                      onClick={(e) => { e.stopPropagation(); openFile(resolveFilePath(item.file)) }}
-                    >
-                      {fileName}
-                    </span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleViewDiff(item.file, false) }}
-                      className="hidden group-hover:block text-[10px] text-primary font-medium tracking-wide"
-                      title={t('git.viewDiff')}
-                    >
-                      {t('git.viewDiff')}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
+          )}
 
-        {/* Untracked files */}
-        {untrackedFiles.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between px-3 py-1.5">
-              <span className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted flex items-center gap-1.5">
-                {t('git.untracked')}
-                <span className="bg-white/70 dark:bg-white/10 px-1.5 rounded-full text-[11px]">{untrackedFiles.length}</span>
-              </span>
-            </div>
-            <div className="flex flex-col gap-0.5 opacity-70 hover:opacity-100 transition-opacity">
-              {untrackedFiles.map((item) => {
-                const fileName = item.file.split(/[/\\]/).pop() || item.file
-                return (
-                  <div
-                    key={item.file}
-                    className="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/70 dark:hover:bg-white/10 cursor-pointer transition-colors mx-1"
-                    onClick={() => handleViewDiff(item.file, false, true)}
-                  >
-                    <span className="w-[18px]" />
-                    <span className="font-mono text-[12px] font-medium text-nova-text-muted w-4 text-center">U</span>
-                    <span
-                      className="font-mono text-[12px] text-nova-text-muted truncate flex-1 hover:text-nova-accent transition-colors"
-                      onClick={() => openFile(resolveFilePath(item.file))}
-                    >
-                      {fileName}
-                    </span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleStage(item.file, false) }}
-                      className="hidden group-hover:block text-[10px] text-primary font-medium tracking-wide"
-                      title={t('git.track')}
-                    >
-                      跟踪
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
+          {!isLoading && filteredEmpty && (
+            <div className="px-4 py-6 text-center text-[11px] text-nova-text-muted">{t('git.noMatch')}</div>
+          )}
 
-        {/* Recent commits (Stitch: footer section with history list) */}
-        {lastCommit && (
-          <div className="border-t border-glass-border mt-3 pt-3">
-            <button
-              onClick={() => { showLog ? setShowLog(false) : handleViewLog() }}
-              className="text-[10px] font-bold tracking-widest uppercase text-nova-text-muted mb-2 px-1 flex items-center gap-1 hover:text-nova-text-primary transition-colors w-full text-left"
-              title={t('git.recentCommits')}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 8v4l2.5 2.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
-              </svg>
-              近期提交
-              <span className={`ml-auto transition-transform ${showLog ? 'rotate-180' : ''}`}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </span>
-            </button>
-            {!showLog && (
-              <div className="flex flex-col gap-0.5">
-                <div
-                  className="flex flex-col gap-0.5 p-2 rounded-md hover:bg-white/70 dark:hover:bg-white/10 transition-colors cursor-pointer"
-                  onClick={() => handleViewLog()}
+          {stagedView.length > 0 && (
+            <ChangeGroup
+              title={t('git.staged')}
+              count={stagedView.length}
+              collapsed={!!collapsed.staged}
+              onToggle={() => toggleGroup('staged')}
+              action={
+                <button
+                  type="button"
+                  onClick={() => void handleUnstageAll()}
+                  disabled={!!busy}
+                  title={t('git.unstageAll')}
+                  className="text-[10px] font-medium text-nova-text-muted transition-colors hover:text-nova-accent disabled:opacity-40"
                 >
-                  <span className="font-mono text-[11px] text-nova-text-primary group-hover:text-primary truncate">
-                    {lastCommit.message}
-                  </span>
-                  <div className="flex items-center gap-1.5 text-[10px] text-nova-text-muted">
-                    <span className="font-mono bg-white/70 dark:bg-white/10 px-1 rounded">{lastCommit.hash.slice(0, 7)}</span>
-                    <span>·</span>
-                    <span className="truncate">{lastCommit.author}</span>
-                    <span>·</span>
-                    <span>{lastCommit.date}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+                  {t('git.unstageAllShort')}
+                </button>
+              }
+            >
+              {stagedView.map((item) => (
+                <FileRow
+                  key={`staged-${item.file}`}
+                  item={item}
+                  staged
+                  busy={!!busy}
+                  onToggleStage={() => void handleToggleStage(item.file, true)}
+                  onOpenDiff={() => void handleViewDiff(item.file, true)}
+                  onOpenFile={() => openFile(resolveFilePath(item.file))}
+                  stageLabel={t('git.stage')}
+                  unstageLabel={t('git.unstage')}
+                  openLabel={t('git.openFile')}
+                  diffLabel={t('git.viewDiff')}
+                />
+              ))}
+            </ChangeGroup>
+          )}
 
-      {/* Git Log */}
+          {unstagedView.length > 0 && (
+            <ChangeGroup
+              title={t('git.changes')}
+              count={unstagedView.length}
+              collapsed={!!collapsed.changed}
+              onToggle={() => toggleGroup('changed')}
+            >
+              {unstagedView.map((item) => (
+                <FileRow
+                  key={`changed-${item.file}`}
+                  item={item}
+                  staged={false}
+                  busy={!!busy}
+                  onToggleStage={() => void handleToggleStage(item.file, false)}
+                  onOpenDiff={() => void handleViewDiff(item.file, false)}
+                  onOpenFile={() => openFile(resolveFilePath(item.file))}
+                  stageLabel={t('git.stage')}
+                  unstageLabel={t('git.unstage')}
+                  openLabel={t('git.openFile')}
+                  diffLabel={t('git.viewDiff')}
+                />
+              ))}
+            </ChangeGroup>
+          )}
+
+          {untrackedView.length > 0 && (
+            <ChangeGroup
+              title={t('git.untracked')}
+              count={untrackedView.length}
+              collapsed={!!collapsed.untracked}
+              onToggle={() => toggleGroup('untracked')}
+            >
+              {untrackedView.map((item) => (
+                <FileRow
+                  key={`untracked-${item.file}`}
+                  item={item}
+                  staged={false}
+                  busy={!!busy}
+                  onToggleStage={() => void handleToggleStage(item.file, false)}
+                  onOpenDiff={() => void handleViewDiff(item.file, false, true)}
+                  onOpenFile={() => openFile(resolveFilePath(item.file))}
+                  stageLabel={t('git.track')}
+                  unstageLabel={t('git.unstage')}
+                  openLabel={t('git.openFile')}
+                  diffLabel={t('git.viewDiff')}
+                />
+              ))}
+            </ChangeGroup>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-nova-border px-3 py-1.5 text-[10px] text-nova-text-muted">
+          <span>{t('git.summary')}</span>
+          <span className="tabular-nums">
+            {t('git.fileCount', { count: totalFiles })}
+            {dirCount > 0 ? ` · ${t('git.dirCount', { count: dirCount })}` : ''}
+          </span>
+        </div>
+      </section>
+
+      {/* Git log drawer */}
       {showLog && (
-        <div className="border-t border-nova-border max-h-[200px] overflow-y-auto overflow-x-hidden">
-          <div className="flex items-center justify-between px-3 py-1.5 text-[10px] text-nova-text-muted bg-nova-bg">
+        <div className="mx-2 mt-2 max-h-[220px] shrink-0 overflow-y-auto rounded-xl border border-nova-border bg-nova-card shadow-[var(--shadow-sm)]">
+          <div className="sticky top-0 flex items-center justify-between border-b border-nova-border bg-nova-surface px-3 py-1.5 text-[10px] text-nova-text-muted">
             <span>{t('git.recentCommits')}</span>
-            <button onClick={() => setShowLog(false)} className="hover:text-nova-text-primary">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+            <button type="button" onClick={() => setShowLog(false)} title={t('common.close')}>
+              <IconClose className="h-3 w-3" />
             </button>
           </div>
           {log.length === 0 ? (
-            <div className="p-3 text-center text-nova-text-muted text-xs">
-              {t('git.noCommits')}
-            </div>
+            <div className="px-3 py-3 text-center text-[10.5px] text-nova-text-muted">{t('git.noCommits')}</div>
           ) : (
             log.map((commit) => (
-              <div key={commit.hash} className="px-3 py-1.5 hover:bg-nova-hover">
-                <div className="text-xs text-nova-text-primary truncate">{commit.message}</div>
-                <div className="text-[10px] text-nova-text-muted truncate">
+              <div key={commit.hash} className="px-3 py-1.5 transition-colors hover:bg-nova-hover">
+                <div className="truncate text-[11px] text-nova-text-primary">{commit.message}</div>
+                <div className="truncate font-mono text-[9.5px] text-nova-text-muted">
                   {commit.hash.slice(0, 7)} · {commit.author} · {commit.date}
                 </div>
               </div>
@@ -820,6 +1190,61 @@ export default function GitPanel() {
           )}
         </div>
       )}
+
+      {/* Recent commit */}
+      <button
+        type="button"
+        onClick={() => void handleViewLog()}
+        className="mx-2 my-2 flex shrink-0 items-center gap-2 rounded-xl border border-nova-border bg-nova-card px-2.5 py-1.5 text-left shadow-[var(--shadow-sm)] transition-colors hover:bg-nova-hover"
+        title={t('git.recentCommits')}
+      >
+        <IconCommit className="h-3.5 w-3.5 shrink-0 text-nova-text-muted" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[11px] text-nova-text-primary">
+            {lastCommit?.message || t('git.noCommits')}
+          </span>
+          <span className="block truncate font-mono text-[9.5px] text-nova-text-muted">
+            {lastCommit ? `${lastCommit.hash.slice(0, 7)} · ${lastCommit.author} · ${lastCommit.date}` : ''}
+          </span>
+        </span>
+        <span className="shrink-0 text-[10px] text-nova-text-muted">{t('git.log')} ›</span>
+      </button>
     </div>
+  )
+}
+
+function SyncButton({
+  icon,
+  label,
+  badge,
+  title,
+  onClick,
+  disabled,
+  className = '',
+}: {
+  icon: ReactNode
+  label: string
+  badge: number
+  title: string
+  onClick: () => void
+  disabled?: boolean
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex items-center justify-center gap-1 px-1 py-1.5 text-[10.5px] font-medium text-nova-text-secondary transition-colors hover:bg-nova-hover hover:text-nova-text-primary disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
+    >
+      {icon}
+      <span>{label}</span>
+      {badge > 0 && (
+        <span className="rounded-full bg-accent-10 px-1 text-[9px] font-semibold tabular-nums text-accent-text">
+          {badge}
+        </span>
+      )}
+    </button>
   )
 }

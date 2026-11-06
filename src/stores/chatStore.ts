@@ -22,11 +22,11 @@ import { refreshBudgetLimit, projectBudgetExceeded, getProjectBudgetUsage, reset
 import { ensureInitialized, resetTargetModeState, readStatus, readStatusText, parseStatus, TargetModeStatus } from '@/services/targetMode/targetModeService'
 import {
   WORKER_ROSTER,
-  DEV_SLOTS,
-  TEST_SLOTS,
   roleForSlot,
   titleForSlot,
+  pickFreeSlot,
   buildWorkerSystemPrompt,
+  type WorkerKind,
 } from '@/services/office/workers'
 import { t } from '@/i18n'
 import { getFileContent } from '@/editor/modelRegistry'
@@ -43,7 +43,8 @@ import { ToolCall, ToolResult } from '@/services/tools/types'
 import { writeToolPaths } from '@/services/tools/writePaths'
 import { createApprovalPreHook } from './approvalHook'
 import { runWithConcurrency } from '@/services/subagents/parallel'
-import { loadAgentDefinition, SubagentGuard, failClosedDefinition } from '@/services/subagents/subagentDefinitions'
+import { loadAgentDefinition, SubagentGuard, failClosedDefinition, isGenericAgentDefinition } from '@/services/subagents/subagentDefinitions'
+import { resolveWorkerMcpGrant, reconcileMcpGrantServers, buildMcpGrantWarning } from '@/services/company/mcpAssignments'
 import {
   extractKeywords,
   scoreAgainstKeywords,
@@ -564,7 +565,9 @@ const AGENT_MODE_INSTRUCTION = `
 
 你当前处于「Agent 模式」。你可以自主完成编码任务。
 规则：
-- 用搜索/读取工具理解代码库后直接动手实现，不要为规划而规划；需要多步推进的任务用 manage_todo 维护任务列表，让用户看到进度。
+- 用搜索/读取工具理解代码库后直接动手实现，不要为规划而规划。
+- 多步任务（≥2 步）先在动手前用 manage_todo 列出全部步骤（状态 pending），开始时把当前那一步标成 in_progress。
+- 进度由你负责推进：**每完成一步就立刻调用 manage_todo** —— 把刚完成的标 "completed"、下一步标 "in_progress"，并提交完整列表（保留已有 id）。写完文件、命令跑通、测试通过都算完成一步；不要攒到全部做完才更新，也不要只在开头调一次（那样用户看到的进度会一直停着不动）。
 - 完成修改后用项目现有的测试 / lint / typecheck 脚本验证（存在的话）。
 - 有专用工具时禁止用 run_command 绕过：git 操作一律用 git_status / git_diff / git_add / git_commit / git_push / git_split_commit，文件操作一律用 read_file / write_file / edit_file / search_in_files。禁止为一次性的 git 操作编写或调试脚本。
 - 用 run_command 时记住：${shellEnvironmentNote()}。构建/测试/类型检查等长命令默认 30 秒超时会被中断——调用时要设 timeoutMs（如 120000）。若命令仍返回 [超时]，说明它需要更长时间，直接用更大的 timeoutMs 重试一次或换一种验证方式（如只构建相关模块），不要通过加内存参数、换 shell、重装依赖等方式反复折腾同一命令。
@@ -617,25 +620,93 @@ function summarizeToolCall(tc: ToolCall): string {
   return tc.name
 }
 
+/**
+ * manage_todo 状态别名 → 规范枚举。
+ *
+ * 旧实现只认四个字面量（pending / in_progress / completed / failed），模型
+ * 发 `done`、`已完成`、`进行中`、`DONE`、`in-progress` 时一律降级成 pending：
+ * 于是「刚做完一条」的那次更新被吞掉，左上角进度永远停在 0/N —— 用户看到
+ * 的就是「做完一条不会更新进度」。这里按别名归一，只把真正无法识别的写法
+ * 降级为 pending。
+ */
+const TODO_STATUS_ALIASES: Record<string, TodoItem['status']> = {
+  pending: 'pending', todo: 'pending', open: 'pending', waiting: 'pending', queue: 'pending', queued: 'pending',
+  not_started: 'pending', notstarted: 'pending', unstarted: 'pending', planned: 'pending', backlog: 'pending',
+  待办: 'pending', 未开始: 'pending', 未完成: 'pending', 未处理: 'pending', 待处理: 'pending', 等待: 'pending', 计划中: 'pending',
+  in_progress: 'in_progress', inprogress: 'in_progress', in_progressing: 'in_progress', doing: 'in_progress',
+  active: 'in_progress', running: 'in_progress', working: 'in_progress', started: 'in_progress', wip: 'in_progress',
+  进行中: 'in_progress', 执行中: 'in_progress', 处理中: 'in_progress', 正在处理: 'in_progress', 正在执行: 'in_progress', 正在做: 'in_progress',
+  completed: 'completed', complete: 'completed', done: 'completed', finished: 'completed', finish: 'completed',
+  success: 'completed', succeeded: 'completed', resolved: 'completed', closed: 'completed',
+  完成: 'completed', 已完成: 'completed', 结束: 'completed', 已结束: 'completed', 成功: 'completed', 搞定: 'completed',
+  failed: 'failed', fail: 'failed', error: 'failed', blocked: 'failed', cancelled: 'failed', canceled: 'failed', aborted: 'failed',
+  失败: 'failed', 出错: 'failed', 错误: 'failed', 阻塞: 'failed', 已取消: 'failed', 取消: 'failed',
+}
+
+/** 单个 todo 的状态归一：大小写 / 连字符 / 空格 / 中文别名都收敛到枚举。 */
+function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
+  const key = String(raw ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (!key) return 'pending'
+  return TODO_STATUS_ALIASES[key] ?? TODO_STATUS_ALIASES[key.replace(/_/g, '')] ?? 'pending'
+}
+
 /** Normalize raw manage_todo input into TodoItem[] — validates the status
  *  enum and enforces at most one in_progress (the first one wins; the rest are
  *  demoted to pending — never completed, so no work is misreported as done). */
 export function normalizeTodos(raw: unknown): TodoItem[] {
   let seenInProgress = false
   return (Array.isArray(raw) ? raw : [])
-    .map((t: any, i: number) => {
-      let status = (['pending', 'in_progress', 'completed', 'failed'].includes(t?.status) ? t?.status : 'pending') as TodoItem['status']
+    .map((t: any) => ({
+      id: t?.id ? String(t.id) : uuidv4(),
+      content: String(t?.content ?? '').trim(),
+      status: normalizeTodoStatus(t?.status),
+    }))
+    // 空条目只会在 UI 里渲染成一条空行，没有任何信息量
+    .filter((t) => t.content !== '')
+    .map((t, i) => {
+      let status = t.status
       if (status === 'in_progress') {
         if (seenInProgress) status = 'pending'
         else seenInProgress = true
       }
-      return {
-        id: t?.id || uuidv4(),
-        content: String(t?.content || ''),
-        status,
-        order: i,
-      }
+      return { ...t, status, order: i } as TodoItem
     })
+}
+
+/**
+ * 一次 manage_todo 落地后的自动推进。
+ *
+ * 模型最常见的写法是「把刚做完的那条标成 completed」，却忘了把下一条标成
+ * in_progress —— 于是列表里有完成项、没有任何进行项，左上角胶囊停在旧文案/
+ * 旧进度上，直到模型下次想起来更新。这里把下一条 pending 提升为 in_progress：
+ * 「做完一条 → 进度立刻前进到下一条」由系统保证，而不是靠模型自觉。
+ *
+ * 只在 Agent 循环里调用（会话确实在跑），会话结束/中止时不会伪造「执行中」。
+ */
+export function promoteNextTodo(todos: TodoItem[]): TodoItem[] {
+  if (todos.some((t) => t.status === 'in_progress')) return todos
+  // 一条都没完成 → 还在初始清单阶段，别自作主张开始某一条
+  if (!todos.some((t) => t.status === 'completed')) return todos
+  const nextIndex = todos.findIndex((t) => t.status === 'pending')
+  if (nextIndex < 0) return todos
+  return todos.map((t, i) => (i === nextIndex ? { ...t, status: 'in_progress' as const } : t))
+}
+
+/** 进度催更的轮次阈值：连续这么多轮有工具活动却没更新任务列表 → 提醒一次。 */
+export const TODO_NUDGE_ROUNDS = 2
+
+/**
+ * 进度催更提醒。挂在下一轮第一条工具结果尾部（与打转提醒同一位置），
+ * 不额外插入消息、不打断工具配对，但足以让模型在下一轮立刻补一次
+ * manage_todo —— 这是「进度不更新」最可靠的兜底：真实会话里模型经常只在
+ * 开头调一次 manage_todo，之后几十轮都不再更新。
+ */
+export function buildTodoNudge(rounds: number): string {
+  return (
+    `[系统提醒] 任务列表已连续 ${rounds} 轮没有更新。左上角的进度条只在调用 manage_todo 时前进：` +
+    `如果当前这一步已经完成，请立刻调用 manage_todo 提交完整列表（刚完成的标 "completed"，` +
+    `下一步标 "in_progress"，保留已有 id）；如果还在同一步里，也请确认状态无误后继续。`
+  )
 }
 
 /** Parse a streamed tool call's arguments. `ok` is false when the JSON is
@@ -899,6 +970,14 @@ export interface RestoreChangesInput {
   dryRun?: boolean
 }
 
+/**
+ * 增员结果。旧实现只返回 `string | null`，UI 只能把 null 一律提示成
+ * 「岗位已满员」——没配置模型时也会这么说，用户点了按钮却看不出究竟。
+ */
+export type AddWorkerResult =
+  | { ok: true; id: string; title: string; slot: number }
+  | { ok: false; reason: 'full' | 'no-model' }
+
 export interface ChatState {
   sessions: ChatSession[]
   activeSessionId: string | null
@@ -1101,7 +1180,8 @@ export interface ChatState {
   // 支持研发/测试动态增员（各保留最少 1 名——调用方保证）。
   createWorkerSession: (configGroupId: string, projectPath: string, role: string, slot: number, title: string) => string
   ensureWorkers: (projectPath: string) => void
-  addWorker: (projectPath: string, role: 'dev' | 'test') => string | null
+  /** 动态增员：返回新会话，或说明失败原因（满员 / 还没配置模型）。 */
+  addWorker: (projectPath: string, role: WorkerKind) => AddWorkerResult
   removeWorker: (sessionId: string) => void
   /** 新建一人公司任务（项目 + 号入口）：该项目有总监任务在跑 → 不新建，切到
    *  在跑会话；没有 → 重置目标模式运行态（旧任务目标/清单/状态清零）并新建
@@ -2993,25 +3073,19 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     }
   },
 
-  /** 动态增员：在研发（4/5/6）或测试（7/8）工位池里取第一个空位。满员返回 null。 */
+  /** 动态增员：在研发（4/5/6）或测试（7/8）工位池里取第一个空位。 */
   addWorker: (projectPath, role) => {
-    const pool = role === 'test' ? TEST_SLOTS : DEV_SLOTS
-    const occupied = new Set(
-      get()
-        .sessions.filter((s) => s.workerRole && s.projectPath === projectPath)
-        .map((s) => s.workerSlot),
-    )
-    const slot = pool.find((n) => !occupied.has(n))
-    if (slot == null) return null
+    const occupied = get()
+      .sessions.filter((s) => s.workerRole && s.projectPath === projectPath)
+      .map((s) => s.workerSlot)
+      .filter((n): n is number => typeof n === 'number')
+    const slot = pickFreeSlot(role, occupied)
+    if (slot == null) return { ok: false, reason: 'full' }
     const configGroupId = useConfigStore.getState().activeConfigGroupId
-    if (!configGroupId) return null
-    return get().createWorkerSession(
-      configGroupId,
-      projectPath,
-      roleForSlot(slot),
-      slot,
-      titleForSlot(slot),
-    )
+    if (!configGroupId) return { ok: false, reason: 'no-model' }
+    const title = titleForSlot(slot)
+    const id = get().createWorkerSession(configGroupId, projectPath, roleForSlot(slot), slot, title)
+    return { ok: true, id, title, slot }
   },
 
   /** 新建一人公司任务：项目里有任务在执行（总监或任何员工会话在跑）→ 不
@@ -4427,15 +4501,42 @@ async function runAgentLoop(
   // 不复用配置组的全局 systemPrompt——员工是独立的执行者，不是总监。
   let baseSystemPrompt = configGroup.systemPrompt || 'You are a helpful AI coding assistant.'
   let workerGuard: SubagentGuard | null = null
+  // MCP 授权对账告警（空串 = 无告警）：授权清单里点名的服务器不在当前 MCP 目录时注入
+  let mcpGrantWarningText = ''
   if (session.workerRole) {
     const workerDef = failClosedDefinition(await loadAgentDefinition(session.workerRole, workspacePath || undefined))
     baseSystemPrompt = await buildWorkerSystemPrompt(
       session.workerRole,
       workerDef?.systemPrompt ?? '',
     )
+    // MCP 授权（v1.2）：看板分配（.ourcode/company.json，未分配默认 all）∪ 角色文件
+    // mcp 声明。fail-closed 角色（定义缺失）不给任何授权——只读降级必须连 MCP 一起关。
+    const missingWorkerRole = isGenericAgentDefinition(workerDef)
+    const resolvedGrant = missingWorkerRole
+      ? undefined
+      : await resolveWorkerMcpGrant({
+          projectPath: workspacePath || '',
+          role: session.workerRole,
+          defMcp: workerDef?.mcp,
+          defMcpDeny: workerDef?.mcpDeny,
+        })
     // 员工模式：send_message（回报总监）与 run_subagent（派只读调研助手）
-    // 对员工放行，其余控制类工具照旧封禁。
-    workerGuard = new SubagentGuard(workerDef, workspacePath || '', { workerMode: true, denyMcpByDefault: true })
+    // 对员工放行，其余控制类工具照旧封禁。denyMcpByDefault 的含义是
+    // 「以解析出的授权为准」——授权缺省（fail-closed）时仍是全拒。
+    workerGuard = new SubagentGuard(workerDef, workspacePath || '', {
+      workerMode: true,
+      denyMcpByDefault: true,
+      mcpGrant: resolvedGrant?.grant,
+    })
+    // 对账：授权清单里点名的服务器 vs 当前 MCP 目录（all 档无名单，天然免疫）。
+    // 服务器改名/删除后授予会静默落空，这里让失效「说话」。
+    if (resolvedGrant && resolvedGrant.namedServers.length > 0) {
+      const missingServers = await reconcileMcpGrantServers({
+        projectPath: workspacePath || undefined,
+        namedServers: resolvedGrant.namedServers,
+      })
+      mcpGrantWarningText = buildMcpGrantWarning(missingServers)
+    }
   }
   // Split the prompt into a byte-stable prefix + per-turn dynamic context so
   // provider prefix caches (OpenAI / DeepSeek / Anthropic) keep hitting across
@@ -4452,6 +4553,11 @@ async function runAgentLoop(
   ))
   let stableSystemPrompt = stable
   let dynamicContext = dynamic
+  // MCP 授权对账告警：授权清单里点名的服务器不在当前 MCP 目录（改名/删除/未刷新），
+  // 让员工本轮就知道哪些工具不可用、如实回报，而不是反复尝试不存在的工具。
+  if (mcpGrantWarningText) {
+    dynamicContext += mcpGrantWarningText
+  }
   // 一人公司：把当前员工名册直接放进动态上下文。此前总监每轮都要调用
   // list_agents 重新确认名单（实测单个总监会话 61 次），每次都多一个回合
   // + 一组消息永远留在历史里。名册变化（增/删员工）时下一轮自动更新。
@@ -5098,6 +5204,11 @@ async function runAgentLoop(
   // 循环，不是打转。
   const repeatLastResults = new Map<string, string>()
   let loopGuardStopped = false
+  // 任务列表（左上角进度）催更状态：
+  // - roundsSinceTodoUpdate：连续几轮有工具活动却没调用 manage_todo；
+  // - todoNudgePending：本轮结束时判定要提醒 → 挂到下一轮第一条工具结果尾部。
+  let roundsSinceTodoUpdate = 0
+  let todoNudgePending = ''
 
   while (iterationsLeft-- > 0) {
       if (abortController.signal.aborted) break
@@ -5634,13 +5745,20 @@ async function runAgentLoop(
         // 角色交替和 tool_call_id 配对都有要求，只有 tool 结果是永远合法的。
         const repeatVerdict =
           effectiveRepeatCount === undefined ? 'none' : repeatCallVerdict(tc.name, effectiveRepeatCount)
-        const result: ToolResult =
+        const withRepeatNote: ToolResult =
           repeatVerdict === 'nudge' && effectiveRepeatCount !== undefined
             ? {
                 ...incoming,
                 result: `${incoming.result}\n\n${buildRepeatReminder(tc.name, effectiveRepeatCount)}`,
               }
             : incoming
+        // 进度催更：任务列表连续多轮没更新时，把提醒挂在本轮第一条工具结果尾部
+        // （只挂一次）。位置与打转提醒一致——不新增消息，不破坏 tool 配对。
+        let result: ToolResult = withRepeatNote
+        if (todoNudgePending) {
+          result = { ...withRepeatNote, result: `${String(withRepeatNote.result ?? '')}\n\n${todoNudgePending}` }
+          todoNudgePending = ''
+        }
         // A user-denied call shows 'rejected' (not 'error') in the trace —
         // the pipeline marks denials via result.rejected.
         useChatStore.getState().setTraceStatus(sessionId, tc.id, result.rejected ? 'rejected' : result.isError ? 'error' : 'success')
@@ -5729,9 +5847,16 @@ async function runAgentLoop(
 
         // ── manage_todo: update the visible todo list ──
         if (tc.name === 'manage_todo') {
-          const todos = normalizeTodos(tc.arguments.todos)
+          // 自动推进：模型常常只把完成项标 completed、忘了把下一条标
+          // in_progress —— 这里补上，让「做完一条」在同一帧就把左上角进度
+          // 推到下一条，而不是停在旧条目上等模型下次想起来。
+          const todos = promoteNextTodo(normalizeTodos(tc.arguments.todos))
           chatStore.setTodos(sessionId, todos)
-          const result = `任务列表已更新 (${todos.length} 项)`
+          // 刚更新过 → 催更计数清零，之前排队的提醒作废（用户已经看到进度动了）
+          roundsSinceTodoUpdate = 0
+          todoNudgePending = ''
+          const doneCount = todos.filter((t) => t.status === 'completed').length
+          const result = `任务列表已更新 (${doneCount}/${todos.length} 已完成)`
           chatStore.appendToolResult(sessionId, assistantMsgId, withToolTiming(tc, { toolCallId: tc.id, name: tc.name, result }))
           recordToolMessage(tc.id, result)
           useChatStore.getState().setTraceStatus(sessionId, tc.id, 'success')
@@ -5943,6 +6068,21 @@ async function runAgentLoop(
           images: roundImages.length ? roundImages : undefined,
           synthetic: true,
         })
+      }
+
+      // ── 任务列表催更（左上角进度）────────────────────────────────────
+      // manage_todo 是唯一能推进进度的入口，而模型常常只在开头调一次：真实
+      // 会话里 300 条消息的长跑只有 1 次 manage_todo，进度条于是整场停在 0/N。
+      // 这里做确定性兜底：连续 TODO_NUDGE_ROUNDS 轮有工具活动却没更新列表，
+      // 就在下一轮的第一条工具结果里提醒一次（不新增消息，不打断工具配对）。
+      const liveTodos = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.todos || []
+      const hasOpenTodos = liveTodos.some((t) => t.status === 'in_progress' || t.status === 'pending')
+      if (hasOpenTodos && parsedToolCalls.some((tc) => tc.name !== 'manage_todo')) {
+        roundsSinceTodoUpdate += 1
+        if (roundsSinceTodoUpdate >= TODO_NUDGE_ROUNDS) {
+          todoNudgePending = buildTodoNudge(roundsSinceTodoUpdate)
+          roundsSinceTodoUpdate = 0
+        }
       }
 
       // Commit the round to disk. Until now a run only saved in its finally, so

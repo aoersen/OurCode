@@ -20,6 +20,13 @@
 
 const AGENT_DIRS = ['.ourcode/agents']
 
+/** MCP 授权值：'all' 哨兵（全部服务器，含未来新装）或服务器名清单（mcp_config.json 的 key）。 */
+export type McpGrantSpec = 'all' | string[]
+
+/** 授权面写保护：这些路径只归用户/看板修改，员工与子智能体一律拒绝写。
+ *  company.json 是 MCP 授权文件、agents/ 是角色定义——写它们等于自我提权。 */
+const AUTH_WRITE_PROTECTED = ['.ourcode/company.json', '.ourcode/agents']
+
 /** Tools that never get executed by a subagent, regardless of allowlist. */
 export const CONTROL_TOOLS = new Set([
   'submit_plan', 'ask_user_question', 'manage_todo', 'run_subagent',
@@ -61,6 +68,11 @@ export interface SubAgentDefinition {
   allowedReadPaths?: string[]
   /** Substrings that block a run_command invocation (e.g. 'rm -rf'). */
   blockedCommands?: string[]
+  /** MCP 授权（普通子智能体路径用；员工路径的解析结果走 opts.mcpGrant）。
+   *  'all' 哨兵或服务器名清单；缺省 = 维持旧行为（员工拒绝 / 子智能体继承父级）。 */
+  mcp?: string[]
+  /** 从 MCP 授权中点名排除的服务器（胜利优先：对 'all' 或清单都做减法）。 */
+  mcpDeny?: string[]
   maxIterations?: number
   /** Prompt+completion token budget; the run stops when exceeded. */
   maxTokensBudget?: number
@@ -208,6 +220,9 @@ export function failClosedDefinition(def: SubAgentDefinition): SubAgentDefinitio
     tools: READONLY_AGENT_TOOLS,
     allowedReadPaths: ['.'],
     allowedWritePaths: [],
+    // 只读降级必须连 MCP 一起关：MCP 工具同样能写文件/出网
+    mcp: undefined,
+    mcpDeny: undefined,
     systemPrompt:
       `${def.systemPrompt}\n\n（系统提示：未找到该角色的定义文件，已降级为只读模式；写文件/执行命令会被拒绝。请把结论回报给总监。）`,
   }
@@ -387,6 +402,8 @@ async function definitionFromFile(file: { path: string; name: string; source: 'w
     allowedWritePaths: fm.allowedwritepaths !== undefined ? parseArray(fm.allowedwritepaths) : undefined,
     allowedReadPaths: fm.allowedreadpaths !== undefined ? parseArray(fm.allowedreadpaths) : undefined,
     blockedCommands: fm.blockedcommands !== undefined ? parseArray(fm.blockedcommands) : undefined,
+    mcp: fm.mcp !== undefined ? parseArray(fm.mcp) : undefined,
+    mcpDeny: fm.mcpdeny !== undefined ? parseArray(fm.mcpdeny) : undefined,
     maxIterations: fm.maxiterations !== undefined ? parseInt(fm.maxiterations, 10) || undefined : undefined,
     maxTokensBudget: fm.maxtokensbudget !== undefined ? parseInt(fm.maxtokensbudget, 10) || undefined : undefined,
     temperature: fm.temperature !== undefined ? parseFloat(fm.temperature) || undefined : undefined,
@@ -430,7 +447,7 @@ export class SubagentGuard {
   constructor(
     private def: SubAgentDefinition,
     private projectPath: string,
-    private opts: { workerMode?: boolean; denyMcpByDefault?: boolean } = {},
+    private opts: { workerMode?: boolean; denyMcpByDefault?: boolean; mcpGrant?: McpGrantSpec } = {},
   ) {}
 
   // 员工模式（M4）：员工是一等会话、不是子智能体——员工规则要求他们用
@@ -443,12 +460,46 @@ export class SubagentGuard {
       (name === 'send_message' || name === 'run_subagent' || name === 'restore_changes')
   }
 
+  /** MCP 授权来源：员工路径的解析结果（company.json 看板分配 ∪ 角色文件声明）优先，
+   *  普通子智能体路径回退到角色文件自己的 mcp 声明；两者都缺省 = 维持旧行为。 */
+  private grantSource(): McpGrantSpec | undefined {
+    return this.opts.mcpGrant !== undefined ? this.opts.mcpGrant : this.def.mcp
+  }
+
+  /** `mcp__<server>__<tool>` → 服务器名（与 ToolExecutor.mcpServerOf 同法）。 */
+  private mcpServerOf(name: string): string {
+    return name.slice('mcp__'.length).split('__')[0]
+  }
+
+  /** 该 MCP 工具是否被授权：授权覆盖其服务器 ∧ 未被 mcpDeny 点名排除。
+   *  mcpDeny 胜利优先——对 'all' 与清单都做减法。 */
+  private mcpGranted(name: string): boolean {
+    if (!name.startsWith('mcp__')) return false
+    const grant = this.grantSource()
+    if (!grant) return false
+    const server = this.mcpServerOf(name)
+    if (Array.isArray(this.def.mcpDeny) && this.def.mcpDeny.includes(server)) return false
+    if (grant === 'all') return true
+    return grant.includes(server)
+  }
+
   /** MCP tools are opt-in for role workers: the full MCP catalog rides on
-   *  EVERY request (schema tokens), and a definition without a `tools` list
-   *  would otherwise allow all of it. A role that needs an MCP tool lists it
-   *  explicitly in `.ourcode/agents/<role>.md` frontmatter. */
+   *  EVERY request (schema tokens). The grant comes from the company
+   *  dashboard assignment (.ourcode/company.json, default 'all') united with
+   *  the role file's own `mcp:` declaration; unresolved grants stay denied. */
   private mcpDenied(name: string): boolean {
-    return this.opts.denyMcpByDefault === true && name.startsWith('mcp__') && this.def.tools == null
+    return this.opts.denyMcpByDefault === true && name.startsWith('mcp__') && !this.mcpGranted(name)
+  }
+
+  /** MCP 工具是否被策略拦下：已声明授权（opts.mcpGrant 或 def.mcp）却未覆盖该
+   *  服务器 → 拒——「声明即边界」，清单外不流入；完全未声明 → 旧行为
+   *  （员工拒绝 / 普通子智能体继承父级全集）。旧机制兼容：tools 白名单里
+   *  点名了完整工具名的仍走白名单精确放行。 */
+  private mcpBlockedByPolicy(name: string): boolean {
+    if (!name.startsWith('mcp__')) return false
+    if (this.mcpGranted(name)) return false
+    if (this.def.tools != null && this.def.tools.includes(name)) return false
+    return this.mcpDenied(name) || this.grantSource() !== undefined
   }
 
   toolAllowed(name: string): boolean {
@@ -456,7 +507,7 @@ export class SubagentGuard {
     // workers must be able to report (send_message), delegate read-only
     // research (run_subagent) and undo their own bad edit (restore_changes).
     if (CONTROL_TOOLS.has(name)) return this.controlAllowed(name)
-    if (this.mcpDenied(name)) return false
+    if (this.mcpBlockedByPolicy(name)) return false
     if (this.def.tools == null) return true
     // skill__ tools only load instructions — harmless for any subagent
     if (name.startsWith('skill__')) return true
@@ -465,8 +516,12 @@ export class SubagentGuard {
 
   /** Returns an error message when the call is blocked, else null. */
   checkCall(name: string, args: Record<string, any>): string | null {
-    if (this.mcpDenied(name)) {
-      return `员工默认不加载 MCP 工具（节省每轮工具定义 token）。如需使用 ${name}，请在 .ourcode/agents/${this.def.name}.md 的 tools 中显式列出。`
+    if (this.mcpBlockedByPolicy(name)) {
+      const server = name.startsWith('mcp__') ? this.mcpServerOf(name) : name
+      return (
+        `MCP 服务器 "${server}" 未授权给角色「${this.def.name}」（未授权的 MCP 工具不加载，节省每轮工具定义 token）。` +
+        `请在公司看板 →「MCP 分配」中为该角色分配，或编辑 .ourcode/company.json / 角色定义的 mcp 字段后重新运行。`
+      )
     }
     if (CONTROL_TOOLS.has(name)) {
       if (!this.controlAllowed(name)) {
@@ -476,6 +531,25 @@ export class SubagentGuard {
     }
     if (this.def.tools != null && !this.def.tools.includes(name) && !name.startsWith('skill__')) {
       return `工具 "${name}" 不在子智能体「${this.def.name}」的权限白名单中。可用的工具: ${this.def.tools.join(', ')}。`
+    }
+
+    // ── 授权面写保护 ──
+    // company.json 是 MCP 授权文件、agents/ 是角色定义：只归用户/看板修改，
+    // 员工或子智能体写它们 = 自我提权，一律拒绝（读不受影响；总监已有
+    // targemode 路径门禁，用户主会话不经过本 guard）。相对与绝对路径都查。
+    if (WRITE_PATH_TOOLS.has(name)) {
+      const protectedTargets = name === 'multi_edit_file'
+        ? (Array.isArray(args.edits) ? args.edits : []).map((e: any) => String(e?.path || '')).filter(Boolean)
+        : typeof args.path === 'string' && args.path ? [args.path] : []
+      for (const target of protectedTargets) {
+        const candidates = [target, resolveAllowedRoot(this.projectPath, target)]
+        if (candidates.some((t) => AUTH_WRITE_PROTECTED.some((rel) => isPathWithin(resolveAllowedRoot(this.projectPath, rel), t)))) {
+          return (
+            `路径 "${target}" 是权限配置（.ourcode/company.json / .ourcode/agents/），子智能体「${this.def.name}」不允许修改。` +
+            `请把需要的变更写进回报，由用户在公司看板或编辑器中操作。`
+          )
+        }
+      }
     }
 
     // ── Path scoping ──
