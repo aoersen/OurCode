@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useUIStore } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
 import { listAllSkills, getGlobalRoot, SKILL_ORIGIN_LABELS, type SkillInfo, type SkillOrigin } from '@/services/skills/skillManager'
-import { isSkillEnabled, setSkillEnabled, readSkillConfig } from '@/services/skills/skillRegistry'
+import { setSkillEnabled, readSkillConfig, type SkillConfig } from '@/services/skills/skillRegistry'
 import { isBuiltinSkillName } from '@/services/skills/builtinSkills'
 
 interface LocalSkillRow extends SkillInfo {
@@ -47,17 +47,31 @@ export default function SkillPanel() {
 
   const reload = useCallback(async () => {
     const all = await listAllSkills(true)
-    const rows: LocalSkillRow[] = []
-    for (const s of all) {
-      const configRoot = await configRootFor(s)
-      const config = await readSkillConfig(configRoot)
-      rows.push({
-        ...s,
-        enabled: await isSkillEnabled(s.name, configRoot),
-        version: config.skills[s.name]?.version,
-        importedFrom: config.skills[s.name]?.importedFrom,
-      })
+    // The scan above is already the expensive part; the old loop then did a
+    // `stat` + `read` of skills.json PER SKILL (isSkillEnabled reads it again),
+    // so opening this tab cost N+1 IPC round-trips before anything rendered.
+    // Read each config root once, concurrently across skills.
+    const configs = new Map<string, Promise<SkillConfig>>()
+    const configFor = (root: string): Promise<SkillConfig> => {
+      let pending = configs.get(root)
+      if (!pending) {
+        pending = readSkillConfig(root)
+        configs.set(root, pending)
+      }
+      return pending
     }
+    const rows = await Promise.all(all.map(async (s): Promise<LocalSkillRow> => {
+      const configRoot = await configRootFor(s)
+      const config = await configFor(configRoot)
+      const entry = config.skills[s.name]
+      return {
+        ...s,
+        // Built-in skills can't be disabled — same rule isSkillEnabled applies.
+        enabled: isBuiltinSkillName(s.name) ? true : entry?.enabled !== false,
+        version: entry?.version,
+        importedFrom: entry?.importedFrom,
+      }
+    }))
     setSkills(rows)
   }, [])
 

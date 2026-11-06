@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
 import type { ChatSession, Checkpoint } from '@/types'
 import { writeToolPaths } from '@/services/tools/writePaths'
+import { usePanelActive } from './panelActivity'
 
 /** File-modifying tool names */
 const FILE_EDIT_TOOLS = new Set(['write_file', 'edit_file', 'multi_edit_file', 'delete_file', 'create_directory'])
@@ -90,46 +91,49 @@ export default function FileChangesPanel() {
   // Select the ACTION only — a whole-store subscription would re-render this
   // panel on every editorStore change (each cursor move while this tab is open).
   const openFile = useEditorStore((s) => s.openFile)
+  // The sidebar keeps panels mounted and hides the inactive ones (Sidebar.tsx),
+  // so background work below is gated on being the visible tab.
+  const panelActive = usePanelActive()
   // 已回退文件路径（按会话分组）—— 本地状态而非全局 store：面板跨全部会话展示，
   // 而 store.revertedFiles 只属于当前激活会话。会话/消息变化后重新拉取。
   const [revertedBySession, setRevertedBySession] = useState<Record<string, string[]>>({})
 
-  // Group file changes by session
+  // Group file changes by session. This walks EVERY message's tool calls across
+  // all sessions, so it is O(history) — and the sidebar keeps this panel mounted
+  // (see Sidebar.tsx). While the panel is hidden we return the previous result
+  // instead of recomputing on every streaming token; the fresh grouping is
+  // produced the moment the tab becomes visible again.
+  const groupedChangesCache = useRef<Array<{ sessionId: string; title: string; time: number; changes: FileChange[] }>>([])
   const groupedChanges = useMemo(() => {
-    const groups: Array<{ sessionId: string; title: string; time: number; changes: FileChange[] }> = []
-    const seen = new Map<string, FileChange[]>()
+    if (!panelActive) return groupedChangesCache.current
+    const sessionById = new Map(sessions.map((s) => [s.id, s]))
+    const seen: Array<{ sessionId: string; changes: FileChange[] }> = []
 
     for (const session of sessions) {
       const changes = extractFileChanges(session)
       if (changes.length === 0) continue
-      seen.set(session.id, changes)
+      seen.push({ sessionId: session.id, changes })
     }
 
     // Sort sessions by time desc
-    const sorted = Array.from(seen.entries()).sort((a, b) => {
-      const sa = sessions.find((s) => s.id === a[0])
-      const sb = sessions.find((s) => s.id === b[0])
-      return (sb?.updatedAt || 0) - (sa?.updatedAt || 0)
+    seen.sort((a, b) => (sessionById.get(b.sessionId)?.updatedAt || 0) - (sessionById.get(a.sessionId)?.updatedAt || 0))
+
+    const groups = seen.map(({ sessionId, changes }) => {
+      const session = sessionById.get(sessionId)!
+      return { sessionId, title: session.title, time: session.updatedAt, changes }
     })
 
-    for (const [sessionId, changes] of sorted) {
-      const session = sessions.find((s) => s.id === sessionId)
-      if (!session) continue
-      groups.push({
-        sessionId,
-        title: session.title,
-        time: session.updatedAt,
-        changes,
-      })
-    }
-
+    groupedChangesCache.current = groups
     return groups
-  }, [sessions])
+  }, [sessions, panelActive])
 
   // Load each session's reverted-file list so rows can show「已回退」+「恢复」。
   // Fired whenever the grouping changes (new session / new messages); failed
   // loads are silently ignored (the row just falls back to 回退/无检查点).
+  // Skipped while the panel is hidden: it is one IPC per session group, and a
+  // hidden panel would otherwise fire that fan-out on every streaming update.
   useEffect(() => {
+    if (!panelActive) return
     let cancelled = false
     const ids = Array.from(new Set(groupedChanges.map((g) => g.sessionId)))
     for (const sessionId of ids) {
@@ -142,7 +146,7 @@ export default function FileChangesPanel() {
         .catch(() => { /* ignore */ })
     }
     return () => { cancelled = true }
-  }, [groupedChanges])
+  }, [groupedChanges, panelActive])
 
   const isReverted = (change: FileChange) =>
     (revertedBySession[change.sessionId] || []).includes(change.filePath)

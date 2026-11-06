@@ -216,6 +216,19 @@ export default function MainLayout() {
   }, []) // No deps — reads live store state
 
   const effectiveSidebarWidth = isCompact ? Math.min(sidebarWidth, 200) : sidebarWidth
+  // The sidebar column keeps its COMPONENT mounted once it has been shown —
+  // only the column is hidden (display:none). Collapsing used to unmount the
+  // whole panel tree, which tore down the workspace file watcher (chokidar) and
+  // every panel's state; re-opening then paid for a watcher restart + a fresh
+  // `git status` + the panel's config IPC before anything appeared — the
+  // "切换卡一下" the user feels on every Ctrl+B / activity-bar click.
+  // Before the first reveal nothing is mounted (unchanged startup cost: a
+  // sidebar that was never opened must not read the workspace / scan skills).
+  const [sidebarEverShown, setSidebarEverShown] = useState(isSidebarVisible)
+  useEffect(() => {
+    if (isSidebarVisible) setSidebarEverShown(true)
+  }, [isSidebarVisible])
+  const sidebarShown = isSidebarVisible && !(isNarrow && isChatVisible)
 
   // Resizable panel drag handler
   const handlePanelResize = useCallback((panel: 'sidebar' | 'chat', e: React.MouseEvent) => {
@@ -259,8 +272,11 @@ export default function MainLayout() {
               办公室展示时仅 visibility:hidden，切回对话/编辑器是纯显示切换，
               不再整体重建（见 isOfficeShown 注释）。 */}
           <div className={`h-full min-h-0 flex gap-2 overflow-hidden ${isOfficeShown ? 'invisible' : ''}`}>
-            {isSidebarVisible && !(isNarrow && isChatVisible) && (
-              <div style={{ width: effectiveSidebarWidth }} className="shrink-0 relative">
+            {sidebarEverShown && (
+              <div
+                style={{ width: effectiveSidebarWidth }}
+                className={`shrink-0 relative ${sidebarShown ? '' : 'hidden'}`}
+              >
                 <div className="h-full rounded-xl overflow-hidden glass-chrome"><Sidebar /></div>
                 <div
                   className="resizer absolute right-0 top-0 h-full z-10"

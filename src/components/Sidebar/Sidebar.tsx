@@ -1,5 +1,5 @@
 import ClawPanel from '@/components/Claw/ClawPanel'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ProjectListPanel from './ProjectListPanel'
 import FileChangesPanel from './FileChangesPanel'
 import AgentTasksPanel from './AgentTasksPanel'
@@ -7,8 +7,28 @@ import UsagePanel from './UsagePanel'
 import SkillPanel from '../Skills/SkillPanel'
 import McpPanel from '../Mcp/McpPanel'
 import GitPanel from '../Git/GitPanel'
-import { useUIStore } from '@/stores/uiStore'
+import { PanelActivityProvider } from './panelActivity'
+import { useUIStore, type SidebarTab } from '@/stores/uiStore'
 import { useI18n } from '@/i18n/useI18n'
+
+/** Panel rendered for each activity-bar tab ('office' has no sidebar panel —
+ *  in the office window it is the full-window view rendered by MainLayout). */
+const PANELS = {
+  files: ProjectListPanel,
+  git: GitPanel,
+  changes: FileChangesPanel,
+  agent: AgentTasksPanel,
+  usage: UsagePanel,
+  skills: SkillPanel,
+  mcp: McpPanel,
+  claw: ClawPanel,
+} as const
+
+type PanelTab = keyof typeof PANELS
+
+function isPanelTab(tab: SidebarTab): tab is PanelTab {
+  return tab in PANELS
+}
 
 export default function Sidebar() {
   const activeSidebarTab = useUIStore((s) => s.activeSidebarTab)
@@ -16,6 +36,20 @@ export default function Sidebar() {
   const rootPath = useUIStore((s) => s.rootPath)
   const projectListView = useUIStore((s) => s.projectListView)
   const t = useI18n()
+
+  // 面板 keep-alive：每个面板只挂载一次，之后切换只是 display:none 的显隐。
+  // 卸载重建才是切换卡顿的来源 —— 每次重建都会重跑挂载副作用：文件树重新
+  // 注册 chokidar 监听（整目录扫描 + MCP 配置重载）、`git status` 子进程、
+  // 技能/用量/MCP 配置的 IPC 扇出，全部挤在一次点击里。挂载过的标签收集在
+  // `visitedTabs`，只有首次进入某标签才付一次真实加载成本。
+  const activePanelTab = isPanelTab(activeSidebarTab) ? activeSidebarTab : null
+  const [visitedTabs, setVisitedTabs] = useState<PanelTab[]>(
+    () => (activePanelTab ? [activePanelTab] : []),
+  )
+  useEffect(() => {
+    if (!activePanelTab) return
+    setVisitedTabs((prev) => (prev.includes(activePanelTab) ? prev : [...prev, activePanelTab]))
+  }, [activePanelTab])
 
   const headerTitle = useMemo(() => {
     switch (activeSidebarTab) {
@@ -153,25 +187,22 @@ export default function Sidebar() {
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {activeSidebarTab === 'files' ? (
-          <ProjectListPanel />
-        ) : activeSidebarTab === 'git' ? (
-          <GitPanel />
-        ) : activeSidebarTab === 'changes' ? (
-          <FileChangesPanel />
-        ) : activeSidebarTab === 'agent' ? (
-          <AgentTasksPanel />
-        ) : activeSidebarTab === 'usage' ? (
-          <UsagePanel />
-        ) : activeSidebarTab === 'skills' ? (
-          <SkillPanel />
-        ) : activeSidebarTab === 'mcp' ? (
-          <McpPanel />
-        ) : activeSidebarTab === 'claw' ? (
-          <ClawPanel />
-        ) : null}
+      {/* Content — every visited panel stays mounted; only the active one is
+          displayed. Hidden panels get `display:none` (Tailwind `hidden`), so
+          layout/paint/a11y stay out of the way, and they are told through
+          PanelActivityProvider that they must pause background work. */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {visitedTabs.map((tab) => {
+          const Panel = PANELS[tab]
+          const isActive = tab === activeSidebarTab
+          return (
+            <PanelActivityProvider key={tab} value={isActive}>
+              <div className={isActive ? 'h-full' : 'hidden'} data-sidebar-panel={tab}>
+                <Panel />
+              </div>
+            </PanelActivityProvider>
+          )
+        })}
       </div>
     </div>
   )

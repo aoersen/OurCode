@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useI18n } from '@/i18n/useI18n'
 import type { ToolDefinition } from '@shared/types'
 import McpConfigSection from '../Settings/McpConfigSection'
+import { usePanelActive } from '../Sidebar/panelActivity'
 
 /**
  * MCP 管理中心 — a left sidebar panel (same slot the old extension
@@ -77,6 +78,11 @@ export default function McpPanel() {
   // The current project follows the ACTIVE SESSION (same rule as SettingsModal)
   const currentProjectPath = useChatStore((s) => s.sessions.find((x) => x.id === s.activeSessionId)?.projectPath ?? null)
   const t = useI18n()
+  // The sidebar keeps panels mounted and hides the inactive ones, so "mounted"
+  // no longer means "on screen" — polling and the initial load are gated on
+  // this flag instead (otherwise the 3s status poll would keep running behind
+  // every other sidebar tab).
+  const panelActive = usePanelActive()
 
   const [activeTab, setActiveTab] = useState<'servers' | 'config' | 'tools' | 'resources' | 'prompts'>('servers')
   const [loading, setLoading] = useState(false)
@@ -159,12 +165,6 @@ export default function McpPanel() {
     }
   }, [])
 
-  // The panel unmounts when the user switches activity-bar tabs, so effects
-  // below run on every (re)entry — no extra open/close state needed.
-  useEffect(() => {
-    void refreshServers()
-  }, [refreshServers])
-
   // Refresh per tab
   useEffect(() => {
     if (activeTab === 'tools') void refreshTools()
@@ -173,17 +173,20 @@ export default function McpPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
 
-  // Live status polling while the panel is open — lets a reconnected server
-  // show up without manual refreshes. Paused when an error is showing so the
-  // banner doesn't reappear immediately after the user dismisses it.
+  // Load + live status polling, only while the panel is the visible one.
+  // Becoming active again refreshes immediately (the panel is kept alive, so no
+  // remount happens to do it for us). Paused when an error is showing so the
+  // banner doesn't reappear immediately after the user dismisses it, and while
+  // the window is hidden.
   useEffect(() => {
-    if (activeTab !== 'servers' || error) return
+    if (!panelActive || activeTab !== 'servers' || error) return
+    void refreshServers()
     const timer = setInterval(() => {
       if (document.hidden) return // 窗口隐藏时暂停轮询
       void refreshServers()
     }, 3000)
     return () => clearInterval(timer)
-  }, [activeTab, refreshServers, error])
+  }, [activeTab, refreshServers, error, panelActive])
 
   const refreshAll = async () => {
     setLoading(true)

@@ -5,6 +5,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useUIStore } from '@/stores/uiStore'
 import LoadingSpinner from '../Common/LoadingSpinner'
 import { useI18n } from '@/i18n/useI18n'
+import { usePanelActive } from './panelActivity'
 
 interface FileTreeProps {
   rootPath: string
@@ -27,6 +28,93 @@ const EXPANDED_CAP = 300
  *  and below the viewport so scrolling feels instant. */
 const ROW_HEIGHT = 26
 const ROW_OVERSCAN = 12
+
+/** Delay before the workspace watcher is registered: long enough for the tree to
+ *  paint, short enough that edits made right after opening still land — the tree
+ *  itself is already read fresh from disk. */
+const WATCH_START_DELAY_MS = 400
+
+/** Grace period before the last unmount tears the watcher down. Toggling between
+ *  the project list and the tree (or collapsing the panel) would otherwise drop
+ *  and immediately recreate the watcher, and every creation is a full `chokidar`
+ *  walk of the workspace in the main process. A remount inside the window keeps
+ *  the watcher that is already running. */
+const WATCH_TEARDOWN_GRACE_MS = 1500
+
+/**
+ * One watch reference per ROOT, held by every mounted tree that shows it.
+ *
+ * The count deliberately lives at module scope rather than in the component: the
+ * same workspace is shown by the sidebar tree, the office rail, and again after
+ * "返回项目列表"; `fs:watch` / `fs:unwatch` go to a reference-counted registry in
+ * the main process, so the two sides have to agree exactly. Keeping the count
+ * here (instead of per component instance) means a UI toggle neither restarts
+ * chokidar nor leaves the main process holding a reference nobody owns.
+ */
+interface TreeWatchState {
+  refs: number
+  /** Whether `fs:watch` has actually been sent for this root. */
+  started: boolean
+  startTimer: ReturnType<typeof setTimeout> | null
+  stopTimer: ReturnType<typeof setTimeout> | null
+}
+
+const treeWatches = new Map<string, TreeWatchState>()
+
+function watchState(rootPath: string): TreeWatchState {
+  let state = treeWatches.get(rootPath)
+  if (!state) {
+    state = { refs: 0, started: false, startTimer: null, stopTimer: null }
+    treeWatches.set(rootPath, state)
+  }
+  return state
+}
+
+/** Send `fs:watch` once per root, after the tree has had a chance to paint. */
+function startTreeWatch(rootPath: string, state: TreeWatchState): void {
+  if (state.startTimer !== null) return
+  state.startTimer = setTimeout(() => {
+    state.startTimer = null
+    // Every holder may have gone again before this fired.
+    if (treeWatches.get(rootPath) !== state || state.refs <= 0) return
+    state.started = true
+    void Promise.resolve(window.electronAPI.watch?.(rootPath))
+      .then((res) => {
+        if (!res) return
+        useUIStore.setState({ untrustedProjectPath: res.ok === false ? rootPath : null })
+      })
+      .catch(() => { /* watcher failed — the tree still loads */ })
+  }, WATCH_START_DELAY_MS)
+}
+
+/** A tree mounted for this root: take (or reuse) the reference. */
+function acquireTreeWatch(rootPath: string): void {
+  const state = watchState(rootPath)
+  state.refs += 1
+  if (state.stopTimer !== null) {
+    // Teardown was pending but never happened — the main process still holds the
+    // reference, so this is a pure reuse, not a new registration.
+    clearTimeout(state.stopTimer)
+    state.stopTimer = null
+  }
+  if (!state.started) startTreeWatch(rootPath, state)
+}
+
+/** A tree unmounted: drop the reference, tearing down after the grace period. */
+function releaseTreeWatch(rootPath: string): void {
+  const state = treeWatches.get(rootPath)
+  if (!state) return
+  state.refs = Math.max(0, state.refs - 1)
+  if (state.refs > 0) return
+  if (state.stopTimer !== null) clearTimeout(state.stopTimer)
+  state.stopTimer = setTimeout(() => {
+    state.stopTimer = null
+    if (state.refs > 0) return
+    treeWatches.delete(rootPath)
+    // Nothing was ever registered (the start was cancelled before it fired).
+    if (state.started) window.electronAPI.unwatch?.(rootPath)
+  }, WATCH_TEARDOWN_GRACE_MS)
+}
 
 /** One visible tree row: the entry plus its indent depth in the flattened list.
  *  The tree is rendered as a windowed list of these rows instead of one huge
@@ -94,6 +182,9 @@ function FileTree({ rootPath, refreshSignal, onOpenFile }: FileTreeProps) {
   const [trustGeneration, setTrustGeneration] = useState(0)
   const { showHiddenFiles } = useEditorStore((s) => s.preferences)
   const t = useI18n()
+  // The sidebar keeps panels mounted (see Sidebar.tsx). The tree must not keep
+  // spawning `git status` subprocesses while it is hidden off screen.
+  const panelActive = usePanelActive()
 
   // Drag scroll lock: while dragging a file, hold the tree's scroll position so
   // the browser's edge auto-scroll can't slide the whole tree up/down mid-drag.
@@ -248,31 +339,32 @@ function FileTree({ rootPath, refreshSignal, onOpenFile }: FileTreeProps) {
       await refreshTree(true)
       fetchGitStatus()
     })()
-    // Start the watcher in the BACKGROUND — its initial recursive scan
-    // (chokidar depth 10) and MCP-config load can take a while on big
-    // projects, and the file tree must not wait for it to show files.
-    void Promise.resolve(window.electronAPI.watch?.(rootPath))
-      .then((res) => {
-        if (!res || cancelled) return
-        useUIStore.setState({ untrustedProjectPath: res.ok === false ? rootPath : null })
-      })
-      .catch(() => { /* watcher failed — the tree still loads */ })
+    // Watch the workspace through a per-root reference (see acquireTreeWatch):
+    // registering chokidar makes the main process walk the whole tree (depth 10)
+    // and (re)load the workspace's MCP config on the thread that serves every
+    // other IPC, so it happens once per root, after the tree has painted, and is
+    // torn down only when the last view of that root goes away.
     const unsubscribe = window.electronAPI.onFileChanged?.(handleFileChanged)
+    acquireTreeWatch(rootPath)
 
     return () => {
       cancelled = true
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-      window.electronAPI.unwatch?.(rootPath)
+      releaseTreeWatch(rootPath)
       unsubscribe?.()
     }
   }, [rootPath, refreshTree, fetchGitStatus, handleFileChanged, trustGeneration])
 
   // Git status badges refresh on a timer; the initial fetch happens once the
-  // tree is loaded (see the watch effect above).
+  // tree is loaded (see the watch effect above). Paused while the panel is
+  // hidden — an off-screen tree re-running `git status` every 15s is pure main-
+  // process load (and it does NOT refresh the mount, since the panel is kept
+  // alive rather than rebuilt).
   useEffect(() => {
+    if (!panelActive) return
     const interval = setInterval(fetchGitStatus, 15000)
     return () => clearInterval(interval)
-  }, [fetchGitStatus])
+  }, [fetchGitStatus, panelActive])
 
   // Stable callbacks (read state via refs) so memoized FileTreeNodes only
   // re-render when their own props actually change.

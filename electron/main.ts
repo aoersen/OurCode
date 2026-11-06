@@ -41,6 +41,8 @@ import { initComputerUse, registerComputerUseIpc, shutdownComputerUse } from './
 import { WorkspaceTrust, canonicalDir, isWithinDir } from './services/workspace-trust'
 import { CheckpointRepo } from './services/checkpoint-repo'
 import { detectRemoteAction, recordRemoteAction, remoteActionNote, listRemoteActions } from './services/remoteActions'
+import { createGitReadCache } from './services/git-read-cache'
+import { createWatchRegistry } from './services/watch-registry'
 import { ensureWhisperServer, stopWhisperServer, whisperStatus } from './services/whisperRuntime'
 import { nodeTlsFetch } from './services/node-tls-fetch'
 import { fetchPage } from './services/web-safety'
@@ -338,16 +340,17 @@ function isSafeEnvVarName(name: string): boolean {
 }
 
 // ── Read-only git command cache ──────────────────────────────────────────────
-// StatusBar / FileTree / chatStore each poll git on their own timer (10s / 15s /
-// 30s), all issuing `git status` / `git rev-parse` / `git log` independently.
-// On a big repo a single `git status --porcelain` costs 0.5–5s and concurrent
-// git processes contend for `.git/index.lock`, so the main process dedupes and
-// serialises these read-only calls: within a TTL window the first request runs
-// git and the rest are served from cache. Mutating commands and anything with
-// stdin input bypass the cache. `gitExecRaw` (byte-exact blob reads for the
-// diff editor) is intentionally NOT cached so it always reflects the latest
-// working-tree state.
-const GIT_READ_ONLY_SUBCOMMANDS = new Set(['rev-parse', 'status', 'log'])
+// StatusBar / FileTree / GitPanel / chatStore each poll git on their own timer
+// (10s / 15s / 30s), all issuing `git status` / `git rev-parse` / `git log`
+// independently. On a big repo a single `git status --porcelain` costs 0.5–5s
+// and concurrent git processes contend for `.git/index.lock`, so the main
+// process dedupes and serialises these read-only calls: within a TTL window the
+// first request runs git and the rest are served from cache — the cache itself
+// lives in services/git-read-cache.ts (keying, TTL, single-flight, eviction).
+// Mutating commands and anything with stdin input bypass the cache.
+// `gitExecRaw` (byte-exact blob reads for the diff editor) is intentionally NOT
+// cached so it always reflects the latest working-tree state.
+const GIT_READ_ONLY_SUBCOMMANDS = new Set(['rev-parse', 'status', 'log', 'rev-list'])
 const GIT_CACHE_TTL_MS = 5_000
 const GIT_CACHE_MAX_ENTRIES = 256
 
@@ -356,12 +359,10 @@ const GIT_CACHE_MAX_ENTRIES = 256
 const GIT_LOCK_RETRIES = 4
 const GIT_LOCK_RETRY_DELAY_MS = 700
 
-interface GitCacheEntry {
-  at: number
-  promise: Promise<string>
-}
-
-const gitReadOnlyCache = new Map<string, GitCacheEntry>()
+const gitReadCache = createGitReadCache({
+  ttlMs: GIT_CACHE_TTL_MS,
+  maxEntries: GIT_CACHE_MAX_ENTRIES,
+})
 
 function gitCacheKey(cwd: string, args: string[]): string {
   return `${cwd}\u0000${args.join(' ')}`
@@ -374,24 +375,12 @@ function isReadOnlyGit(args: string[]): boolean {
 /** Execute a git command and return stdout */
 function gitExec(cwd: string, args: string[], input?: string): Promise<string> {
   if (!input && isReadOnlyGit(args)) {
-    const key = gitCacheKey(cwd, args)
-    const now = Date.now()
-    const hit = gitReadOnlyCache.get(key)
-    if (hit && now - hit.at < GIT_CACHE_TTL_MS) return hit.promise
-    const promise = runGit(cwd, args, input, true)
-    gitReadOnlyCache.set(key, { at: now, promise })
-    // Simple FIFO eviction — the map preserves insertion order. The cache only
-    // ever holds a handful of entries per project, so this is a safety net.
-    if (gitReadOnlyCache.size > GIT_CACHE_MAX_ENTRIES) {
-      const oldestKey = gitReadOnlyCache.keys().next().value
-      if (oldestKey !== undefined) gitReadOnlyCache.delete(oldestKey)
-    }
-    return promise
+    return gitReadCache.run(gitCacheKey(cwd, args), () => runGit(cwd, args, input, true))
   }
   // A mutating git command (or one with stdin input) invalidates the cached
   // read-only results, so the next status/log/rev-parse poll reflects the just-
   // performed mutation instead of serving a snapshot from up to 5s ago.
-  gitReadOnlyCache.clear()
+  gitReadCache.invalidateAll()
   return runGit(cwd, args, input, true)
 }
 
@@ -1268,24 +1257,31 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('fs:watch', async (_event, path: string) => {
-    // Watching is also what starts a workspace's MCP servers, so this is the
-    // one call that turns an untrusted folder into code execution. Untrusted
-    // roots register nothing at all and say so.
-    if (!authorizeRendererPath(path)) return { ok: false, untrusted: true }
-    // Batch watcher events per root: a build (or install) emits hundreds of
-    // change events in quick succession; broadcasting each one as its own
-    // fs:fileChanged IPC message floods the renderer and forces a full
-    // file-tree refresh per event. Coalesce paths within a short window and
-    // flush them in one go. Heavily machine-generated dirs (dist/build/out/...)
-    // are already dropped at the watcher level, so this only smooths over the
-    // remaining burst of real source edits.
-    const pendingPaths = new Set<string>()
-    let flushTimer: NodeJS.Timeout | null = null
+  // ── Workspace watching: one chokidar watcher per root, reference counted ──
+  // `fs:watch` / `fs:unwatch` come from the renderer's file-tree component, and
+  // that component comes and goes (sidebar tab switches, project list ↔ tree,
+  // collapsing the sidebar, a second window). Registering on every mount meant
+  // a full recursive scan of the workspace on each of those interactions. The
+  // registry below turns the pair into a count per root: the chokidar scan (and
+  // the search-index warm-up) happen on the first reference, teardown only on
+  // the last. The per-root event batch (coalescing bursts into one
+  // fs:fileChanged flush) lives with the watcher, so it is created/cleared
+  // exactly once per root as well. MCP servers are NOT tied to the count — they
+  // follow the active workspace and are re-pointed by the handler below.
+  const watchBatches = new Map<string, { pending: Set<string>; timer: NodeJS.Timeout | null }>()
+
+  const startWatchingRoot = async (root: string): Promise<void> => {
+    let batch = watchBatches.get(root)
+    if (!batch) {
+      const pending: Set<string> = new Set()
+      batch = { pending, timer: null }
+      watchBatches.set(root, batch)
+    }
+    const current = batch
     const flush = (): void => {
-      flushTimer = null
-      const changed = Array.from(pendingPaths)
-      pendingPaths.clear()
+      current.timer = null
+      const changed = Array.from(current.pending)
+      current.pending.clear()
       for (const changedPath of changed) {
         broadcast('fs:fileChanged', changedPath)
         // Keep the in-memory codebase index fresh (single-file edits update in
@@ -1293,24 +1289,54 @@ function registerIpcHandlers(): void {
         fileIndex.onFileChanged(changedPath)
       }
     }
-    fileSystem.watch(path, (changedPath) => {
-      pendingPaths.add(changedPath)
-      if (flushTimer === null) flushTimer = setTimeout(flush, 150)
+    // A burst (build, install, git op) emits hundreds of change events; one IPC
+    // per event floods the renderer and forces a full file-tree refresh each
+    // time. Coalesce within a short window and flush once.
+    fileSystem.watch(root, (changedPath) => {
+      current.pending.add(changedPath)
+      if (current.timer === null) current.timer = setTimeout(flush, 150)
     })
     // Warm the search index in the background so the first search is already
-    // served from memory; MCP servers load in parallel below.
-    fileIndex.markWatched(path)
-    // Loading a workspace also (re)loads its MCP servers
+    // served from memory (MCP servers are loaded by the fs:watch handler, which
+    // also covers re-entering a project whose watcher never stopped).
+    fileIndex.markWatched(root)
+  }
+
+  const stopWatchingRoot = (root: string): void => {
+    const batch = watchBatches.get(root)
+    if (batch?.timer) clearTimeout(batch.timer)
+    watchBatches.delete(root)
+    fileSystem.unwatch(root)
+  }
+
+  const watchRegistry = createWatchRegistry({
+    // Renderer paths are absolute; resolve() collapses trailing separators /
+    // `..` so two spellings of one workspace share a single watcher.
+    keyOf: (root) => resolve(root),
+    start: startWatchingRoot,
+    stop: stopWatchingRoot,
+  })
+
+  ipcMain.handle('fs:watch', async (_event, path: string) => {
+    // Watching is also what starts a workspace's MCP servers, so this is the
+    // one call that turns an untrusted folder into code execution. Untrusted
+    // roots register nothing at all and say so.
+    if (!authorizeRendererPath(path)) return { ok: false, untrusted: true }
     try {
-      await mcp.loadConfig(path)
-    } catch (error: any) {
-      console.error('MCP 配置加载失败:', error.message)
+      await watchRegistry.acquire(path)
+    } catch {
+      /* watcher failed to start — the renderer still lists the tree */
     }
+    // MCP servers follow the ACTIVE workspace, not the watcher: re-entering a
+    // project whose watcher never stopped (registry hit, no re-scan) must still
+    // re-point them, or the agent keeps the previous project's tools.
+    await syncMcpToRoot(path)
     return { ok: true }
   })
 
   ipcMain.handle('fs:unwatch', async (_event, path: string) => {
-    fileSystem.unwatch(path)
+    // Only the last reference actually stops watching (see watch-registry.ts).
+    watchRegistry.release(path)
   })
 
   // Authorize a path (and everything under it) without starting a watcher or
@@ -1549,7 +1575,10 @@ function registerIpcHandlers(): void {
     const canonical = normalizePath(path)
     allowedRoots.delete(canonical)
     try {
-      fileSystem.unwatch(path)
+      // Forget every reference, not just the current one — a revoked workspace
+      // must not stay watched because a view still holds it, and the next
+      // fs:watch after a fresh grant has to start a real watcher again.
+      watchRegistry.forget(path)
     } catch {
       /* not watched — nothing to stop */
     }
