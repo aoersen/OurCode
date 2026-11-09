@@ -366,18 +366,20 @@ async function cachedDiscover(
  */
 export async function listSkills(force = false, rootOverride?: string, includeDisabled = false): Promise<SkillInfo[]> {
   const root = rootOverride ?? getWorkspaceRoot()
-  // A session's projectPath can point at a folder that isn't the currently
-  // opened project (background/restored sessions) — its skill dirs would then
-  // be rejected by the main-process allowlist on every fs:listDir/fs:stat and
-  // log errors. Authorize it up front like listAllSkills does (a no-op when
-  // already registered).
-  if (root) {
-    try { await window.electronAPI?.authorize?.(root) } catch { /* keep scanning global only */ }
-  }
+  // 全局技能永远扫；项目技能要看主进程认不认这个根。会话的 projectPath 可能指向
+  // 一个「没被打开过」的项目（后台/恢复的会话），那样每次 fs:listDir / fs:stat
+  // 都会被 allowlist 拒绝并刷 EUNTRUSTED 日志。
   const dirs = await globalSkillDirs()
-  // Before a workspace is opened (root ''), scanning the fake `/.claude/skills`
-  // style paths would hit the main-process path allowlist and log errors.
-  if (root) dirs.push(...projectSkillDirs(root))
+  if (root) {
+    try {
+      const ok = await window.electronAPI?.authorize?.(root)
+      // 明确 false = 主进程不认；跳过项目目录，只留全局技能。
+      if (ok !== false) dirs.push(...projectSkillDirs(root))
+    } catch {
+      /* 桥不可用（测试 / 预览沙盘）：按老行为继续扫 */
+      dirs.push(...projectSkillDirs(root))
+    }
+  }
   return cachedDiscover(`root:${root}:${includeDisabled}`, dirs, includeDisabled, force, true)
 }
 
@@ -388,11 +390,18 @@ export async function listSkills(force = false, rootOverride?: string, includeDi
  * and origin.
  */
 export async function listAllSkills(force = false, includeDisabled = true): Promise<SkillInfo[]> {
-  const roots = [...new Set((useUIStore.getState().recentProjects || []).filter(Boolean))]
-  // The allowlist is empty at startup — authorize each project so fs:listDir
-  // on its skill dirs isn't rejected (authorize is a no-op when already known).
-  for (const r of roots) {
-    try { await window.electronAPI?.authorize?.(r) } catch { /* keep scanning the rest */ }
+  const candidates = [...new Set((useUIStore.getState().recentProjects || []).filter(Boolean))]
+  // 最近项目里可能有一堆主进程不认的根（从没被打开/信任过）。对它们扫 skills 目录
+  // 只会让每一条 fs:listDir / fs:stat 抛 EUNTRUSTED，日志刷屏又没有结果 ——
+  // 先用 authorize 过一遍，明确 false 的直接不扫（undefined = 桥不可用，保留老行为）。
+  const roots: string[] = []
+  for (const r of candidates) {
+    try {
+      const ok = await window.electronAPI?.authorize?.(r)
+      if (ok !== false) roots.push(r)
+    } catch {
+      roots.push(r)
+    }
   }
   const dirs = await globalSkillDirs()
   for (const r of roots) dirs.push(...projectSkillDirs(r))
