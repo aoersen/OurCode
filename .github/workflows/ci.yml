@@ -70,6 +70,12 @@ jobs:
   # the NSIS blockmap) — auto-update needs those files attached to the
   # release, not just the binaries.
   #
+  # Only `latest*.yml` is uploaded: electron-builder also emits
+  # `builder-debug.yml`, which Windows and Linux both produce under the same
+  # filename. The publish job flattens all artifacts into one directory, so
+  # the duplicate made softprops/action-gh-release try to update an existing
+  # asset and fail with 404 (Not Found) after every real asset was uploaded.
+  #
   # The `publish` job (tags only) runs after quality, e2e and all four
   # platform packages succeed, then attaches every artifact to a GitHub
   # Release for the tag via softprops/action-gh-release.
@@ -115,7 +121,7 @@ jobs:
           path: |
             release/*.exe
             release/*.blockmap
-            release/*.yml
+            release/latest*.yml
           if-no-files-found: error
 
   release-macos-arm64:
@@ -164,7 +170,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ourcode-ide-macos-arm64-yml
-          path: release/*.yml
+          path: release/latest*.yml
           if-no-files-found: error
 
   release-macos-x64:
@@ -215,7 +221,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ourcode-ide-macos-x64-yml
-          path: release/*.yml
+          path: release/latest*.yml
           if-no-files-found: error
 
   release-linux:
@@ -246,7 +252,7 @@ jobs:
           path: |
             release/*.AppImage
             release/*.deb
-            release/*.yml
+            release/latest*.yml
           if-no-files-found: error
 
   publish:
