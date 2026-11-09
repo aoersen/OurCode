@@ -22,7 +22,6 @@ export default function ConversationHeader() {
   const isArtifactPanelOpen = useUIStore((s) => s.isArtifactPanelOpen)
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen)
   const openSettings = useUIStore((s) => s.openSettings)
-  const setUiMode = useUIStore((s) => s.setUiMode)
 
   const statusText = isRunning ? '执行中' : session ? '空闲' : '未开始'
 
@@ -42,7 +41,7 @@ export default function ConversationHeader() {
         : String(sessionTokens)
 
   return (
-    <header className="shrink-0 h-12 px-5 flex items-center gap-2">
+    <header className="shrink-0 h-12 px-5 flex items-center gap-2 border-b border-[var(--pure-border)]">
       <div className="min-w-0 flex items-center gap-2 text-[13px]">
         <span className="text-[var(--pure-muted)] truncate max-w-[220px]">{baseName(rootPath)}</span>
         <span className="text-[var(--pure-muted)]">/</span>
@@ -65,7 +64,7 @@ export default function ConversationHeader() {
         <span className="flex items-center gap-1.5 text-[12px] text-[var(--pure-muted)] mr-1">
           <span
             className={`w-1.5 h-1.5 rounded-full ${
-              isRunning ? 'bg-[var(--pure-ink)] animate-pulse' : 'bg-[#d9d9d9]'
+              isRunning ? 'bg-[var(--pure-ink)] animate-pulse' : 'bg-[var(--pure-border)]'
             }`}
           />
           {statusText}
@@ -79,25 +78,12 @@ export default function ConversationHeader() {
               ? 'text-[var(--pure-ink)] bg-[var(--pure-hover)]'
               : 'text-[var(--pure-muted)] hover:bg-[var(--pure-hover)]'
           }`}
-          title={isArtifactPanelOpen ? '关闭产物面板' : '打开产物面板'}
-          aria-label={isArtifactPanelOpen ? '关闭产物面板' : '打开产物面板'}
+          title={isArtifactPanelOpen ? '关闭文档面板' : '打开文档面板'}
+          aria-label={isArtifactPanelOpen ? '关闭文档面板' : '打开文档面板'}
         >
           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="4" width="18" height="16" rx="2" />
             <path d="M15 4v16" />
-          </svg>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setUiMode('workbench')}
-          className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--pure-muted)] hover:bg-[var(--pure-hover)]"
-          title="切换到工作台（Ctrl+Alt+M）"
-          aria-label="切换到工作台"
-        >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path d="M3 9h18" />
           </svg>
         </button>
 

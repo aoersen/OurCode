@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import MarkdownRenderer from '@/components/Common/MarkdownRenderer'
 import MessageActions, { RunSummary } from './MessageActions'
 import StatusBubble from './StatusBubble'
+import ErrorNote from './ErrorNote'
 import Composer from './composer/Composer'
 import { useIsEmptyConversation } from './composer/useComposer'
 import { useChatStore } from '@/stores/chatStore'
@@ -39,10 +40,6 @@ export default function ConversationView() {
   const configGroupId = useConfigStore((s) => s.activeConfigGroupId)
   const rootPath = useUIStore((s) => s.rootPath)
   const openSettings = useUIStore((s) => s.openSettings)
-  // 状态气泡是浮层：展开时必须给正文让出高度，否则首条消息永远被它压住
-  const bubbleExpanded = useUIStore((s) =>
-    session?.id ? s.statusBubbleExpanded[session.id] === true : false,
-  )
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [pinnedToBottom, setPinnedToBottom] = useState(true)
@@ -134,21 +131,18 @@ export default function ConversationView() {
             )
           }
           return (
-            <div key={m.id} className="mt-8">
-              {m.thinking ? (
-                <details className="mb-3 text-[12.5px] text-[var(--pure-muted)]">
-                  <summary className="cursor-pointer select-none">推理过程</summary>
-                  <div className="mt-2 whitespace-pre-wrap leading-[20px]">{m.thinking}</div>
-                </details>
-              ) : null}
+            <div key={m.id} className="mt-8 group">
+              {/* 推理行现在由 RunSummary 统一渲染（同一套折叠语义），这里不再重复 */}
               <RunSummary message={m} session={session} />
               <div className="pure-prose text-[15px] leading-[28px] break-words">
                 <MarkdownRenderer content={m.content} />
               </div>
               {m.error ? (
-                <div className="mt-2 text-[12.5px] text-[var(--pure-danger)]">
-                  {m.error.message || '请求失败'}
-                </div>
+                <ErrorNote
+                  sessionId={session?.id ?? ''}
+                  messageId={m.id}
+                  message={m.error.message}
+                />
               ) : null}
               {/* 每条 assistant 回复都带操作行 + token 消耗；流式输出中的最后一条不显示，
                   避免在还在生成时出现「重新生成」 */}

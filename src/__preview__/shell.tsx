@@ -21,11 +21,72 @@ const bubbleState = params.get('bubble') ?? 'expanded'
 const artifact = params.get('artifact') ?? 'plan'
 const emptyState = params.get('empty') === '1'
 const runningState = params.get('running') === '1'
+const darkTheme = params.get('theme') === 'dark'
+
+if (darkTheme) document.documentElement.classList.add('dark')
+
+// 文件树 / 预览用到的桥：给一份假目录，让「文件」模式和 markdown 预览可核对
+const fakeTree: Record<string, Array<{ name: string; path: string; isDirectory: boolean; isHidden: boolean }>> = {
+  'C:\\workspace\\ourcode': [
+    { name: '.github', path: 'C:\\workspace\\ourcode\\.github', isDirectory: true, isHidden: false },
+    { name: 'build', path: 'C:\\workspace\\ourcode\\build', isDirectory: true, isHidden: false },
+    { name: 'src', path: 'C:\\workspace\\ourcode\\src', isDirectory: true, isHidden: false },
+    { name: 'README.md', path: 'C:\\workspace\\ourcode\\README.md', isDirectory: false, isHidden: false },
+    { name: 'package.json', path: 'C:\\workspace\\ourcode\\package.json', isDirectory: false, isHidden: false },
+    { name: 'tsconfig.json', path: 'C:\\workspace\\ourcode\\tsconfig.json', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\src': [
+    { name: 'components', path: 'C:\\workspace\\ourcode\\src\\components', isDirectory: true, isHidden: false },
+    { name: 'shell', path: 'C:\\workspace\\ourcode\\src\\shell', isDirectory: true, isHidden: false },
+    { name: 'styles', path: 'C:\\workspace\\ourcode\\src\\styles', isDirectory: true, isHidden: false },
+    { name: 'App.tsx', path: 'C:\\workspace\\ourcode\\src\\App.tsx', isDirectory: false, isHidden: false },
+    { name: 'main.tsx', path: 'C:\\workspace\\ourcode\\src\\main.tsx', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\src\\shell': [
+    { name: 'agent', path: 'C:\\workspace\\ourcode\\src\\shell\\agent', isDirectory: true, isHidden: false },
+    { name: 'settings', path: 'C:\\workspace\\ourcode\\src\\shell\\settings', isDirectory: true, isHidden: false },
+    { name: 'pure.css', path: 'C:\\workspace\\ourcode\\src\\shell\\pure.css', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\src\\shell\\agent': [
+    { name: 'rail', path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\rail', isDirectory: true, isHidden: false },
+    { name: 'AgentShell.tsx', path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\AgentShell.tsx', isDirectory: false, isHidden: false },
+    { name: 'SessionRail.tsx', path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\SessionRail.tsx', isDirectory: false, isHidden: false },
+    { name: 'ArtifactPanel.tsx', path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\ArtifactPanel.tsx', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\src\\shell\\agent\\rail': [
+    { name: 'railModel.ts', path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\rail\\railModel.ts', isDirectory: false, isHidden: false },
+    { name: 'ProjectRow.tsx', path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\rail\\ProjectRow.tsx', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\src\\styles': [
+    { name: 'global.css', path: 'C:\\workspace\\ourcode\\src\\styles\\global.css', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\src\\components': [
+    { name: 'Common', path: 'C:\\workspace\\ourcode\\src\\components\\Common', isDirectory: true, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\build': [
+    { name: 'icon.png', path: 'C:\\workspace\\ourcode\\build\\icon.png', isDirectory: false, isHidden: false },
+  ],
+  'C:\\workspace\\ourcode\\.github': [],
+  'C:\\workspace\\ourcode\\src\\shell\\settings': [],
+  'C:\\workspace\\ourcode\\src\\components\\Common': [],
+}
 
 ;(window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
   listBackups: async () => [],
   mcpGetGlobalConfig: async () => ({ ok: true, file: null, config: { mcpServers: {} } }),
   mcpGetConfig: async () => ({ ok: true, file: null, config: { mcpServers: {} } }),
+  listDir: async (path: string) => fakeTree[path] ?? [],
+  stat: async () => ({ isDirectory: true }),
+  openFolder: async () => 'C:\\workspace\\q3-report',
+  openProject: async () => true,
+  readFile: async () => ({ content: '# README\n\n这是预览用的假内容。\n', encoding: 'utf-8' }),
+  writeFile: async () => ({ ok: true }),
+  saveBackup: async () => undefined,
+  deleteBackup: async () => undefined,
+  setPreviewContent: async () => undefined,
+  clearPreviewContent: async () => undefined,
+  gitExec: async () => ({ success: false, output: '' }),
+  gitStatus: async () => ({ branch: 'main', files: [] }),
 }
 
 const modelParams = {
@@ -173,6 +234,7 @@ const otherSessions = [
     updatedAt: now - 5_400_000,
     lastUserMessageAt: now - 5_400_000,
     projectPath: 'C:\\workspace\\ourcode',
+    agentRuns: [{ id: 'r2', task: '修复抖动', status: 'done', startedAt: 0, toolCallCount: 2, fileChangeCount: 1, stepCount: 4 }],
   },
   {
     id: 'sess-3',
@@ -185,6 +247,7 @@ const otherSessions = [
     updatedAt: now - 9_000_000,
     lastUserMessageAt: now - 9_000_000,
     projectPath: 'C:\\workspace\\ourcode',
+    agentRuns: [{ id: 'r3', task: '拦截器', status: 'error', lastError: 'tsc failed', startedAt: 0, toolCallCount: 3, fileChangeCount: 1, stepCount: 6 }],
   },
   {
     id: 'sess-4',
@@ -197,6 +260,7 @@ const otherSessions = [
     updatedAt: now - 12_000_000,
     lastUserMessageAt: now - 12_000_000,
     projectPath: 'C:\\workspace\\ourcode',
+    agentRuns: [{ id: 'r4', task: '缓存', status: 'stopped', startedAt: 0, toolCallCount: 1, fileChangeCount: 0, stepCount: 2 }],
   },
   {
     id: 'sess-5',
@@ -209,6 +273,7 @@ const otherSessions = [
     updatedAt: now - 90_000_000,
     lastUserMessageAt: now - 90_000_000,
     projectPath: 'C:\\workspace\\q3-report',
+    agentRuns: [{ id: 'r5', task: '口径', status: 'done', startedAt: 0, toolCallCount: 2, fileChangeCount: 0, stepCount: 3 }],
   },
   {
     id: 'sess-6',
@@ -221,6 +286,7 @@ const otherSessions = [
     updatedAt: now - 120_000_000,
     lastUserMessageAt: now - 120_000_000,
     projectPath: 'C:\\workspace\\wechat-twin',
+    agentRuns: [{ id: 'r6', task: '联调', status: 'error', lastError: 'token expired', startedAt: 0, toolCallCount: 4, fileChangeCount: 2, stepCount: 8 }],
   },
 ] as unknown as ChatSession[]
 
@@ -245,12 +311,64 @@ useConfigStore.setState({
 useUIStore.setState({
   rootPath: 'C:\\workspace\\ourcode',
   recentProjects: ['C:\\workspace\\ourcode'],
-  uiMode: 'agent',
   isArtifactPanelOpen: artifact !== 'none',
   statusBubbleExpanded: bubbleState === 'expanded' ? { 'sess-1': true } : {},
 })
 
-useEditorStore.setState({ isEditorVisible: true } as never)
+// 打开的文件：用来核对「一个文件一条标签 + 类型自动识别」
+useEditorStore.setState({
+  isEditorVisible: true,
+  activeFilePath: 'C:\\workspace\\ourcode\\src\\shell\\agent\\AgentShell.tsx',
+  openFiles: [
+    {
+      path: 'C:\\workspace\\ourcode\\src\\shell\\agent\\AgentShell.tsx',
+      content: [
+        "import SessionRail from './SessionRail'",
+        "import ConversationHeader from './ConversationHeader'",
+        "import ArtifactPanel from './ArtifactPanel'",
+        '',
+        'export default function AgentShell() {',
+        '  return (',
+        '    <div className="pure-shell h-full flex">',
+        '      <SessionRail />',
+        '      <ConversationView />',
+        '      <ArtifactPanel />',
+        '    </div>',
+        '  )',
+        '}',
+        '',
+      ].join('\n'),
+      language: 'typescript',
+      encoding: 'utf-8',
+      lineEnding: 'lf',
+      isDirty: true,
+    },
+    {
+      path: 'C:\\workspace\\ourcode\\README.md',
+      content: '# OurCode IDE\n\n对话优先的工作台。\n',
+      language: 'markdown',
+      encoding: 'utf-8',
+      lineEnding: 'lf',
+      isDirty: false,
+    },
+    {
+      path: 'C:\\workspace\\ourcode\\src\\styles\\global.css',
+      content: '.pure-shell {\n  color: #0d0d0d;\n}\n',
+      language: 'css',
+      encoding: 'utf-8',
+      lineEnding: 'lf',
+      isDirty: false,
+    },
+    {
+      path: 'C:\\workspace\\ourcode\\build\\icon.png',
+      content: '',
+      language: 'plaintext',
+      encoding: 'utf-8',
+      lineEnding: 'lf',
+      isDirty: false,
+    },
+  ],
+} as never)
 
 useChatStore.setState({
   sessions: emptyState ? [{ ...session, id: 'sess-empty', title: '新对话', messages: [], agentRuns: [] } as unknown as ChatSession, ...otherSessions] : [session, ...otherSessions],

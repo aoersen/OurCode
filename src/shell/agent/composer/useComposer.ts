@@ -199,6 +199,9 @@ export interface ComposerController {
   slash: ComposerSlashState
   voice: ComposerVoiceState
   closeMenus: () => void
+
+  /** Shift+Tab 循环权限模式（文本框与胶囊任意控件都走这一条，含公司会话拦截） */
+  cyclePermissionMode: () => void
 }
 
 export function useComposer(): ComposerController {
@@ -578,6 +581,24 @@ export function useComposer(): ComposerController {
     [allSlashCommands, slashQuery],
   )
 
+  /**
+   * Shift+Tab 循环权限模式（顺序与 modePolicy.MODE_CYCLE 一致）。
+   *
+   * 公司会话不允许切档（目标模式的裁决链不可绕过），这里拦一次并说明原因。
+   * 抽成独立的回调是因为现在有两条入口：文本框里按 Shift+Tab，以及焦点在
+   * 胶囊其他控件上按 Shift+Tab（Composer 根节点兜住）。
+   */
+  const cyclePermissionMode = useCallback(() => {
+    const current = activeSessionId
+      ? useChatStore.getState().sessions.find((s) => s.id === activeSessionId)
+      : undefined
+    if (isCompanySession(current)) {
+      useUIStore.getState().showNotification(t('chat.companyModeNoSwitch'), 'info')
+      return
+    }
+    if (activeSessionId) void cycleEditMode(activeSessionId)
+  }, [activeSessionId, cycleEditMode, t])
+
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // IME 组合期间（拼音候选词未确认）按的键属于输入法：Enter 是「确认候选词」
@@ -618,14 +639,7 @@ export function useComposer(): ComposerController {
       // Shift+Tab 循环权限模式（菜单没收 Tab 时）
       if (e.key === 'Tab' && e.shiftKey && !showSlashMenu && !showFileSearch) {
         e.preventDefault()
-        const current = activeSessionId
-          ? useChatStore.getState().sessions.find((s) => s.id === activeSessionId)
-          : undefined
-        if (isCompanySession(current)) {
-          useUIStore.getState().showNotification(t('chat.companyModeNoSwitch'), 'info')
-          return
-        }
-        if (activeSessionId) void cycleEditMode(activeSessionId)
+        cyclePermissionMode()
         return
       }
 
@@ -686,8 +700,7 @@ export function useComposer(): ComposerController {
       }
     },
     [
-      activeSessionId,
-      cycleEditMode,
+      cyclePermissionMode,
       fileSearchResults,
       insertFileReference,
       insertSlashCommand,
@@ -698,7 +711,6 @@ export function useComposer(): ComposerController {
       showSlashMenu,
       slashItems,
       submit,
-      t,
       text,
     ],
   )
@@ -966,6 +978,7 @@ export function useComposer(): ComposerController {
       configured: isSttConfigured(sttDraft),
     },
     closeMenus,
+    cyclePermissionMode,
   }
 }
 

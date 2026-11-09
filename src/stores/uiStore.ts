@@ -65,9 +65,7 @@ interface UIState {
    *  — with all its history — comes back. */
   removedProjects: string[]
 
-  // ── Shell：agent（对话优先） / workbench（现有 IDE 布局） ──────────
-  uiMode: 'agent' | 'workbench'
-  setUiMode: (mode: 'agent' | 'workbench') => void
+  // ── Shell：对话优先（唯一壳，不再保留 IDE 旧布局） ─────────────────
   /** agent 壳的会话栏是否收成 48px 图标条 */
   isRailCollapsed: boolean
   setRailCollapsed: (collapsed: boolean) => void
@@ -77,6 +75,28 @@ interface UIState {
   /** 运行状态气泡按会话记忆展开状态，默认收起 */
   statusBubbleExpanded: Record<string, boolean>
   toggleStatusBubble: (sessionId: string) => void
+
+  /* ── shell surface：一人公司整窗面（B9）────────────────────────────────
+   *  办公室视图在新壳里是一个整窗 surface，不是第二条布局；开关不持久化，
+   *  每次启动默认关闭（它是"进入另一种视图"，不是常驻状态）。 */
+  isOfficeSurfaceOpen: boolean
+  setOfficeSurfaceOpen: (open: boolean) => void
+
+  /* ── 产物面板的跨组件请求（文件树点开 md/图片等）─────────────────────
+   *  面板的 tab / 选中文件原本是它自己的局部 state；从外部（左栏文件树）想
+   *  「在文件页签打开这个路径」时，写一个一次性请求，面板消费后清空。 */
+  artifactRequest: { tab: 'plan' | 'changes' | 'file' | 'browser'; path?: string } | null
+  requestArtifact: (req: { tab: 'plan' | 'changes' | 'file' | 'browser'; path?: string }) => void
+  clearArtifactRequest: () => void
+
+  /* ── shell rail：项目行的折叠状态（追加字段，本轮左栏重构新增）─────────
+   *  只记「已折叠」的项目绝对路径（展开 = 不在数组里），持久化到 localStorage，
+   *  与 isRailCollapsed 同一套按窗口模式隔离的约定（modeKey）。 */
+  collapsedProjects: string[]
+  /** 折叠 / 展开一个项目行（会话栏项目树）。 */
+  toggleProjectCollapsed: (path: string) => void
+  /** 显式设置折叠状态（幂等；状态没变就不写盘）。 */
+  setProjectCollapsed: (path: string, collapsed: boolean) => void
 
   // Chat Panel
   isChatVisible: boolean
@@ -259,12 +279,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   recentProjectTimes: (() => { try { return JSON.parse(localStorage.getItem(modeKey('recentProjectTimes')) || '{}') } catch { return {} } })(),
   removedProjects: (() => { try { return JSON.parse(localStorage.getItem(modeKey('removedProjects')) || '[]') } catch { return [] } })(),
 
-  // Shell — agent 壳默认开启；workbench 是原 IDE 布局（可随时切回）
-  uiMode: (() => {
-    try {
-      return localStorage.getItem(modeKey('uiMode')) === 'workbench' ? 'workbench' : 'agent'
-    } catch { return 'agent' }
-  })(),
+  // Shell — 对话优先壳（原 IDE 布局已下线，不再持久化 uiMode）
   isRailCollapsed: (() => {
     try { return localStorage.getItem(modeKey('isRailCollapsed')) === 'true' } catch { return false }
   })(),
@@ -273,6 +288,14 @@ export const useUIStore = create<UIState>((set, get) => ({
   })(),
   statusBubbleExpanded: (() => {
     try { return JSON.parse(localStorage.getItem(modeKey('statusBubbleExpanded')) || '{}') } catch { return {} }
+  })(),
+  isOfficeSurfaceOpen: false,
+  artifactRequest: null,
+  collapsedProjects: (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(modeKey('collapsedProjects')) || '[]')
+      return Array.isArray(raw) ? raw.filter((p): p is string => typeof p === 'string') : []
+    } catch { return [] }
   })(),
 
   // Chat Panel — wider default since the AI panel is the primary interface
@@ -459,10 +482,6 @@ export const useUIStore = create<UIState>((set, get) => ({
   setChatSessionListOpen: (open) => set({ isChatSessionListOpen: open }),
 
   // ── Shell actions ────────────────────────────────────────────────
-  setUiMode: (mode) => {
-    try { localStorage.setItem(modeKey('uiMode'), mode) } catch { /* ignore */ }
-    set({ uiMode: mode })
-  },
   setRailCollapsed: (collapsed) => {
     try { localStorage.setItem(modeKey('isRailCollapsed'), String(collapsed)) } catch { /* ignore */ }
     set({ isRailCollapsed: collapsed })
@@ -476,6 +495,26 @@ export const useUIStore = create<UIState>((set, get) => ({
       const next = { ...s.statusBubbleExpanded, [sessionId]: !s.statusBubbleExpanded[sessionId] }
       try { localStorage.setItem(modeKey('statusBubbleExpanded'), JSON.stringify(next)) } catch { /* ignore */ }
       return { statusBubbleExpanded: next }
+    }),
+  setOfficeSurfaceOpen: (open) => set({ isOfficeSurfaceOpen: open }),
+  requestArtifact: (req) => set({ artifactRequest: req }),
+  clearArtifactRequest: () => set({ artifactRequest: null }),
+  toggleProjectCollapsed: (path) =>
+    set((s) => {
+      const next = s.collapsedProjects.includes(path)
+        ? s.collapsedProjects.filter((p) => p !== path)
+        : [...s.collapsedProjects, path]
+      try { localStorage.setItem(modeKey('collapsedProjects'), JSON.stringify(next)) } catch { /* ignore */ }
+      return { collapsedProjects: next }
+    }),
+  setProjectCollapsed: (path, collapsed) =>
+    set((s) => {
+      if (s.collapsedProjects.includes(path) === collapsed) return {}
+      const next = collapsed
+        ? [...s.collapsedProjects, path]
+        : s.collapsedProjects.filter((p) => p !== path)
+      try { localStorage.setItem(modeKey('collapsedProjects'), JSON.stringify(next)) } catch { /* ignore */ }
+      return { collapsedProjects: next }
     }),
   toggleEditorVisible: () => set((s) => {
     // Don't allow hiding the last visible main-area panel (blank screen)

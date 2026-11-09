@@ -167,7 +167,7 @@ function MarkdownPreview({ path }: { path: string }) {
   )
 
   return (
-    <div className="h-full overflow-y-auto px-6 py-4 bg-nova-bg">
+    <div className="h-full overflow-y-auto px-5 py-4 bg-[var(--pure-canvas)]">
       <MarkdownRenderer content={debouncedContent} rewriteImageSrc={rewriteImageSrc} />
     </div>
   )
@@ -175,15 +175,107 @@ function MarkdownPreview({ path }: { path: string }) {
 
 // ── Image: read-only preview ────────────────────────────────────────────────
 
+function formatBytes(bytes: number | undefined): string | null {
+  if (!bytes || bytes <= 0) return null
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * 图片预览：给一块「画布」而不是把图直接贴在白底上。
+ *
+ * 视觉：
+ *  - 四周 12px 内边距 + 1px 边框 + 12px 圆角，棋盘格承托透明图（深色截图也不会
+ *    直接变成一块无边界的黑板）；
+ *  - 图按 contain 居中，不放大到失真；
+ *  - 底部一条信息栏：类型 / 像素尺寸 / 文件大小 / 只读，和编辑器状态栏同一套语气。
+ *
+ * 加载失败不再是一片空白：显示文件名、路径与「重试」。
+ */
 function ImagePreview({ path }: { path: string }) {
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null)
+  const [bytes, setBytes] = useState<number | undefined>(undefined)
+  const [attempt, setAttempt] = useState(0)
+
+  const ext = (path.split('.').pop() ?? '').toUpperCase()
+
+  useEffect(() => {
+    let cancelled = false
+    setStatus('loading')
+    setSize(null)
+    void window.electronAPI
+      .stat(path)
+      .then((stat) => {
+        if (!cancelled) setBytes(stat?.size)
+      })
+      .catch(() => {
+        /* 大小拿不到不影响看图 */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [path])
+
   return (
-    <div className="h-full overflow-auto flex items-center justify-center bg-nova-bg p-6">
-      <img
-        src={previewFileUrl(path)}
-        alt=""
-        draggable={false}
-        className="max-w-full max-h-full object-contain"
-      />
+    <div className="h-full min-h-0 flex flex-col">
+      <div className="flex-1 min-h-0 p-3">
+        <div className="pure-checker relative h-full w-full rounded-xl border border-[var(--pure-border)] overflow-auto pure-scroll flex items-center justify-center">
+          {status === 'error' ? (
+            <div className="px-4 py-6 text-center">
+              <div className="text-[12.5px] text-[var(--pure-ink)]">这张图读不出来</div>
+              <div className="mt-1 max-w-[280px] truncate font-mono text-[11px] text-[var(--pure-muted)]" title={path}>
+                {path}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAttempt((n) => n + 1)
+                  setStatus('loading')
+                }}
+                className="pure-focus mt-3 text-[12px] text-[var(--pure-muted)] hover:text-[var(--pure-ink)] hover:underline"
+              >
+                重试
+              </button>
+            </div>
+          ) : (
+            <img
+              key={attempt}
+              src={previewFileUrl(path)}
+              alt=""
+              draggable={false}
+              onLoad={(event) => {
+                setStatus('ready')
+                setSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                })
+              }}
+              onError={() => setStatus('error')}
+              className={`max-w-full max-h-full object-contain select-none ${
+                status === 'ready' ? '' : 'opacity-0'
+              }`}
+            />
+          )}
+          {status === 'loading' && (
+            <div className="pointer-events-none absolute text-[11.5px] text-[var(--pure-muted)]">
+              正在读取图片…
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="shrink-0 h-8 px-3 flex items-center gap-3 border-t border-[var(--pure-border)] text-[11px] tabular-nums text-[var(--pure-muted)]">
+        <span className="shrink-0 font-mono uppercase">{ext || 'IMG'}</span>
+        {size ? (
+          <span className="shrink-0">
+            {size.width} × {size.height}
+          </span>
+        ) : null}
+        {formatBytes(bytes) ? <span className="shrink-0">{formatBytes(bytes)}</span> : null}
+        <span className="ml-auto shrink-0">只读预览</span>
+      </div>
     </div>
   )
 }

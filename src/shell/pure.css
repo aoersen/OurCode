@@ -1,13 +1,10 @@
-/**
- * OurCode Pure —— agent shell 的视觉层。
- *
- * 作用有两个：
- *  1. 给 `.pure-shell` 作用域重定义 `--surface / --border / --text-primary ...`
- *     这一批 CSS 变量：现有组件（ChatInput、各种 Dialog）用的都是 `nova-*`
- *     → `var(--x)`，所以在不再改它们的前提下，整个子树会被直接换成纯白风。
- *  2. 提供少量 shell 专用 class（卡片、滚动条、气泡阴影）。
- *
- * 设计系统：Stitch `OurCode Pure` (assets/12918246474755900073)
+﻿/**
+ * OurCode Pure 鈥斺€?agent shell 鐨勮瑙夊眰銆? *
+ * 浣滅敤鏈変袱涓細
+ *  1. 缁?`.pure-shell` 浣滅敤鍩熼噸瀹氫箟 `--surface / --border / --text-primary ...`
+ *     杩欎竴鎵?CSS 鍙橀噺锛氱幇鏈夌粍浠讹紙ChatInput銆佸悇绉?Dialog锛夌敤鐨勯兘鏄?`nova-*`
+ *     鈫?`var(--x)`锛屾墍浠ュ湪涓嶅啀鏀瑰畠浠殑鍓嶆彁涓嬶紝鏁翠釜瀛愭爲浼氳鐩存帴鎹㈡垚绾櫧椋庛€? *  2. 鎻愪緵灏戦噺 shell 涓撶敤 class锛堝崱鐗囥€佹粴鍔ㄦ潯銆佹皵娉￠槾褰憋級銆? *
+ * 璁捐绯荤粺锛歋titch `OurCode Pure` (assets/12918246474755900073)
  */
 
 .pure-shell {
@@ -43,21 +40,23 @@
   --pure-active: #ececec;
   --pure-code: #f7f7f8;
   --pure-danger: #d93f3f;
+  --pure-warn: #b45309;
+  --pure-canvas: #ffffff;
 
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   color: var(--pure-ink);
-  background: #fff;
+  background: var(--pure-canvas);
 }
 
-/* 玻璃拟态在新壳里一律降级为纯白 */
+/* 鐜荤拑鎷熸€佸湪鏂板３閲屼竴寰嬮檷绾т负绾櫧 */
 .pure-shell .glass-chrome,
 .pure-shell .glass-flat {
   background: #fff !important;
   backdrop-filter: none !important;
 }
 
-/* 只允许两处阴影：composer、状态气泡 */
+/* 鍙厑璁镐袱澶勯槾褰憋細composer銆佺姸鎬佹皵娉?*/
 .pure-shell .pure-soft-shadow {
   box-shadow: 0 8px 30px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
 }
@@ -84,7 +83,7 @@
   background: transparent;
 }
 
-/* 消息列里 markdown 的收敛：纯风不画外框、只用浅灰底承载代码 */
+/* 娑堟伅鍒楅噷 markdown 鐨勬敹鏁涳細绾涓嶇敾澶栨銆佸彧鐢ㄦ祬鐏板簳鎵胯浇浠ｇ爜 */
 .pure-shell .pure-prose .code-block,
 .pure-shell .pure-prose pre {
   border-radius: 10px;
@@ -109,7 +108,7 @@
   text-underline-offset: 3px;
 }
 
-/* ── composer：拖拽提示浮层（只是提示，胶囊本身始终在文档流里） ──────── */
+/* 鈹€鈹€ composer锛氭嫋鎷芥彁绀烘诞灞傦紙鍙槸鎻愮ず锛岃兌鍥婃湰韬缁堝湪鏂囨。娴侀噷锛?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .pure-shell .pure-drop-overlay {
   position: absolute;
   inset: 0;
@@ -123,7 +122,7 @@
   justify-content: center;
 }
 
-/* 状态气泡里的进度线 */
+/* 鐘舵€佹皵娉￠噷鐨勮繘搴︾嚎 */
 .pure-shell .pure-progress-track {
   height: 3px;
   border-radius: 99px;
@@ -145,4 +144,243 @@
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+
+/* 鈹€鈹€ 浜х墿闈㈡澘锛堝彸鏍?400px锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ * 鍙姞涓夌被涓滆タ锛氭枃瀛楅〉绛剧殑 1px ink 涓嬪垝绾裤€丮arkdown 婧愮爜瑙嗗浘銆乭over 鎵嶅嚭鐜扮殑
+ * 琛屽唴鏂囧瓧鍔ㄤ綔銆備笉鍔犲簳鑹?鎻忚竟/鍦嗚鍧?鈥斺€?闈㈡澘鐨勫垎鍖哄彧闈犵暀鐧戒笌瀛楄壊銆? */
+
+/* 娲诲姩椤电锛歩nk 鏂囧瓧涓嬩竴鏉?1px 瀹炵嚎锛堜笉鐢昏兌鍥娿€佷笉鐢昏儗鏅級 */
+.pure-shell .pure-tab-underline {
+  position: relative;
+}
+.pure-shell .pure-tab-underline::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--pure-ink);
+}
+
+/* Markdown 婧愮爜瑙嗗浘锛氱瓑瀹藉彧鍦ㄤ唬鐮侀噷鐢紱鍏朵綑浠嶆槸 Inter */
+.pure-shell .pure-artifact-source {
+  margin: 0;
+  padding: 14px 20px 28px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--pure-ink);
+  background: #fff;
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* 妫€鏌ョ偣琛岀殑涓や釜鏂囧瓧鍔ㄤ綔锛氬钩鏃堕殣钘忥紝琛?hover / 閿洏鑱氱劍鏃跺嚭鐜?*/
+.pure-shell .pure-row-actions {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.pure-shell .pure-row:hover .pure-row-actions,
+.pure-shell .pure-row:focus-within .pure-row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .pure-shell .pure-row-actions {
+    opacity: 1;
+  }
+}
+
+/* 閿洏鍙揪锛氱劍鐐圭敤 ink 缁嗙幆锛屼笉鐢ㄥ僵鑹?*/
+.pure-shell .pure-focus:focus-visible {
+  outline: 2px solid var(--pure-ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 鈹€鈹€ 鍙虫爮绠＄悊闈紙璁板繂 / 鎶€鑳?/ MCP / 宸ヤ綔娴?/ 鐢ㄩ噺 / 娓犻亾锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ * 绠＄悊闈㈡槸鎺掔増锛屼笉鏄崱鐗囷細琛岄潬鐣欑櫧鍒嗚锛宧over / 閿洏鑱氱劍鎵嶇粰涓€灞傛瀬娴呯伆锛? * 鍔ㄤ綔鏄枃瀛楋紱绛夊鍙嚭鐜板湪鍛戒护銆乁RL銆乪nv 杩欑被鏈哄櫒涓查噷銆? * 杩欓噷鍙ˉ鍥涚被閫氱敤鏍峰紡锛屽叾浣欎氦缁?Tailwind 鐨?pure token 绫汇€? */
+
+/* 绠＄悊闈㈡墦寮€鏃讹紝浜х墿椤电浠嶅彲鐐癸紝浣嗕笉鍐嶇敾銆屽綋鍓嶉〉绛俱€嶇殑涓嬪垝绾?*/
+.pure-shell .pure-tabs-quiet .pure-tab-underline {
+  color: var(--pure-muted);
+}
+.pure-shell .pure-tabs-quiet .pure-tab-underline::after {
+  display: none;
+}
+
+/* 绠＄悊闈㈢殑琛岋細12px 瀹瑰櫒鍦嗚锛屽彧鍦?hover / 閿洏鑱氱劍鏃跺嚭鐜版祬鐏板簳 */
+.pure-shell .pure-surface-row {
+  border-radius: 12px;
+  transition: background-color 120ms ease-out;
+}
+.pure-shell .pure-surface-row:hover,
+.pure-shell .pure-surface-row:focus-visible {
+  background: var(--pure-hover);
+}
+.pure-shell .pure-surface-row:focus-visible {
+  outline: 2px solid var(--pure-ink);
+  outline-offset: -2px;
+}
+
+/* 绠＄悊闈㈤噷鐨勭瓑瀹戒俊鎭潡锛堝懡浠?/ URL / env / headers锛夆€斺€?娴呯伆搴曘€佹棤鎻忚竟 */
+.pure-shell .pure-mono-well {
+  background: var(--pure-code);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--pure-ink);
+}
+
+/* 鐢ㄩ噺鏉″舰鍥撅細鍙湁 ink / secondary 涓や釜鐏伴樁锛涘け璐ユ€佺敤 --pure-danger 鐨勬枃瀛楄壊 */
+.pure-shell .pure-bar-track {
+  background: var(--pure-hover);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.pure-shell .pure-bar-input {
+  background: var(--pure-ink);
+  border-radius: 2px;
+}
+.pure-shell .pure-bar-output {
+  background: var(--pure-secondary);
+  border-radius: 2px;
+}
+
+/* 鈹€鈹€ 鏆楄壊涓婚 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ * 鐢?uiStore.setTheme('dark') 鍦?<html> 涓婂姞 `.dark`锛泂hell 鍙崲 token锛? * 缁勪欢閲屼竴寰嬬敤 var(--pure-*) / nova 鍙橀噺锛屾墍浠ヤ笉闇€瑕侀€愪釜缁勪欢鏀规牱寮忋€? * 鏆楄壊閲屼緷鏃у彧鏈変袱澶勯槾褰憋紝涓斾笉鍙戣摑 鈥斺€?涓庢祬鑹插悓涓€濂楀眰绾ц鍒欍€? */
+:root.dark .pure-shell {
+  --bg: #212121;
+  --surface: #212121;
+  --card: #262626;
+  --sidebar: #171717;
+  --editor-bg: #212121;
+  --ai-bg: #212121;
+  --ai-surface: #262626;
+  --border: #2f2f2f;
+  --ai-border: #2f2f2f;
+  --border-strong: #3a3a3a;
+  --hover: #2a2a2a;
+  --input-bg: #262626;
+  --bubble-user: #2f2f2f;
+  --text-primary: #ececec;
+  --text-secondary: #b4b4b4;
+  --text-muted: #8f8f8f;
+  --accent: #ececec;
+  --accent-text: #ececec;
+  --accent-ink: #171717;
+  --error: #f0736a;
+  --warning: #e0a35c;
+  --success: #4cc38a;
+
+  --pure-ink: #ececec;
+  --pure-secondary: #b4b4b4;
+  --pure-muted: #8f8f8f;
+  --pure-border: #2f2f2f;
+  --pure-rail: #171717;
+  --pure-hover: #2a2a2a;
+  --pure-active: #2f2f2f;
+  --pure-code: #1b1b1b;
+  --pure-danger: #f0736a;
+  --pure-warn: #e0a35c;
+  --pure-canvas: #212121;
+}
+
+:root.dark .pure-shell .glass-chrome,
+:root.dark .pure-shell .glass-flat {
+  background: var(--pure-canvas) !important;
+}
+
+:root.dark .pure-shell .pure-scroll {
+  scrollbar-color: #3a3a3a transparent;
+}
+:root.dark .pure-shell .pure-scroll::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+}
+:root.dark .pure-shell .pure-scroll::-webkit-scrollbar-thumb:hover {
+  background: #4a4a4a;
+}
+
+:root.dark .pure-shell .pure-progress-track {
+  background: #2f2f2f;
+}
+
+:root.dark .pure-shell .pure-soft-shadow {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+:root.dark .pure-shell .pure-card-shadow {
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.6), 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* 绐勭獥锛? 1024锛夛細浜х墿闈㈡澘鏀逛负瑕嗙洊寮忔娊灞?鈥斺€?杩欐槸鍞竴鍏佽鐨?overlay锛? * 鍥犱负 400px 闈㈡澘鍦ㄨ繖涓搴﹂噷娌℃湁骞舵帓绌洪棿锛涙娊灞夎嚜甯?backdrop 鍏抽棴銆?*/
+.pure-shell .pure-narrow-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  background: var(--pure-canvas);
+  border-left: 1px solid var(--pure-border);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.12);
+}
+:root.dark .pure-shell .pure-narrow-drawer {
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+}
+
+/* 鈹€鈹€ 杈圭晫鎰?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ * 涓夋爮涔嬮棿銆佹爮鍐呭浐瀹氬尯涓庢粴鍔ㄥ尯涔嬮棿缁熶竴 1px 鍒嗛殧绾裤€? * 鏃х増鏁村睆绾櫧锛屽彧闈犵暀鐧藉尯鍒嗗眰绾э紱闀垮垪琛?/ 澶ф枃浠舵椂璇讳笉鍑恒€岃繖閲屾槸鍙︿竴鍧椼€嶃€? * 棰滆壊鍙敤 --pure-border锛堟繁鑹蹭富棰橀噷鎹㈡垚 #2f2f2f锛夛紝涓嶅啓姝?hex銆? */
+.pure-shell .pure-edge-r {
+  border-right: 1px solid var(--pure-border);
+}
+.pure-shell .pure-edge-l {
+  border-left: 1px solid var(--pure-border);
+}
+.pure-shell .pure-edge-t {
+  border-top: 1px solid var(--pure-border);
+}
+.pure-shell .pure-edge-b {
+  border-bottom: 1px solid var(--pure-border);
+}
+
+/* 鍚搁《鐘舵€佹皵娉?/ 闈㈡澘宸ュ叿鏉★細婊氬姩鍐呭涓嶈兘浠庤儗鍚庣┛鍑烘潵 */
+.pure-shell .pure-sticky-surface {
+  background: color-mix(in srgb, var(--pure-canvas) 92%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+/* 鍥剧墖棰勮鐨勬壙鎵樼敾甯冿細妫嬬洏鏍硷紙閫忔槑鍖哄煙鍙鲸锛夛紝棰滆壊鍙敤 token */
+.pure-shell .pure-checker {
+  background-color: var(--pure-canvas);
+  background-image: linear-gradient(
+      45deg,
+      var(--pure-hover) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--pure-hover) 75%
+    ),
+    linear-gradient(
+      45deg,
+      var(--pure-hover) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--pure-hover) 75%
+    );
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+
+/* 绐勭獥鎶藉眽鐨勯伄缃╋細鎶婂璇濇寮忓眰娆＄敾鍑烘潵锛堜箣鍓嶆槸鍏ㄩ€忔槑閬僵锛? * 绐勭獥閲岀湅涓嶅嚭杩欐槸娴眰锛屾鏂囧儚鏄纭垏鎺夌殑锛夈€?*/
+.pure-shell .pure-drawer-backdrop {
+  background: color-mix(in srgb, var(--pure-ink) 12%, transparent);
+}
+
+
+/* 抽屉左缘的投影：让「浮在对话之上的面板」有厚度，而不是一条硬边 */
+.pure-shell .pure-narrow-drawer {
+  box-shadow: -18px 0 32px -14px color-mix(in srgb, var(--pure-ink) 20%, transparent);
 }

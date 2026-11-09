@@ -1,30 +1,13 @@
-import { useEffect } from 'react'
-import MainLayout from '@/components/Layout/MainLayout'
 import AgentShell from './agent/AgentShell'
-import { useUIStore } from '@/stores/uiStore'
 import './pure.css'
 
 /**
- * 顶层壳切换（P0）：
- *  - `agent`     → 对话优先的 AgentShell（本次重写目标）
- *  - `workbench` → 现有 IDE 布局，MainLayout 原样保留，行为零变更
+ * 顶层壳：只有对话优先的 AgentShell。
  *
- * 两套壳并存、flag 可回滚；Ctrl+Alt+M 随时切换，方便对比验收。
+ * new-ui 分支不保留旧的 IDE 布局（MainLayout）作为并列模式 —— 没有 uiMode、
+ * 没有切换快捷键、没有第二条渲染路径。旧的 ChatPanel / MainLayout 组件文件
+ * 仍留在仓库里供其它入口复用，但它们不再构成「另一种界面」。
  */
 export default function AppShell() {
-  const uiMode = useUIStore((s) => s.uiMode)
-  const setUiMode = useUIStore((s) => s.setUiMode)
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 'm') {
-        e.preventDefault()
-        setUiMode(useUIStore.getState().uiMode === 'agent' ? 'workbench' : 'agent')
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [setUiMode])
-
-  return uiMode === 'agent' ? <AgentShell /> : <MainLayout />
+  return <AgentShell />
 }

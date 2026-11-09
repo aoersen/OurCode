@@ -13,11 +13,14 @@
  * 行为全部来自 `useComposer()`；这里只有布局和 class。
  */
 import { useEffect, useRef } from 'react'
+import type React from 'react'
 import FileChip from '@/components/ChatPanel/FileChip'
 import { useUIStore } from '@/stores/uiStore'
 import { imageAttachmentDataUrl } from '@/utils/imageAttach'
 import { useI18n } from '@/i18n/useI18n'
 import { AttachmentMenu, ContextMeter, ModePicker, ModelPicker, Popover } from './ComposerParts'
+import { copyFor } from './menus/copy'
+import { useMenuLocale } from './menus/locale'
 import useComposer, { type ComposerVoiceState } from './useComposer'
 
 export type ComposerVariant = 'hero' | 'inline'
@@ -85,7 +88,7 @@ function VoiceSetupPanel({ voice }: { voice: ComposerVoiceState }) {
           <button
             type="button"
             onClick={voice.save}
-            className="h-7 px-2.5 rounded-md bg-[var(--pure-ink)] text-[12px] text-white hover:opacity-90"
+            className="h-7 px-2.5 rounded-md bg-[var(--pure-ink)] text-[12px] text-[var(--pure-canvas)] hover:opacity-90"
           >
             {t('chat.voiceSave')}
           </button>
@@ -104,9 +107,23 @@ export default function Composer({
 }) {
   const t = useI18n()
   const c = useComposer()
+  const menuCopy = copyFor(useMenuLocale())
   const rootPath = useUIStore((s) => s.rootPath)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const hero = variant === 'hero'
+
+  /**
+   * Shift+Tab 循环权限模式：文本框里的那一条在 useComposer 的 onKeyDown 里，
+   * 焦点落在 + / 模型 / 权限 / 发送这些控件上时由这里接住。已经在浮层（dialog）
+   * 里的 Tab 属于焦点遍历，不抢。
+   */
+  const onRootKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab' || !e.shiftKey) return
+    if (e.defaultPrevented) return
+    if ((e.target as HTMLElement | null)?.closest?.('[role="dialog"]')) return
+    e.preventDefault()
+    c.cyclePermissionMode()
+  }
 
   // 自适应高度：先归零再量 scrollHeight，上限 200px（超过就内部滚动）
   useEffect(() => {
@@ -130,7 +147,7 @@ export default function Composer({
   const primaryIsStop = c.isRunning && !c.hasDraft
 
   return (
-    <div className={className} data-testid="composer" data-variant={variant}>
+    <div className={className} data-testid="composer" data-variant={variant} onKeyDown={onRootKeyDown}>
       {/* 待发送队列（运行中打字排队）：折叠在胶囊上方，不抢胶囊的视觉重量 */}
       {c.queuedMessages.length > 0 && (
         <div className="mb-2 rounded-xl border border-[var(--pure-border)] bg-[var(--pure-rail)] px-3 py-2">
@@ -227,15 +244,16 @@ export default function Composer({
       <div className="relative" data-chat-drop {...c.dragHandlers}>
         {c.isDragOver && (
           <div className="pure-drop-overlay" aria-hidden>
-            <span className="px-2.5 py-1 rounded-full bg-[var(--pure-ink)] text-white text-[11px]">
+            <span className="px-2.5 py-1 rounded-full bg-[var(--pure-ink)] text-[var(--pure-canvas)] text-[11px]">
               {t('chat.dropHint')}
             </span>
           </div>
         )}
 
-        {/* slash 命令（行首 "/"） */}
+        {/* slash 命令（行首 "/"）。这两个列表保持原有视觉：吃满胶囊宽度
+            （left-0 right-0），只是补上 role=dialog 需要的 aria-label */}
         {c.slash.open && c.slash.items.length > 0 && (
-          <Popover width="right-0">
+          <Popover width="right-0" label={menuCopy.slashDialog}>
             {c.slash.items.map((cmd, index) => (
               <button
                 key={cmd.id}
@@ -257,7 +275,7 @@ export default function Composer({
 
         {/* @ 文件引用 */}
         {c.fileSearch.open && c.fileSearch.results.length > 0 && (
-          <Popover width="right-0">
+          <Popover width="right-0" label={menuCopy.fileSearchDialog}>
             {c.fileSearch.results.map((file, index) => (
               <button
                 key={file.path}
@@ -310,7 +328,7 @@ export default function Composer({
               listening={c.voice.listening}
               voiceBusy={c.voice.busy}
             />
-            <ModelPicker />
+            <ModelPicker contextUsage={c.contextUsage} />
             <ModePicker />
 
             <div className="ml-auto flex items-center gap-1.5 shrink-0">
@@ -337,12 +355,12 @@ export default function Composer({
                 title={primaryIsStop ? t('chat.stop') : t('chat.send')}
                 aria-label={primaryIsStop ? t('chat.stop') : t('chat.send')}
                 data-testid="composer-primary"
-                className={`w-8 h-8 shrink-0 flex items-center justify-center bg-[var(--pure-ink)] text-white transition-opacity hover:opacity-90 disabled:opacity-25 ${
+                className={`w-8 h-8 shrink-0 flex items-center justify-center bg-[var(--pure-ink)] text-[var(--pure-canvas)] transition-opacity hover:opacity-90 disabled:opacity-25 ${
                   primaryIsStop ? 'rounded-[10px]' : 'rounded-full'
                 }`}
               >
                 {primaryIsStop ? (
-                  <span className="w-2.5 h-2.5 rounded-[2px] bg-white" />
+                  <span className="w-2.5 h-2.5 rounded-[2px] bg-[var(--pure-canvas)]" />
                 ) : (
                   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path d="M12 19V5M5 12l7-7 7 7" />
