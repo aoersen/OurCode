@@ -8,6 +8,9 @@ import {
 } from '@/services/permissions/companyGuard'
 
 const PROJECT = process.platform === 'win32' ? 'E:/work/demo' : '/work/demo'
+/** The workspace's parent must follow the platform too — `E:/work` is a
+ *  Windows path and is not an ancestor of `/work/demo` on POSIX CI. */
+const WORKSPACE_PARENT = process.platform === 'win32' ? 'E:/work' : '/work'
 
 afterEach(() => {
   // Remove the per-test stat stub (node environment has no window by default).
@@ -126,7 +129,7 @@ describe('evaluateCompanyToolCall — 放行优先，只拦灾难删除', () => 
       PROJECT, // whole workspace
       `${PROJECT}/.git`,
       `${PROJECT}/vendor/lib/.git`,
-      'E:/work', // ancestor of the workspace
+      WORKSPACE_PARENT, // ancestor of the workspace
     ]
     for (const target of targets) {
       const verdict = await evalCall('delete_file', { path: target })
