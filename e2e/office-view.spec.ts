@@ -65,8 +65,9 @@ test('office view mounts the dashboard workbench in its own window', async () =>
     if (msg.type() === 'error') consoleErrors.push(msg.text())
   })
 
-  // 看板（团队状态栏 8 工位卡）挂载
-  await expect(office.locator('#office-root h2', { hasText: '工位' })).toBeVisible({ timeout: 15000 })
+  // 看板（团队状态栏 8 工位卡）挂载——用 testid 而不是标题文案：
+  // 标题是 i18n 文案（「团队状态」/「Team Status」），文案改过一次就断。
+  await expect(office.locator('#office-root [data-testid="office-dashboard"]')).toBeVisible({ timeout: 15000 })
 
   // 左侧项目/任务栏 + 底部对话条已挂载
   await expect(office.locator('#office-root [data-testid="office-projects-panel"]')).toBeVisible()

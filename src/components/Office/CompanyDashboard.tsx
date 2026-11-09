@@ -492,6 +492,7 @@ export default function CompanyDashboard({ active = true }: { active?: boolean }
           标题被截成「需…」、工位卡截成两个字,属于「显示不全」的另一半原因。 */}
       <div
         ref={gridRef}
+        data-testid="office-dashboard"
         className="px-4 pb-2 grid gap-3"
         style={{
           minWidth: 0,
