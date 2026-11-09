@@ -1690,7 +1690,7 @@ export const enUS: Record<TranslationKey, string> = {
   'noLimits.statusOn': 'On: {layers}',
   'noLimits.statusNoLayer': 'no layer selected',
   'noLimits.attribution': 'Prompt preset from dsh-purge (Apache-2.0, by YuJunZhiXue):',
-  'noLimits.attributionLocal': 'The Keyijiang preset is built into this project; its text lives in src/services/noLimits/presets/keyijiang.zh.md.',
+  'noLimits.attributionLocal': 'The Keyijiang preset is built into this project; its text is stored encrypted (AES-256-GCM) at src/services/noLimits/presets/keyijiang.zh.enc.json and decrypted at runtime.',
   'noLimits.notifyOn': 'No-limits mode enabled (prompt override / no-approval per current layers)',
   'noLimits.notifyOff': 'No-limits mode disabled — default approvals and prompt restored',
 

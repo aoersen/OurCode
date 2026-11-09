@@ -1682,7 +1682,7 @@ export const zhCN = {
   'noLimits.statusOn': '已开启：{layers}',
   'noLimits.statusNoLayer': '未勾选任何层',
   'noLimits.attribution': '提示词预设来自 dsh-purge（Apache-2.0，作者 YuJunZhiXue）：',
-  'noLimits.attributionLocal': '「可以酱」预设为本项目内置，正文在 src/services/noLimits/presets/keyijiang.zh.md。',
+  'noLimits.attributionLocal': '「可以酱」预设为本项目内置，正文在仓库中以 AES-256-GCM 密文保存（src/services/noLimits/presets/keyijiang.zh.enc.json），运行时解密。',
   'noLimits.notifyOn': '无限制模式已开启（提示词覆盖 / 免审批按当前勾选生效）',
   'noLimits.notifyOff': '无限制模式已关闭，已恢复默认审批与提示词',
 

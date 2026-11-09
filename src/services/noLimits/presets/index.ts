@@ -5,11 +5,15 @@
  * https://github.com/YuJunZhiXue/dsh-purge，lib/default-prompt-inject.zh.md），
  * 署名与许可见同目录 NOTICE.md 与 docs/no-limits.md。除去掉聊天模板标记外不改写。
  *
- * `keyijiang-zh` 是本项目内置的「可以酱」工作人格，正文维护在
- * keyijiang.zh.md，不来自第三方。
+ * `keyijiang-zh` 是本项目内置的「可以酱」工作人格，不来自第三方。
+ *
+ * 两个预设的正文在仓库里以 AES-256-GCM 密文保存（`*.zh.enc.json`），
+ * 只有本模块被加载时才解密到内存 —— 这样 git / code search 不会命中提示词
+ * 正文。密文由 scripts/prompt-presets.mjs 生成，维护方式见同目录 README.md。
  */
-import dshPurgeZh from './dsh-purge.zh.md?raw'
-import keyijiangZh from './keyijiang.zh.md?raw'
+import keyijiangEncrypted from './keyijiang.zh.enc.json'
+import dshPurgeEncrypted from './dsh-purge.zh.enc.json'
+import { decryptPresetText } from './cipher'
 import type { NoLimitsPresetId } from '../policy'
 
 export interface NoLimitsPreset {
@@ -26,6 +30,13 @@ export interface NoLimitsPreset {
 }
 
 export const DSH_PURGE_REPO = 'https://github.com/YuJunZhiXue/dsh-purge'
+
+// 密文在模块初始化时解密一次；两个预设并行解，失败时 decryptPresetText
+// 返回空串（不阻塞应用启动），单测与 presets:check 会守住「正文非空」。
+const [dshPurgeZh, keyijiangZh] = await Promise.all([
+  decryptPresetText(dshPurgeEncrypted, 'dsh-purge-zh'),
+  decryptPresetText(keyijiangEncrypted, 'keyijiang-zh'),
+])
 
 export const NO_LIMITS_PRESETS: NoLimitsPreset[] = [
   {

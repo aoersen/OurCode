@@ -21,6 +21,10 @@
 # Scripts with shebangs must keep LF
 *.sh text eol=lf
 
+# Encrypted prompt presets: ciphertext changes wholesale on every re-encode,
+# so a line-by-line diff is pure noise (and reveals nothing useful).
+src/services/noLimits/presets/*.enc.json -diff
+
 # Binary (never normalize)
 *.png binary
 *.jpg binary

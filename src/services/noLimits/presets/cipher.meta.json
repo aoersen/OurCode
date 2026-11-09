@@ -1,0 +1,6 @@
+{
+  "v": 1,
+  "alg": "AES-256-GCM",
+  "keyMaterial": "ourcode-ide/no-limits/prompt-preset/2026-11",
+  "aad": "ourcode-ide/no-limits/preset/v1"
+}

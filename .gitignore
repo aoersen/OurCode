@@ -36,6 +36,11 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 
+# no-limits prompt presets: only ciphertext (*.enc.json) is committed. Local
+# plaintext copies are produced by `npm run presets:decode` and removed again by
+# `npm run presets:encode`; they must never reach git.
+src/services/noLimits/presets/*.zh.md
+
 # Runtime-generated MCP test config dirs
 electron/__tests__/fixtures/mcp-config-*/
 electron/__tests__/fixtures/mcp-http-config-*/
