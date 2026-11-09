@@ -49,5 +49,11 @@ export default defineConfig({
       },
     },
     plugins: [react()],
+    server: {
+      // 编辑工具（写入 / 重命名）会在同目录塞临时目录与 .tmp 文件；Windows 上
+      // Vite 的 fs watcher 一旦 watch 到里头的 .tmp 就抛 EBUSY，把整个 dev server
+      // 打死（见 vite.config.preview.ts 里同样的处理）。预览沙盘不需要这些。
+      watch: { ignored: ['**/*.tmpdir/**', '**/*.tmp', '**/.*.tmpdir/**'] },
+    },
   },
 })
