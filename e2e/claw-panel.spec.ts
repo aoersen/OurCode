@@ -9,15 +9,16 @@ import { dismissOnboarding, launchApp } from './helpers'
  * 来自主进程（而不是前端写死的占位）。
  */
 test.describe('Claw 渠道接入面板', () => {
-  test('活动栏有 Claw 入口且图标不再是浏览器', async () => {
+  test('渠道接入入口在设置「工具」分组里', async () => {
     const { app, userData } = await launchApp()
     try {
       const win = await app.firstWindow()
       await dismissOnboarding(win)
-      const clawIcon = win.locator('button[title="Claw 渠道接入"], button[aria-label="Claw 渠道接入"]').first()
-      await expect(clawIcon).toBeVisible({ timeout: 15_000 })
-      // 浏览器入口已移除（agent 的 browser_* 工具仍在，只是不再占活动栏图标）
-      await expect(win.locator('button[title="浏览器"], button[aria-label="浏览器"]')).toHaveCount(0)
+      // 左侧活动栏已移除：Claw 面板迁到设置。
+      await win.locator('button[title="设置"]').first().click()
+      await expect(
+        win.locator('button[role="tab"]', { hasText: '渠道接入' }).first(),
+      ).toBeVisible({ timeout: 15_000 })
     } finally {
       await app.close()
       void userData
@@ -30,8 +31,8 @@ test.describe('Claw 渠道接入面板', () => {
       const win = await app.firstWindow()
       // 首启引导层是 fixed inset-0 的遮罩，不关掉会拦住一切点击（详见 helpers）
       await dismissOnboarding(win)
-      const clawIcon = win.locator('button[title="Claw 渠道接入"], button[aria-label="Claw 渠道接入"]').first()
-      await clawIcon.click()
+      await win.locator('button[title="设置"]').first().click()
+      await win.locator('button[role="tab"]', { hasText: '渠道接入' }).first().click()
 
       // 五个渠道都渲染出来（渠道目录来自 shared/claw.ts，这里验证它真的到了界面上）
       for (const label of ['微信', '企业微信', 'QQ', '飞书', 'Telegram']) {
@@ -103,7 +104,8 @@ test.describe('Claw 渠道接入面板', () => {
     try {
       const win = await app.firstWindow()
       await dismissOnboarding(win)
-      await win.click('button[title="Claw 渠道接入"], button[aria-label="Claw 渠道接入"]')
+      await win.locator('button[title="设置"]').first().click()
+      await win.locator('button[role="tab"]', { hasText: '渠道接入' }).first().click()
 
       // 启用企业微信（默认关闭，且没有凭据）→ 卡片上应出现提示 + 直达入口
       const wecomToggle = win.locator('button[aria-label="启用/停用 企业微信"]').first()

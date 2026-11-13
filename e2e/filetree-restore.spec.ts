@@ -72,10 +72,8 @@ test.describe('FileTree restore-expanded', () => {
         await win2.mouse.click(10, 10)
         await win2.waitForTimeout(300)
       }
-      // Open the sidebar (starts hidden) — the files tab reveals the tree.
-      // 第一个活动栏图标的 tooltip 已改为「任务面板」（办公室改造的重命名）。
-      const explorer = win2.locator('button[title="任务面板"], button[title="Task Panel"], button[title="项目列表"], button[title="Project List"]').first()
-      await explorer.click()
+      // The sidebar is part of the default layout now — the restored file tree
+      // shows up without an activity-bar click.
       await win2.waitForTimeout(500)
       // Poll for the tree to appear (restoreLastProject may take a moment)
       let sawTree = false

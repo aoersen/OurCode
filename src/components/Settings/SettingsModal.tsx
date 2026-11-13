@@ -15,12 +15,17 @@ import { toFullConfigGroup } from '@/services/llm/configDraft'
 import { resolveWebToolsConfig } from '@/services/web/config'
 import { listCatalogProviders, getCatalogProvider, getCatalogModel, MODEL_CATALOG_META, type CatalogWireFormat } from '@shared/modelCatalog'
 import ModelConfigDialog from './ModelConfigDialog'
-import McpConfigSection from './McpConfigSection'
 import ClawSettingsSection from './ClawSettingsSection'
+import AgentTasksPanel from '../Sidebar/AgentTasksPanel'
+import UsagePanel from '../Sidebar/UsagePanel'
+import SkillPanel from '../Skills/SkillPanel'
+import McpPanel from '../Mcp/McpPanel'
+import ClawPanel from '../Claw/ClawPanel'
 import { askText } from '@/components/Common/PromptDialog'
 import PluginSection from '../Plugin/PluginSection'
 import NoLimitsSettingsSection from './NoLimitsSettingsSection'
 import ComputerUseSection from './ComputerUseSection'
+import BrowserSection from './BrowserSection'
 import SettingsLayout, { type SettingsNavGroup, type SettingsTabKey } from './SettingsLayout'
 import {
   T_BODY,
@@ -131,8 +136,52 @@ const NAV_GROUPS: SettingsNavGroup[] = [
       {
         key: 'features',
         label: '功能',
-        hint: '软件更新、渠道接入、插件、MCP 与项目设置',
+        hint: '软件更新、渠道接入、插件与项目设置',
         icon: <svg {...ICON}><path d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.5-6.3 4.5L8 13.8 2 9.2h7.6z" /></svg>,
+      },
+    ],
+  },
+  // 原左侧活动栏的工具面板里，Agent 任务 / 使用统计 / 技能 / MCP / 渠道接入
+  // 仍留在设置；代码管理 / 文件变更跟随项目，在进入项目后的侧栏手风琴里
+  // （见 Sidebar/ProjectSections.tsx）。fullBleed：这些面板自带滚动与内边距，
+  // 是整高工作区而不是设置表单，不能再套一层 padding + scroll。
+  {
+    title: '工具',
+    items: [
+      {
+        key: 'agent',
+        label: 'Agent 任务',
+        hint: '正在运行的任务与历史执行记录',
+        fullBleed: true,
+        icon: <svg {...ICON}><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 8V4" /><circle cx="12" cy="3" r="1.2" /><path d="M9 13h.01M15 13h.01M9 17h6" /></svg>,
+      },
+      {
+        key: 'usage',
+        label: '使用统计',
+        hint: 'Token 用量、请求趋势与技能排行',
+        fullBleed: true,
+        icon: <svg {...ICON}><line x1="4" y1="20" x2="4" y2="14" /><line x1="10" y1="20" x2="10" y2="6" /><line x1="16" y1="20" x2="16" y2="11" /><line x1="22" y1="20" x2="22" y2="3" /><path d="M2 20h22" /></svg>,
+      },
+      {
+        key: 'skills',
+        label: '技能',
+        hint: '启用/停用技能，进入技能管理',
+        fullBleed: true,
+        icon: <svg {...ICON}><path d="M13 2 3 14h7v8l10-12h-7z" /></svg>,
+      },
+      {
+        key: 'mcp',
+        label: 'MCP 服务器',
+        hint: '连接状态、配置、工具、资源与提示词',
+        fullBleed: true,
+        icon: <svg {...ICON}><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>,
+      },
+      {
+        key: 'claw',
+        label: '渠道接入',
+        hint: '微信 / 企业微信 / QQ / 飞书 / Telegram 的统一入口',
+        fullBleed: true,
+        icon: <svg {...ICON}><circle cx="12" cy="12" r="3" /><path d="M12 9V4" /><path d="M9.6 10.2 5.8 7.4" /><path d="M14.4 10.2 18.2 7.4" /><path d="M9.6 13.8 5.8 16.6" /><path d="M14.4 13.8 18.2 16.6" /><circle cx="12" cy="3.2" r="1.4" /><circle cx="4.9" cy="6.9" r="1.4" /><circle cx="19.1" cy="6.9" r="1.4" /><circle cx="4.9" cy="17.1" r="1.4" /><circle cx="19.1" cy="17.1" r="1.4" /></svg>,
       },
     ],
   },
@@ -1480,7 +1529,8 @@ export default function SettingsModal() {
     { id: 'settings-feature-claw', label: '渠道接入' },
     { id: 'settings-feature-entry', label: '功能入口' },
     { id: 'settings-feature-nolimits', label: '无限制模式' },
-  { id: 'settings-feature-computer', label: '电脑操控' },
+    { id: 'settings-feature-browser', label: '内置浏览器' },
+    { id: 'settings-feature-computer', label: '电脑操控' },
     { id: 'settings-feature-plugins', label: '插件' },
     { id: 'settings-feature-project', label: '项目设置' },
     { id: 'settings-feature-mcp', label: 'MCP 服务器' },
@@ -1552,12 +1602,7 @@ export default function SettingsModal() {
       {/* 微信通道（官方 ilink 协议，网关子进程 + 桥接层） */}
       <div id="settings-feature-claw"><ClawSettingsSection /></div>
 
-      <SettingsSection id="settings-feature-entry" title="功能入口" description="进入独立的技能与记忆管理面板。">
-        <SettingRow
-          label="技能管理"
-          desc="查看和启用 AI 技能（Slash 命令）"
-          right={<SettingsButton onClick={() => { closeSettings(); useUIStore.getState().openSkillRegistry() }}>打开</SettingsButton>}
-        />
+      <SettingsSection id="settings-feature-entry" title="功能入口" description="进入独立的记忆管理面板（技能管理在「工具 → 技能」）。">
         <SettingRow
           label="记忆管理"
           desc="查看、搜索和删除长期记忆"
@@ -1567,6 +1612,9 @@ export default function SettingsModal() {
 
       {/* 无限制模式（no-limits）：破甲能力取自 dsh-purge，默认关闭 */}
       <div id="settings-feature-nolimits"><NoLimitsSettingsSection /></div>
+
+      {/* 内置浏览器：Agent 的 browser_* 工具窗口，可自动/手动显示 */}
+      <BrowserSection />
 
       {/* 电脑操控（Computer Use）：桌面应用观察/操作，默认关闭 */}
       <ComputerUseSection />
@@ -1599,12 +1647,6 @@ export default function SettingsModal() {
           }
         />
       </SettingsSection>
-
-      <SettingsSection id="settings-feature-mcp" title="MCP 服务器" description="当前项目的 MCP 连接，保存后需重启对应会话。">
-        <div className="py-1">
-          <McpConfigSection rootPath={currentProjectPath} />
-        </div>
-      </SettingsSection>
     </>
   )
 
@@ -1629,6 +1671,32 @@ export default function SettingsModal() {
         {activeTab === 'editor' && editorTab}
         {activeTab === 'shortcuts' && shortcutsTab}
         {activeTab === 'features' && featuresTab}
+        {/* 原活动栏工具面板 —— 整高工作区，居中限宽后交给面板自己滚动 */}
+        {activeTab === 'agent' && (
+          <div className="mx-auto flex h-full w-full max-w-[860px] min-h-0 flex-col px-4 pb-4">
+            <AgentTasksPanel />
+          </div>
+        )}
+        {activeTab === 'usage' && (
+          <div className="mx-auto flex h-full w-full max-w-[860px] min-h-0 flex-col px-4 pb-4">
+            <UsagePanel embedded />
+          </div>
+        )}
+        {activeTab === 'skills' && (
+          <div className="mx-auto flex h-full w-full max-w-[860px] min-h-0 flex-col px-4 pb-4">
+            <SkillPanel embedded />
+          </div>
+        )}
+        {activeTab === 'mcp' && (
+          <div className="mx-auto flex h-full w-full max-w-[860px] min-h-0 flex-col px-4 pb-4">
+            <McpPanel embedded />
+          </div>
+        )}
+        {activeTab === 'claw' && (
+          <div className="mx-auto flex h-full w-full max-w-[860px] min-h-0 flex-col px-4 pb-4">
+            <ClawPanel embedded />
+          </div>
+        )}
       </SettingsLayout>
 
       {/* Model config editor sits above the settings dialog (z-160). */}

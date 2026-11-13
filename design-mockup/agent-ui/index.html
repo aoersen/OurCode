@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OurCode · Agent UI 界面方向总筛选（11 版）</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  html, body { height: auto; overflow-x: hidden; overflow-y: auto; }
+  body { background: var(--bg); }
+  .gallery { position: relative; z-index: 1; width: 1240px; max-width: calc(100% - 64px); margin: 0 auto; padding: 54px 0 60px; }
+  .g-head { display: flex; align-items: flex-end; gap: 24px; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 800; letter-spacing: 1.6px; color: var(--text-3); }
+  .eyebrow .brand-mark { width: 26px; height: 26px; border-radius: 8px; }
+  .g-head h1 { font-size: 40px; line-height: 1.16; letter-spacing: -1.6px; font-weight: 800; margin-top: 14px; }
+  .g-head h1 span { color: var(--accent); }
+  .g-head p { max-width: 610px; margin-top: 12px; font-size: 13px; line-height: 1.7; color: var(--text-3); }
+  .g-meta { margin-left: auto; flex: none; text-align: right; font-family: var(--mono); font-size: 10px; line-height: 1.8; color: var(--text-4); }
+  .g-meta b { display: block; font-family: var(--font); font-size: 12px; color: var(--text-2); letter-spacing: 0; }
+
+  .round { margin-top: 44px; }
+  .r-head { display: flex; align-items: baseline; gap: 12px; }
+  .r-tag { font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--accent); background: rgba(0, 88, 188, 0.08); border-radius: 6px; padding: 3px 8px; }
+  .r-head h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.6px; }
+  .r-head p { font-size: 11.5px; color: var(--text-3); }
+  .r-head .line { flex: 1; height: 1px; background: var(--border); align-self: center; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+  .grid.cols3 { grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .vcard { display: flex; flex-direction: column; padding: 11px; border: 1px solid var(--border); border-radius: 18px; background: rgba(255, 255, 255, 0.7); box-shadow: var(--shadow-md); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease; }
+  .vcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-pop); border-color: rgba(0, 88, 188, 0.2); }
+  .shot { position: relative; display: block; border-radius: 11px; overflow: hidden; border: 1px solid var(--border); background: #eef2f8; }
+  .shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top center; }
+  .shot .view { position: absolute; right: 9px; bottom: 9px; height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 0 9px; border-radius: 999px; background: rgba(15, 23, 42, 0.72); color: #fff; font-size: 9.5px; font-weight: 600; opacity: 0; transform: translateY(3px); transition: opacity 0.18s, transform 0.18s; }
+  .shot:hover .view { opacity: 1; transform: translateY(0); }
+  .shot .darkchip { position: absolute; left: 9px; top: 9px; height: 22px; display: inline-flex; align-items: center; padding: 0 8px; border-radius: 999px; background: rgba(11, 15, 23, 0.78); color: #cbd5e1; font-size: 9px; font-weight: 700; letter-spacing: 0.6px; }
+  .vbody { padding: 12px 5px 3px; }
+  .vtop { display: flex; align-items: center; gap: 8px; }
+  .num { font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--accent); background: rgba(0, 88, 188, 0.08); border-radius: 5px; padding: 2px 6px; }
+  .vtop h2 { font-size: 18px; font-weight: 800; letter-spacing: -0.4px; }
+  .vtop .tl { margin-left: auto; font-size: 9px; font-weight: 700; letter-spacing: 0.8px; color: var(--text-4); }
+  .vdesc { margin-top: 6px; font-size: 11.5px; line-height: 1.62; color: var(--text-3); }
+  .vbullets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .vb { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.55); font-size: 9.5px; color: var(--text-2); }
+  .vb .ic { width: 10px; height: 10px; color: var(--accent); }
+  .vfoot { display: flex; align-items: center; gap: 10px; margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border); font-size: 10px; }
+  .vfoot a { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-weight: 700; }
+  .vfoot a .ic { width: 11px; height: 11px; }
+  .vfoot .muted { color: var(--text-4); }
+  .vfoot .grow { flex: 1; }
+
+  .section { margin-top: 42px; }
+  .sec-head { display: flex; align-items: flex-end; gap: 12px; }
+  .sec-head h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.6px; }
+  .sec-head p { font-size: 11.5px; color: var(--text-3); margin-bottom: 2px; }
+  .sec-head .line { flex: 1; height: 1px; background: var(--border); margin-bottom: 8px; }
+
+  .table-wrap { margin-top: 14px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: rgba(255, 255, 255, 0.6); backdrop-filter: var(--blur); }
+  table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  th, td { padding: 8px 11px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  thead th { font-size: 9.5px; letter-spacing: 0.4px; color: var(--text-4); font-weight: 700; background: rgba(15, 23, 42, 0.025); }
+  tbody th { width: 120px; font-size: 9.5px; font-weight: 700; color: var(--text-3); background: rgba(15, 23, 42, 0.018); white-space: nowrap; }
+  td b { color: var(--text); font-weight: 700; }
+  .best { color: var(--accent); font-weight: 700; }
+  .warn { color: var(--amber-text); font-weight: 600; }
+
+  .pick { margin-top: 34px; display: flex; gap: 18px; align-items: stretch; }
+  .pick-main { flex: 1; padding: 18px 20px; border: 1px solid rgba(0, 88, 188, 0.18); border-radius: 16px; background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(232, 240, 255, 0.55)); box-shadow: 0 10px 34px rgba(0, 88, 188, 0.07); }
+  .pick-main .k { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
+  .pick-main h3 { font-size: 18px; font-weight: 800; letter-spacing: -0.4px; margin-top: 6px; }
+  .pick-main p { font-size: 11.5px; line-height: 1.7; color: var(--text-2); margin-top: 6px; }
+  .combo { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+  .combo span { height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 0 9px; border-radius: 7px; background: #fff; border: 1px solid var(--border); font-size: 10px; font-weight: 600; color: var(--text-2); box-shadow: var(--shadow-sm); }
+  .combo em { color: var(--text-4); font-style: normal; font-size: 11px; }
+  .pick-side { width: 300px; flex: none; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255, 255, 255, 0.62); backdrop-filter: var(--blur); }
+  .pick-side h4 { font-size: 10px; letter-spacing: 0.8px; color: var(--text-4); font-weight: 800; }
+  .tok-row { display: flex; align-items: center; gap: 7px; margin-top: 8px; font-size: 10px; color: var(--text-3); }
+  .sw { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(15, 23, 42, 0.12); flex: none; }
+  .tok-row code { margin-left: auto; font-family: var(--mono); font-size: 8.5px; color: var(--text-4); }
+
+  .g-foot { display: flex; align-items: center; gap: 10px; margin-top: 38px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 9.5px; color: var(--text-4); }
+  .g-foot .grow { flex: 1; }
+  .g-foot .mono { font-size: 9px; }
+</style>
+</head>
+<body>
+<div class="gallery">
+  <header class="g-head">
+    <div>
+      <div class="eyebrow">
+        <span class="brand-mark"><svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round"><path d="M3.5 13.2c2.3 0 2.7-4.2 5-4.2s2.7 4.2 5 4.2 2.7-4.2 5-4.2 2.7 4.2 5 4.2"/></svg></span>
+        OURCODE · AGENT UI
+      </div>
+      <h1>从 IDE 到 Agent<br><span>11 版界面方向总筛选</span></h1>
+      <p>第一轮 v1–v4 为本地手写高保真原型（与现有 token 1:1，可当实现参考）；第二轮 A–G 为 Google Stitch 云端稿（含暗色与三个新信息架构）。全部沿用 Glass Light 画布、#0058BC 主色、Plus Jakarta Sans，不改 agent 运行时，只改壳与对话表层。</p>
+    </div>
+    <div class="g-meta"><b>Agent UI · 两轮样稿</b>1440 × 900 · 4 + 7 版<br>2026.11.10</div>
+  </header>
+
+  <section class="round">
+    <div class="r-head"><span class="r-tag">ROUND 1</span><h2>本地高保真原型 v1–v4</h2><p>手写 HTML · 与现有代码 token 完全一致</p><span class="line"></span></div>
+    <div class="grid">
+      <article class="vcard">
+        <a class="shot" href="v1-mission-control.html" target="_blank">
+          <img src="shots/v1-mission-control.png" alt="V1 任务驾驶舱">
+          <span class="view">打开原型<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">V1</span><h2>任务驾驶舱</h2><span class="tl">MISSION CONTROL</span></div>
+          <p class="vdesc">把首页做成「派发 + 并行进度 + 审批收件箱」。打开应用先看到 3 个 Agent 在干什么，而不是一个空编辑器。</p>
+          <div class="vbullets">
+            <span class="vb"><svg class="ic"><use href="#i-home"/></svg>Agent 首页</span>
+            <span class="vb"><svg class="ic"><use href="#i-alert"/></svg>审批收件箱</span>
+            <span class="vb"><svg class="ic"><use href="#i-zap"/></svg>并行任务</span>
+          </div>
+          <div class="vfoot"><a href="v1-mission-control.html" target="_blank">打开原型<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="shots/v1-mission-control.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">参考 Devin / Manus / Linear Inbox</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="v2-canvas-stream.html" target="_blank">
+          <img src="shots/v2-canvas-stream.png" alt="V2 画布流">
+          <span class="view">打开原型<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">V2</span><h2>画布流</h2><span class="tl">CANVAS STREAM</span></div>
+          <p class="vdesc">对话是唯一主画布：计划、diff、测试结果、实时预览都内联在消息流里，不常驻右栏，不切「轨迹」视图。</p>
+          <div class="vbullets">
+            <span class="vb"><svg class="ic"><use href="#i-columns"/></svg>内联产物</span>
+            <span class="vb"><svg class="ic"><use href="#i-diff"/></svg>就地审阅</span>
+            <span class="vb"><svg class="ic"><use href="#i-monitor"/></svg>实时预览</span>
+          </div>
+          <div class="vfoot"><a href="v2-canvas-stream.html" target="_blank">打开原型<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="shots/v2-canvas-stream.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">参考 ChatGPT Canvas / Claude Artifacts</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="v3-agent-board.html" target="_blank">
+          <img src="shots/v3-agent-board.png" alt="V3 调度看板">
+          <span class="view">打开原型<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">V3</span><h2>调度看板</h2><span class="tl">AGENT BOARD</span></div>
+          <p class="vdesc">面向多 Agent 并行：已排队 / 进行中 / 待审阅三列，右侧抽屉看计划、变更与审批，适合「一人公司」的调度视角。</p>
+          <div class="vbullets">
+            <span class="vb"><svg class="ic"><use href="#i-columns"/></svg>三列任务流</span>
+            <span class="vb"><svg class="ic"><use href="#i-bot"/></svg>Agent 团队</span>
+            <span class="vb"><svg class="ic"><use href="#i-check-circle"/></svg>验收队列</span>
+          </div>
+          <div class="vfoot"><a href="v3-agent-board.html" target="_blank">打开原型<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="shots/v3-agent-board.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">参考 Linear / Devin / 一人公司</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="v4-agent-split.html" target="_blank">
+          <img src="shots/v4-agent-split.png" alt="V4 协作分屏">
+          <span class="view">打开原型<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">V4</span><h2>协作分屏</h2><span class="tl">AGENT SPLIT</span></div>
+          <p class="vdesc">最平滑的迁移：左侧对话常驻，右侧保留可编辑代码与终端，顶部一条「Agent 修改了 N 个文件」审查条。</p>
+          <div class="vbullets">
+            <span class="vb"><svg class="ic"><use href="#i-message"/></svg>对话常驻</span>
+            <span class="vb"><svg class="ic"><use href="#i-file-code"/></svg>实时代码</span>
+            <span class="vb"><svg class="ic"><use href="#i-terminal"/></svg>终端并排</span>
+          </div>
+          <div class="vfoot"><a href="v4-agent-split.html" target="_blank">打开原型<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="shots/v4-agent-split.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">参考 Cursor Composer / Windsurf Cascade</span></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="round">
+    <div class="r-head"><span class="r-tag">ROUND 2 + 3</span><h2>Stitch 云端稿 A–G</h2><p>Google Stitch 生成 · A–D 上午批次 / E–G 下午补方向批次</p><span class="line"></span></div>
+    <div class="grid cols3">
+      <article class="vcard">
+        <a class="shot" href="stitch/方案A-对话驾驶舱.html" target="_blank">
+          <img src="stitch/方案A-对话驾驶舱.png" alt="方案A 对话驾驶舱">
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">A</span><h2>对话驾驶舱</h2><span class="tl">COCKPIT</span></div>
+          <p class="vdesc">会话栏 + 720px 对话主流（RUN 时间线 / 审批卡内联）+ 右侧「实时工作区」（变更 / 终端 / 预览），文件树被产物视图取代。</p>
+          <div class="vfoot"><a href="stitch/方案A-对话驾驶舱.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案A-对话驾驶舱.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">Cursor Agent / Claude Code</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="stitch/方案B-任务计划中心.html" target="_blank">
+          <img src="stitch/方案B-任务计划中心.png" alt="方案B 任务计划中心">
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">B</span><h2>任务计划中心</h2><span class="tl">PLAN CENTER</span></div>
+          <p class="vdesc">任务列表 + PLAN 步骤时间线（检查点 / 回退 / PASS 徽标）+ 右侧 Agent 工作台（浏览器 / 终端 / 编辑器）+ 追加指令条。</p>
+          <div class="vfoot"><a href="stitch/方案B-任务计划中心.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案B-任务计划中心.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">Devin / Manus</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="stitch/方案C-极简对话优先.html" target="_blank">
+          <img src="stitch/方案C-极简对话优先.png" alt="方案C 极简对话优先">
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">C</span><h2>极简对话优先</h2><span class="tl">MINIMAL</span></div>
+          <p class="vdesc">无常驻面板：56px 图标轨 + 居中对话列 + 内联 diff 卡 / 文件 chip + 右下角「工作区」悬浮抽屉。IDE 元素全部收起。</p>
+          <div class="vfoot"><a href="stitch/方案C-极简对话优先.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案C-极简对话优先.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">Claude Desktop / ChatGPT</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="stitch/方案D-多Agent指挥台.html" target="_blank">
+          <img src="stitch/方案D-多Agent指挥台.png" alt="方案D 多Agent指挥台">
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">D</span><h2>多 Agent 指挥台</h2><span class="tl">MISSION CTL</span></div>
+          <p class="vdesc">KPI 条（活跃 / 完成 / 待审批 / Token）+ Agent 角色卡片网格 + 右侧审批抽屉 + 底部总监指令条。</p>
+          <div class="vfoot"><a href="stitch/方案D-多Agent指挥台.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案D-多Agent指挥台.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">Mission Control / Linear</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="stitch/方案E-检查点时间线.html" target="_blank">
+          <img src="stitch/方案E-检查点时间线.png" alt="方案E 检查点时间线">
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">E</span><h2>检查点时间线</h2><span class="tl">CHECKPOINTS</span></div>
+          <p class="vdesc">垂直执行时间线为主画布，每个动作都是可回退检查点（CP-01…）；右侧常驻实时预览 + 产物栏，底部悬浮指令条。</p>
+          <div class="vfoot"><a href="stitch/方案E-检查点时间线.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案E-检查点时间线.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">Replit Agent / Cursor Checkpoints</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="stitch/方案F-规格三段式.html" target="_blank">
+          <img src="stitch/方案F-规格三段式.png" alt="方案F 规格三段式">
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">F</span><h2>规格三段式</h2><span class="tl">SPEC→PLAN→CODE</span></div>
+          <p class="vdesc">「① 规格 → ② 计划 → ③ 实现」阶段条；左规格列（目标 / 约束 / 验收标准）+ 中计划列 + 右实现列（diff / 终端 + 全部接受）。</p>
+          <div class="vfoot"><a href="stitch/方案F-规格三段式.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案F-规格三段式.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">GitHub Copilot Workspace</span></div>
+        </div>
+      </article>
+
+      <article class="vcard">
+        <a class="shot" href="stitch/方案G-暗色指挥舱.html" target="_blank">
+          <img src="stitch/方案G-暗色指挥舱.png" alt="方案G 暗色指挥舱">
+          <span class="darkchip">DARK MODE</span>
+          <span class="view">打开原稿<svg class="ic xs"><use href="#i-arrow-up-right"/></svg></span>
+        </a>
+        <div class="vbody">
+          <div class="vtop"><span class="num">G</span><h2>暗色指挥舱</h2><span class="tl">DARK COCKPIT</span></div>
+          <p class="vdesc">全局深色（#0b0f17）：KPI 徽标条 + 72px 导航轨 + 2×2 Agent 角色卡 + 审批收件箱 + 总监指令条。唯一深色底方案。</p>
+          <div class="vfoot"><a href="stitch/方案G-暗色指挥舱.html" target="_blank">打开原稿<svg class="ic"><use href="#i-arrow-right"/></svg></a><a href="stitch/方案G-暗色指挥舱.png" target="_blank" class="muted">PNG</a><span class="grow"></span><span class="muted">Warp / Linear Dark / Raycast</span></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="sec-head"><h2>怎么选</h2><p>按「用户心智 / 关键能力 / 迁移成本」横向比较（v1–v4 与最接近的 A–G 互为印证）</p><span class="line"></span></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>版本</th><th>核心主张</th><th>多任务</th><th>代码审阅</th><th>迁移成本</th><th>最适合</th><th>同类印证</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>V1 任务驾驶舱</th><td>先看全局，再进任务</td><td><b>强</b></td><td class="warn">弱（跳转会话）</td><td class="warn">中高（新首页）</td><td>日常入口 / 管理者</td><td>D / G</td></tr>
+          <tr><th>V2 画布流</th><td>对话即工作台</td><td>弱（单会话）</td><td><b>强（内联 diff）</b></td><td class="warn">高（产物内联）</td><td>长任务审阅 / 非工程用户</td><td>C / E</td></tr>
+          <tr><th>V3 调度看板</th><td>多 Agent 并行编排</td><td><b>最强</b></td><td>中（详情抽屉）</td><td class="warn">高（任务模型）</td><td>一人公司 / 多 Agent 团队</td><td>B / D</td></tr>
+          <tr><th>V4 协作分屏</th><td>对话与代码并排</td><td>中（当前任务）</td><td><b>强（编辑器 + 审查条）</b></td><td class="best">低（保留 IDE 心智）</td><td>现有 IDE 用户迁移</td><td>A</td></tr>
+          <tr><th>E 检查点时间线</th><td>每个动作可回退</td><td>中</td><td>中（diff 在检查点内）</td><td class="warn">高（checkpoint 模型）</td><td>要「随时反悔」的安全感</td><td>V2 / B</td></tr>
+          <tr><th>F 规格三段式</th><td>先对齐规格再动手</td><td>中</td><td><b>强（实现列）</b></td><td class="warn">高（Spec 流程）</td><td>重要任务 / 控制返工</td><td>—（新增能力层）</td></tr>
+          <tr><th>G 暗色指挥舱</th><td>夜间挂机监控</td><td><b>强</b></td><td class="warn">弱（看板视角）</td><td class="warn">中高（暗色主题）</td><td>长时间挂机 / 深色偏好</td><td>D 的暗色版</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="pick">
+    <div class="pick-main">
+      <span class="k"><svg class="ic" style="width:12px;height:12px"><use href="#i-sparkles"/></svg>RECOMMENDED</span>
+      <h3>不必只选一版：建议「首页 + 工作区 + 调度」组合</h3>
+      <p>把 <b>D/G 指挥台</b>作为启动首页，默认进入 <b>V4 / A 协作分屏</b>干活，需要同时盯多个 Agent 时切到 <b>V3 调度看板</b>；<b>V2 / C 画布流</b>作为「专注审阅」模式；<b>E</b> 的检查点与 <b>F</b> 的规格流程可作为重要任务的可选能力叠加。所有版本共享同一套 token 与组件，不是几套产品。</p>
+      <div class="combo"><span><svg class="ic"><use href="#i-home"/></svg>D/G 首页</span><em>→</em><span><svg class="ic"><use href="#i-columns"/></svg>V4·A 工作区</span><em>↔</em><span><svg class="ic"><use href="#i-grid"/></svg>V3 调度</span><em>+</em><span><svg class="ic"><use href="#i-sparkles"/></svg>V2·C 专注</span><em>+</em><span><svg class="ic"><use href="#i-check-circle"/></svg>E·F 能力层</span></div>
+    </div>
+    <aside class="pick-side">
+      <h4>VISUAL TOKENS</h4>
+      <div class="tok-row"><i class="sw" style="background:#f6f7fb"></i>canvas / #F6F7FB<code>--bg</code></div>
+      <div class="tok-row"><i class="sw" style="background:#0058bc"></i>accent / #0058BC<code>--accent</code></div>
+      <div class="tok-row"><i class="sw" style="background:#e8f0ff"></i>accent weak / #E8F0FF<code>--accent-weak</code></div>
+      <div class="tok-row"><i class="sw" style="background:#16a34a"></i>success / #16A34A<code>--success</code></div>
+      <div class="tok-row"><i class="sw" style="background:#d97706"></i>warning / #D97706<code>--warning</code></div>
+      <div class="tok-row"><i class="sw" style="background:#0b0f17"></i>dark canvas (G) / #0B0F17<code>方案G</code></div>
+    </aside>
+  </section>
+
+  <footer class="g-foot">
+    <span>OurCode Agent UI · 11 版静态样稿（Round1 手写 ×4 · Stitch ×7）</span>
+    <span class="grow"></span>
+    <span class="mono">shared.css · sprite.js · shot.mjs · stitch/</span>
+    <span>1440 × 900 · 2026.11.10</span>
+  </footer>
+</div>
+<script src="sprite.js"></script>
+</body>
+</html>

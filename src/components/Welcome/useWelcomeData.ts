@@ -13,7 +13,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useContextUsage } from '@/hooks/useContextUsage'
 import { listSkills } from '@/services/skills/skillManager'
 import type { TranslationKey } from '@/i18n'
-import { pickResumeSession, projectName, type RelativeToken } from './welcomeUtils'
+import { pickResumeSessionForProject, projectName, buildWelcomeProjects, type RelativeToken, type WelcomeProjectSummary } from './welcomeUtils'
 
 export interface ResumeTarget {
   sessionId: string
@@ -36,10 +36,10 @@ export interface WelcomeEnv {
   contextKnown: boolean
 }
 
-export function useResumeTarget(): ResumeTarget | null {
+export function useResumeTarget(projectPath: string | null | undefined): ResumeTarget | null {
   const sessions = useChatStore((s) => s.sessions)
   return useMemo(() => {
-    const session = pickResumeSession(sessions, sessionLastUserActivity)
+    const session = pickResumeSessionForProject(sessions, projectPath, sessionLastUserActivity)
     if (!session || !session.projectPath) return null
     return {
       sessionId: session.id,
@@ -48,7 +48,25 @@ export function useResumeTarget(): ResumeTarget | null {
       sessionTitle: session.title,
       lastActivity: sessionLastUserActivity(session),
     }
-  }, [sessions])
+  }, [sessions, projectPath])
+}
+
+/** Projects selectable from the welcome hub, with their resume target. */
+export function useWelcomeProjects(): WelcomeProjectSummary[] {
+  const recentProjects = useUIStore((s) => s.recentProjects)
+  const recentProjectTimes = useUIStore((s) => s.recentProjectTimes)
+  const removedProjects = useUIStore((s) => s.removedProjects)
+  const sessions = useChatStore((s) => s.sessions)
+  return useMemo(
+    () => buildWelcomeProjects(
+      recentProjects,
+      recentProjectTimes,
+      sessions,
+      removedProjects,
+      sessionLastUserActivity,
+    ),
+    [recentProjects, recentProjectTimes, removedProjects, sessions],
+  )
 }
 
 /** Active model + the environment counts shown on the bottom status line. */

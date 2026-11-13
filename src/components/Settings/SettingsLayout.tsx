@@ -11,7 +11,17 @@ import { useEffect, useRef, type ReactNode } from 'react'
 
 import { T_GROUP, T_META, T_PAGE, T_PANEL } from './settings-ui'
 
-export type SettingsTabKey = 'api' | 'appearance' | 'editor' | 'shortcuts' | 'features'
+export type SettingsTabKey =
+  | 'api'
+  | 'appearance'
+  | 'editor'
+  | 'shortcuts'
+  | 'features'
+  | 'agent'
+  | 'usage'
+  | 'skills'
+  | 'mcp'
+  | 'claw'
 
 export interface SettingsTabItem {
   key: SettingsTabKey
@@ -20,6 +30,10 @@ export interface SettingsTabItem {
   /** One-line description shown under the page title. */
   hint: string
   icon: ReactNode
+  /** Tool pages own their padding and scrolling (they are full-height work
+   *  surfaces, not settings forms) — render them edge to edge instead of the
+   *  padded scrollable form column. */
+  fullBleed?: boolean
 }
 
 export interface SettingsNavGroup {
@@ -241,7 +255,11 @@ export default function SettingsLayout({
             id={`settings-panel-${current.key}`}
             aria-labelledby={`settings-tab-${current.key}`}
             tabIndex={0}
-            className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-5 outline-none"
+            className={
+              current.fullBleed
+                ? 'flex min-h-0 flex-1 flex-col overflow-hidden outline-none'
+                : 'flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-5 outline-none'
+            }
           >
             {children}
           </div>

@@ -674,8 +674,8 @@ function attachWindowLifecycle(win: BrowserWindow): void {
         terminals.delete(id)
       }
     }
-    // The agent browser window is hidden and is not an app window: left open, it
-    // keeps `window-all-closed` from ever firing, so on Windows/Linux the process
+    // The agent browser window is not an app window: left open, it keeps
+    // `window-all-closed` from ever firing, so on Windows/Linux the process
     // would linger with no UI. Deferred one tick so the listener that removes
     // THIS window from allWindows (registered after this one) has run. On macOS
     // the app intentionally survives with no windows, and the browser session
@@ -3210,20 +3210,31 @@ function registerIpcHandlers(): void {
   })
 
   // ── Agent browser session ────────────────────────────────────────────────
-  // One hidden http(s)-only page that the assistant drives and the Browser
-  // panel mirrors. The tools (browser_navigate / browser_read_console /
-  // browser_screenshot / browser_act) call the same IPC from the renderer.
+  // One hidden http(s)-only page that the assistant drives through tools. The
+  // tools (browser_navigate / browser_read_console / browser_screenshot /
+  // browser_act) call the same IPC from the renderer. When the user enabled
+  // "show during automation", navigation/interaction surfaces the window
+  // without stealing focus.
   initBrowserSession({
     broadcast: (payload) => broadcast(IPC_CHANNELS.BROWSER_EVENT, payload),
   })
-  ipcMain.handle(IPC_CHANNELS.BROWSER_NAVIGATE, (_event, url: string) => browserNavigate(String(url ?? '')))
+  const autoShowBrowser = (): void => {
+    if (store.getPreferences().browserAutoShow === false) return
+    try { browserSetVisible(true, { focus: false }) } catch { /* window teardown */ }
+  }
+  ipcMain.handle(IPC_CHANNELS.BROWSER_NAVIGATE, (_event, url: string) => {
+    autoShowBrowser()
+    return browserNavigate(String(url ?? ''))
+  })
   ipcMain.handle(IPC_CHANNELS.BROWSER_STATE, () => browserState())
   ipcMain.handle(IPC_CHANNELS.BROWSER_CONSOLE, (_event, clear?: boolean) => browserConsole(clear === true))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PAGE_TEXT, (_event, maxChars?: number) => browserPageText(maxChars))
   ipcMain.handle(IPC_CHANNELS.BROWSER_SCREENSHOT, () => browserScreenshot())
   ipcMain.handle(IPC_CHANNELS.BROWSER_SNAPSHOT, (_event, maxNodes?: number) => browserSnapshot(maxNodes))
-  ipcMain.handle(IPC_CHANNELS.BROWSER_ACT, (_event, action: BrowserAction, opts?: BrowserActOptions) =>
-    browserAct(action, opts))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_ACT, (_event, action: BrowserAction, opts?: BrowserActOptions) => {
+    autoShowBrowser()
+    return browserAct(action, opts)
+  })
   ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY, (_event, step: 'back' | 'forward' | 'reload') => browserHistory(step))
   ipcMain.handle(IPC_CHANNELS.BROWSER_VISIBLE, (_event, visible: boolean) => browserSetVisible(visible === true))
   ipcMain.handle(IPC_CHANNELS.BROWSER_CLOSE, () => browserClose())

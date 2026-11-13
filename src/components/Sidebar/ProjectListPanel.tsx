@@ -2,7 +2,8 @@ import { useState, useMemo } from 'react'
 import { useUIStore } from '@/stores/uiStore'
 import { useChatStore, sessionLastUserActivity, isGhostSession } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
-import FileTree from './FileTree'
+import ProjectSections from './ProjectSections'
+import { notifyGitChanged } from '@/services/git'
 import { useI18n } from '@/i18n/useI18n'
 import { useSessionMenu } from '@/components/ChatPanel/sessionMenu'
 import { IS_OFFICE } from '@/utils/windowMode'
@@ -27,7 +28,6 @@ function TileIcon({ name, size = 18 }: { name: string; size?: number }) {
     pin: <path d="M16 3 21 8l-4.5 1.5L13 13l1.5 6.5L8 13l-4 4 3-8L3 8l6-4L12 8l1.5-4.5L16 3z" strokeLinecap="round" strokeLinejoin="round" />,
     expandMore: <path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />,
     spinner: <path d="M12 3a9 9 0 1 1-9 9" strokeLinecap="round" />,
-    search: <path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zm10 2-4.3-4.3" strokeLinecap="round" strokeLinejoin="round" />,
     pending: <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />,
   }
   return (
@@ -90,6 +90,7 @@ export default function ProjectListPanel() {
   const removedProjects = useUIStore((s) => s.removedProjects)
   const projectListView = useUIStore((s) => s.projectListView)
   const activeProjectPath = useUIStore((s) => s.activeProjectPath)
+  const projectSection = useUIStore((s) => s.projectSection)
   const rootPath = useUIStore((s) => s.rootPath)
   const enterProject = useUIStore((s) => s.enterProject)
   const backToProjectList = useUIStore((s) => s.backToProjectList)
@@ -115,7 +116,6 @@ export default function ProjectListPanel() {
   // 导出 / 归档 / 删除) — conversations here must be deletable too.
   const { openSessionMenu } = useSessionMenu()
 
-  const [searchQuery, setSearchQuery] = useState('')
   const [showMoreSessions, setShowMoreSessions] = useState<Set<string>>(new Set())
   // Bumped by the tree header's refresh button — FileTree reloads on change.
   const [refreshNonce, setRefreshNonce] = useState(0)
@@ -232,8 +232,7 @@ export default function ProjectListPanel() {
     return ordered
   }, [projects, projectOrder])
 
-  // Drag-to-reorder the project list (disabled while searching — the list is
-  // filtered then, and dropping into a filtered view would be confusing).
+  // Drag-to-reorder the project list.
   const [dragPath, setDragPath] = useState<string | null>(null)
   const [overPath, setOverPath] = useState<string | null>(null)
   const handleProjectDrop = (toPath: string) => {
@@ -251,20 +250,6 @@ export default function ProjectListPanel() {
     setOverPath(null)
   }
 
-  // Filter by search
-  const filteredProjects = useMemo(() => {
-    if (!searchQuery.trim()) return displayedProjects
-    const q = searchQuery.toLowerCase()
-    // Also check session titles
-    return displayedProjects.filter((p) => {
-      if (p.name.toLowerCase().includes(q)) return true
-      if (p.path.toLowerCase().includes(q)) return true
-      // Check session titles matching this project
-      const projectSessions = sessions.filter((s) => s.projectPath === p.path)
-      return projectSessions.some((s) => s.title.toLowerCase().includes(q))
-    })
-  }, [displayedProjects, searchQuery, sessions])
-
   // Sessions for a specific project path (limited to 5, expandable) — ghost
   // sessions (never used) are hidden until their first message arrives.
   const getProjectSessions = (projectPath: string) => {
@@ -279,13 +264,10 @@ export default function ProjectListPanel() {
   // time). They used to be invisible here — "conversations got lost" — so they
   // get their own group at the bottom of the list instead.
   const orphanSessions = useMemo(() => {
-    let list = sessions.filter((s) => !s.projectPath && !isGhostSession(s) && !s.hidden && s.mode !== 'claw')
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
-      list = list.filter((s) => s.title.toLowerCase().includes(q))
-    }
-    return list.sort((a, b) => sessionLastUserActivity(b) - sessionLastUserActivity(a))
-  }, [sessions, searchQuery])
+    return sessions
+      .filter((s) => !s.projectPath && !isGhostSession(s) && !s.hidden && s.mode !== 'claw')
+      .sort((a, b) => sessionLastUserActivity(b) - sessionLastUserActivity(a))
+  }, [sessions])
 
   const handleOpenFolder = async () => {
     const path = await window.electronAPI.openFolder()
@@ -353,16 +335,19 @@ export default function ProjectListPanel() {
     if (!useUIStore.getState().isChatVisible) useUIStore.getState().toggleChat()
   }
 
-  /** Tree-view header "new chat" — the conversation starts in the project the
-   *  user is currently VIEWING (activeProjectPath), so it binds to that project
-   *  (and, per the current-project-follows-the-session rule, becomes current). */
-  const handleNewSession = () => {
+  /** "新建会话": starts a fresh conversation and lands on its welcome page.
+   *  Without an explicit project the session binds to the active project (or
+   *  the browsed workspace root); the tree view passes the project it is
+   *  currently showing. Ghost sessions are not persisted until the first
+   *  message, so clicking repeatedly never litters the list. */
+  const handleNewSession = (projectPath?: string) => {
     const configId = useConfigStore.getState().activeConfigGroupId
-    if (configId) {
-      createSession(configId, activeProjectPath || undefined)
-    } else {
+    if (!configId) {
       useUIStore.getState().openSettings()
+      return
     }
+    createSession(configId, projectPath)
+    if (!useUIStore.getState().isChatVisible) useUIStore.getState().toggleChat()
   }
 
   const handleSessionClick = (sessionId: string) => {
@@ -411,18 +396,26 @@ export default function ProjectListPanel() {
               {IS_OFFICE ? '一人公司' : '项目列表'}
             </button>
             <div className="flex items-center gap-0.5">
+              {/* Refresh follows the expanded section: the tree reloads from
+                  disk, the git panel re-reads status. The AI-change list is
+                  derived from session history and has nothing to re-fetch. */}
+              {projectSection !== 'changes' && (
+                <button
+                  onClick={() => {
+                    if (projectSection === 'git') notifyGitChanged()
+                    else setRefreshNonce((n) => n + 1)
+                  }}
+                  className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
+                  title={projectSection === 'git' ? '刷新 Git 状态' : '刷新目录'}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10" />
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                  </svg>
+                </button>
+              )}
               <button
-                onClick={() => setRefreshNonce((n) => n + 1)}
-                className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
-                title="刷新目录"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
-              </button>
-              <button
-                onClick={handleNewSession}
+                onClick={() => handleNewSession(activeProjectPath || undefined)}
                 className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
                 title={t('chat.newChat')}
               >
@@ -430,21 +423,12 @@ export default function ProjectListPanel() {
                   <path d="M12 5v14M5 12h14" />
                 </svg>
               </button>
-              <button
-                onClick={() => useUIStore.getState().toggleSidebar()}
-                className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
-                title={t('sidebar.collapse')}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polyline points="15 18 9 12 15 6" />
-                </svg>
-              </button>
             </div>
           </div>
         </header>
-        {/* File tree */}
-        <div className="flex-1 overflow-hidden">
-          <FileTree rootPath={treeRoot} refreshSignal={refreshNonce} />
+        {/* Project-internal accordion: 文件 / 代码管理 / 文件变更 */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ProjectSections rootPath={treeRoot} refreshSignal={refreshNonce} />
         </div>
       </div>
     )
@@ -459,15 +443,6 @@ export default function ProjectListPanel() {
         <header className="px-5 pt-5 pb-4 border-b border-glass-border/50 shrink-0 bg-slate-100/90 dark:bg-white/10">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-nova-text-primary">项目</h2>
-            <button
-              onClick={() => useUIStore.getState().toggleSidebar()}
-              className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
-              title={t('sidebar.collapse')}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </button>
           </div>
         </header>
         <div className="flex-1 overflow-y-auto p-3 pb-6 bg-white/95 dark:bg-black/40">
@@ -492,43 +467,28 @@ export default function ProjectListPanel() {
   // ───────────── VIEW: Project list ─────────────
   return (
     <div className="h-full flex flex-col">
-      {/* Header — in-panel title + collapse in one row, glass search capsule below.
+      {/* Header — in-panel title + the 新建会话 action below.
           Dim off-white surface so the bright scrollable well below reads as distinct. */}
       <header className="px-5 pt-5 pb-4 border-b border-glass-border/50 shrink-0 bg-slate-100/90 dark:bg-white/10">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-semibold text-nova-text-primary">项目列表</h2>
-          <button
-            onClick={() => useUIStore.getState().toggleSidebar()}
-            className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
-            title={t('sidebar.collapse')}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-          </button>
         </div>
-        <div className="rounded-full flex items-center px-4 py-2.5 bg-white/60 dark:bg-white/10 border border-glass-border transition-all duration-300 focus-within:border-accent-60 focus-within:ring-2 focus-within:ring-accent-20">
-          <svg
-            width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-            className="text-nova-text-muted mr-2 shrink-0"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="m21 21-4.3-4.3" />
+        <button
+          onClick={() => handleNewSession()}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full bg-nova-accent text-white text-xs font-semibold shadow-sm hover:brightness-110 active:scale-[0.99] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nova-accent/40"
+          title={t('sidebar.newSessionHint')}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M12 5v14M5 12h14" />
           </svg>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="搜索项目或对话..."
-            className="bg-transparent border-none outline-none text-[11px] w-full text-nova-text-primary placeholder:text-slate-400 dark:placeholder:text-nova-text-muted"
-          />
-        </div>
+          {t('sidebar.newSession')}
+        </button>
       </header>
 
       {/* Project list — 12px gutters + 16px group gaps (Stitch: p-3 space-y-4 pb-6).
           Slightly tinted well so the scrollable region reads as distinct from the header. */}
       <div className="flex-1 overflow-y-auto p-3 pb-6 space-y-4 bg-white/95 dark:bg-black/40 shadow-inner">
-        {filteredProjects.length === 0 && (
+        {displayedProjects.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-nova-text-muted opacity-40 mb-3">
               <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
@@ -543,7 +503,7 @@ export default function ProjectListPanel() {
           </div>
         )}
 
-        {filteredProjects.map((project, idx) => {
+        {displayedProjects.map((project, idx) => {
           // Only a session makes a project "current" (currentProjectPath =
           // the active session's bound project) — the browsed folder does not.
           const isCurrent = !!currentProjectPath && currentProjectPath === project.path
@@ -572,9 +532,8 @@ export default function ProjectListPanel() {
             >
               {/* Project card (Stitch: gradient tile + name + status badge) */}
               <div
-                draggable={!searchQuery.trim()}
+                draggable
                 onDragStart={(e) => {
-                  if (searchQuery.trim()) return
                   setDragPath(project.path)
                   e.dataTransfer.effectAllowed = 'move'
                   e.dataTransfer.setData('text/plain', project.path)

@@ -64,6 +64,10 @@ export function extractKey(tc: ToolStepRowProps['toolCall']): string {
     case 'read_url': return tc.arguments.url || ''
     case 'run_subagent': return tc.arguments.name || tc.arguments.description?.slice(0, 30) || 'sub-agent'
     case 'send_message': return tc.arguments.targetSessionId || tc.arguments.targetTitle || ''
+    case 'list_file_changes':
+      return tc.arguments.allSessions === true
+        ? '全部会话'
+        : tc.arguments.targetSessionId || tc.arguments.targetTitle || '本次会话'
     default:
       if (tc.name.startsWith('mcp__')) return tc.name.slice('mcp__'.length).split('__').pop() || tc.name
       return JSON.stringify(tc.arguments).slice(0, 40)

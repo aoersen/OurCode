@@ -80,6 +80,8 @@ export default function AgentTasksPanel() {
   const openSession = (sessionId: string) => {
     setActiveSession(sessionId)
     const ui = useUIStore.getState()
+    // 面板现在在设置弹层里：跳到会话 = 离开设置，否则对话被弹层盖住。
+    if (ui.isSettingsOpen) ui.closeSettings()
     if (!ui.isChatVisible) ui.toggleChat()
   }
 

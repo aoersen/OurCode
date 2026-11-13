@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { useUIStore } from '@/stores/uiStore'
 import type { ToolImageResult } from './types'
 import type { WebSearchInput } from '@shared/webTools'
+import type { BrowserActOptions } from '@shared/types'
 import { parseImageDataUrl } from '@/utils/imageAttach'
 import {
   branchPushState,
@@ -923,33 +924,52 @@ export async function browserReadConsoleTool(opts: { clear?: boolean; includePag
   return parts.join('\n')
 }
 
-/** 截图——图片走 ToolImageResult，由 chatStore 作为紧随其后的 user 图片消息交给模型。 */
+/** 截图——图片走 ToolImageResult，由 chatStore 作为紧随其后的 user 图片消息交给模型。
+ *  同时带回视口几何：模型据此把 PNG 像素换算成 browser_act 需要的 CSS 像素。 */
 export async function browserScreenshotTool(): Promise<string | ToolImageResult> {
   const res = await window.electronAPI.browserScreenshot()
   if (!res.ok || !res.dataUrl) return `Error: ${res.error || '截图失败'}`
   const image = parseImageDataUrl(res.dataUrl, res.mimeType || 'image/png')
+  const viewport = res.viewport
+  const geometry = viewport
+    ? `页面视口 ${viewport.width}×${viewport.height} CSS 像素（DPR ${viewport.devicePixelRatio}）${
+        res.image ? `；PNG ${res.image.width}×${res.image.height} 像素` : ''
+      }。坐标操作请使用 CSS 像素（图像坐标 × 视口尺寸 / 图像尺寸）。`
+    : '（未能读取视口尺寸；坐标以页面 CSS 像素为准。）'
   return {
-    text: `已截取当前页面（${res.url || '未知地址'}），图片随本结果附上。`,
+    text: `已截取当前页面（${res.url || '未知地址'}）。${geometry}`,
     images: [image],
   }
 }
 
-/** 页面交互：点击 / 输入 / 按键 / 滚动 / 等待。
- *  `ref`（来自 browser_snapshot）优先于 selector：跨 React 重渲染、能进 shadow DOM。 */
-export async function browserActTool(
-  action: string,
-  opts: { selector?: string; ref?: string; text?: string; key?: string; ms?: number } = {},
-): Promise<string> {
-  const allowed = ['click', 'type', 'press', 'scroll', 'wait']
+/** 页面交互：点击 / 输入 / 按键 / 滚动 / 悬停 / 拖拽 / 等待。
+ *  `ref`（来自 browser_snapshot）优先于 selector；canvas 等无节点目标用 x/y（CSS 像素）。
+ *  主进程默认走 CDP 真实输入事件（pointer/mouse/key/wheel 都是 trusted），失败才降级 DOM。 */
+export async function browserActTool(action: string, opts: BrowserActOptions = {}): Promise<string> {
+  const allowed = ['click', 'type', 'press', 'scroll', 'hover', 'drag', 'wait']
   if (!allowed.includes(action)) return `Error: 不支持的 action：${action}（可用：${allowed.join('、')}）`
   const hasRef = String(opts.ref ?? '').trim() !== ''
-  if ((action === 'click' || action === 'type') && !hasRef && !String(opts.selector ?? '').trim()) {
-    return `Error: ${action} 需要 ref（推荐，来自 browser_snapshot）或 selector`
+  const hasSelector = String(opts.selector ?? '').trim() !== ''
+  const hasPoint = Number.isFinite(Number(opts.x)) && Number.isFinite(Number(opts.y))
+  const hasTarget = hasRef || hasSelector
+  if ((action === 'click' || action === 'hover') && !hasTarget && !hasPoint) {
+    return `Error: ${action} 需要 ref（推荐，来自 browser_snapshot）、selector 或 x/y 坐标`
+  }
+  if (action === 'type' && !hasTarget) return 'Error: type 需要 ref 或 selector'
+  if (action === 'type' && opts.text === undefined) return 'Error: type 需要 text'
+  if (action === 'press' && !String(opts.key ?? '').trim()) return 'Error: press 需要 key，例如 Enter / Tab / Control+a'
+  if (action === 'drag') {
+    if (!hasTarget && !hasPoint) return 'Error: drag 需要起点 ref/selector 或 x/y 坐标'
+    if (!Number.isFinite(Number(opts.toX)) || !Number.isFinite(Number(opts.toY))) {
+      return 'Error: drag 需要终点 toX/toY（CSS 像素）'
+    }
   }
   const res = await window.electronAPI.browserAct(action as never, opts)
   if (!res.ok) return `Error: ${res.error || '操作失败'}`
   const loaded = res.state.loading ? '（页面仍在加载，稍后用 browser_read_console 确认结果）' : ''
-  return `${res.detail || '已执行'}\nURL: ${res.state.url}${loaded}`
+  const how = res.strategy === 'cdp' ? '真实输入事件' : res.strategy === 'dom' ? 'DOM 合成事件' : ''
+  const where = res.point ? ` @ (${res.point.x}, ${res.point.y})` : ''
+  return `${res.detail || '已执行'}${how ? `（${how}${where}）` : ''}\nURL: ${res.state.url}${loaded}`
 }
 
 /** 可访问性快照（CDP AX 树）：返回带 ref 的紧凑树，供 browser_act {ref} 定位。 */
@@ -960,7 +980,7 @@ export async function browserSnapshotTool(maxNodes?: number): Promise<string> {
     `页面：${res.title || '(无标题)'} — ${res.url || ''}`,
     `快照 ${res.snapshotId || '?'} · ${res.nodes ?? 0} 节点`,
     res.text,
-    '提示：用 browser_act { action:"click"|"type", ref:"e12" } 操作；ref 只对本次快照有效。',
+    '提示：优先用 browser_act { action:"click", ref:"e12" }；canvas/iframe 内容用 x/y（CSS 视口坐标，来自 browser_screenshot 的 viewport）。ref 只对本次快照有效。',
   ].join('\n')
 }
 

@@ -2,48 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useEditorStore } from '@/stores/editorStore'
-import type { ChatSession, Checkpoint } from '@/types'
-import { writeToolPaths } from '@/services/tools/writePaths'
+import type { Checkpoint } from '@/types'
+import {
+  changeMarker,
+  groupFileChangesBySession,
+  type FileChange,
+  type SessionFileChanges,
+} from '@/services/fileChangeHistory'
 import { usePanelActive } from './panelActivity'
-
-/** File-modifying tool names */
-const FILE_EDIT_TOOLS = new Set(['write_file', 'edit_file', 'multi_edit_file', 'delete_file', 'create_directory'])
-
-interface FileChange {
-  sessionId: string
-  sessionTitle: string
-  sessionTime: number
-  filePath: string
-  fileName: string
-  toolName: string
-  messageId: string
-  checkpointId?: string
-}
-
-/** Extract changed files from a session's messages (toolCalls) */
-function extractFileChanges(session: ChatSession): FileChange[] {
-  const changes: FileChange[] = []
-  for (const msg of session.messages) {
-    if (!msg.toolCalls) continue
-    for (const tc of msg.toolCalls) {
-      if (!FILE_EDIT_TOOLS.has(tc.name)) continue
-      // One entry per touched file — multi_edit_file names several, and each of
-      // them is its own row with its own checkpoint snapshot.
-      for (const fp of writeToolPaths(tc.name, tc.arguments)) {
-        changes.push({
-          sessionId: session.id,
-          sessionTitle: session.title,
-          sessionTime: session.updatedAt,
-          filePath: fp,
-          fileName: fp.split(/[/\\]/).pop() || fp,
-          toolName: tc.name,
-          messageId: msg.id,
-        })
-      }
-    }
-  }
-  return changes
-}
 
 /** Format time for session headers */
 function formatTime(ts: number): string {
@@ -57,13 +23,24 @@ function formatTime(ts: number): string {
 /** Resolve a change's path to absolute. Tool/checkpoint paths are normally
  *  already absolute (they are the model's own `path` argument), so those must
  *  pass through untouched — prefixing them produced `E:\proj\C:\…` and the diff
- *  then read "(文件不存在)" for a file that exists. */
-function resolvePath(relative: string): string {
-  const rootPath = useUIStore.getState().rootPath
+ *  then read "(文件不存在)" for a file that exists. `root` is the project the
+ *  panel is scoped to (falls back to the workspace root). */
+function resolvePath(relative: string, root?: string | null): string {
+  const rootPath = root ?? useUIStore.getState().rootPath
   if (!rootPath || IS_ABSOLUTE.test(relative)) return relative
   const sep = rootPath.includes('/') ? '/' : '\\'
   if (relative.startsWith(rootPath)) return relative
   return rootPath.replace(/[/\\]$/, '') + sep + relative
+}
+
+/** Whether a change belongs to the given project root. Comparison is
+ *  case-insensitive (Windows) and slash-normalized so `E:/p/x` and `E:\p\x`
+ *  match the same project. */
+function isInsideProject(filePath: string, projectPath: string): boolean {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const abs = norm(resolvePath(filePath, projectPath))
+  const root = norm(projectPath)
+  return abs === root || abs.startsWith(root + '/')
 }
 
 /** Windows drive-letter, POSIX root and UNC. */
@@ -84,15 +61,22 @@ function findCheckpointForChange(checkpoints: Checkpoint[], change: FileChange):
   )
 }
 
-export default function FileChangesPanel() {
+interface FileChangesPanelProps {
+  /** Project the panel is scoped to. The panel now lives in the project's
+   *  sidebar accordion, so changes made in a different project must not show
+   *  up here; omit to list every session's changes (standalone usage). */
+  projectPath?: string
+}
+
+export default function FileChangesPanel({ projectPath }: FileChangesPanelProps) {
   const sessions = useChatStore((s) => s.sessions).filter((sess) => sess.mode !== 'claw')
   const loadCheckpoints = useChatStore((s) => s.loadCheckpoints)
   const revertCheckpoint = useChatStore((s) => s.revertCheckpoint)
   // Select the ACTION only — a whole-store subscription would re-render this
   // panel on every editorStore change (each cursor move while this tab is open).
   const openFile = useEditorStore((s) => s.openFile)
-  // The sidebar keeps panels mounted and hides the inactive ones (Sidebar.tsx),
-  // so background work below is gated on being the visible tab.
+  // The sidebar keeps panels mounted and hides the inactive ones (ProjectSections),
+  // so background work below is gated on being the visible section.
   const panelActive = usePanelActive()
   // 已回退文件路径（按会话分组）—— 本地状态而非全局 store：面板跨全部会话展示，
   // 而 store.revertedFiles 只属于当前激活会话。会话/消息变化后重新拉取。
@@ -100,32 +84,26 @@ export default function FileChangesPanel() {
 
   // Group file changes by session. This walks EVERY message's tool calls across
   // all sessions, so it is O(history) — and the sidebar keeps this panel mounted
-  // (see Sidebar.tsx). While the panel is hidden we return the previous result
+  // (see ProjectSections). While the panel is hidden we return the previous result
   // instead of recomputing on every streaming token; the fresh grouping is
-  // produced the moment the tab becomes visible again.
-  const groupedChangesCache = useRef<Array<{ sessionId: string; title: string; time: number; changes: FileChange[] }>>([])
+  // produced the moment the section becomes visible again.
+  const groupedChangesCache = useRef<SessionFileChanges[]>([])
   const groupedChanges = useMemo(() => {
     if (!panelActive) return groupedChangesCache.current
-    const sessionById = new Map(sessions.map((s) => [s.id, s]))
-    const seen: Array<{ sessionId: string; changes: FileChange[] }> = []
+    const groups = groupFileChangesBySession(sessions)
+    // Scope to the project being browsed: a change belongs to it when its path
+    // (absolute, or relative to this root) lies inside the project folder.
+    const scoped = projectPath
+      ? groups
+        .map((group) => ({ ...group, changes: group.changes.filter((c) => isInsideProject(c.filePath, projectPath)) }))
+        .filter((group) => group.changes.length > 0)
+      : groups
+    groupedChangesCache.current = scoped
+    return scoped
+  }, [sessions, panelActive, projectPath])
 
-    for (const session of sessions) {
-      const changes = extractFileChanges(session)
-      if (changes.length === 0) continue
-      seen.push({ sessionId: session.id, changes })
-    }
-
-    // Sort sessions by time desc
-    seen.sort((a, b) => (sessionById.get(b.sessionId)?.updatedAt || 0) - (sessionById.get(a.sessionId)?.updatedAt || 0))
-
-    const groups = seen.map(({ sessionId, changes }) => {
-      const session = sessionById.get(sessionId)!
-      return { sessionId, title: session.title, time: session.updatedAt, changes }
-    })
-
-    groupedChangesCache.current = groups
-    return groups
-  }, [sessions, panelActive])
+  /** Resolve a change path against the project this panel is showing. */
+  const resolve = (filePath: string) => resolvePath(filePath, projectPath)
 
   // Load each session's reverted-file list so rows can show「已回退」+「恢复」。
   // Fired whenever the grouping changes (new session / new messages); failed
@@ -152,10 +130,9 @@ export default function FileChangesPanel() {
     (revertedBySession[change.sessionId] || []).includes(change.filePath)
 
   const getStatusIcon = (toolName: string) => {
-    switch (toolName) {
-      case 'write_file': return { icon: 'A', color: 'var(--green, #16a34a)', label: 'added' }
-      case 'edit_file': return { icon: 'M', color: 'var(--yellow, #d97706)', label: 'modified' }
-      case 'delete_file': return { icon: 'D', color: 'var(--red, #dc2626)', label: 'deleted' }
+    switch (changeMarker(toolName)) {
+      case 'A': return { icon: 'A', color: 'var(--green, #16a34a)', label: 'added' }
+      case 'D': return { icon: 'D', color: 'var(--red, #dc2626)', label: 'deleted' }
       default: return { icon: 'M', color: 'var(--yellow, #d97706)', label: 'modified' }
     }
   }
@@ -200,7 +177,7 @@ export default function FileChangesPanel() {
 
     // Read current file content
     let modified = ''
-    const absPath = resolvePath(change.filePath)
+    const absPath = resolve(change.filePath)
     try {
       const result = await window.electronAPI.readFile(absPath)
       modified = result.content
@@ -216,7 +193,10 @@ export default function FileChangesPanel() {
     }
 
     // Show the diff in the CENTRAL editor area (VS Code "Open Changes") instead
-    // of a cramped modal over the left sidebar.
+    // of a cramped modal over the left sidebar. If the panel is ever rendered
+    // inside a modal (standalone usage), close it first — the diff must not
+    // open behind a full-screen dialog.
+    if (useUIStore.getState().isSettingsOpen) useUIStore.getState().closeSettings()
     useEditorStore.getState().openDiff({
       path: absPath,
       fileName: change.fileName,
@@ -244,7 +224,7 @@ export default function FileChangesPanel() {
           await refreshReverted(change.sessionId)
         }
         // Force file reload in editor
-        window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolvePath(change.filePath) }))
+        window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolve(change.filePath) }))
       }
     } else if (isReverted(change)) {
       alert('该文件的改动已经回退过了，可用行内「恢复」按钮找回 AI 写入的版本。')
@@ -264,7 +244,7 @@ export default function FileChangesPanel() {
         if (useChatStore.getState().activeSessionId === change.sessionId) {
           await loadCheckpoints(change.sessionId)
         }
-        window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolvePath(change.filePath) }))
+        window.dispatchEvent(new CustomEvent('ourcode:file-changed', { detail: resolve(change.filePath) }))
       } else {
         alert('恢复失败：未找到该文件可恢复的改动。')
       }
@@ -316,7 +296,10 @@ export default function FileChangesPanel() {
                     <div
                       key={`${change.filePath}-${i}`}
                       className="file-row group relative flex items-center justify-between p-2 rounded-xl hover:bg-white/50 dark:hover:bg-white/10 transition-colors cursor-pointer"
-                      onClick={() => openFile(resolvePath(change.filePath))}
+                      onClick={() => {
+                        if (useUIStore.getState().isSettingsOpen) useUIStore.getState().closeSettings()
+                        openFile(resolve(change.filePath))
+                      }}
                     >
                       <div className="flex items-center gap-2.5 min-w-0 overflow-hidden">
                         <span
@@ -405,12 +388,9 @@ export default function FileChangesPanel() {
           <button
             className="w-full py-2.5 rounded-xl text-primary font-bold text-xs hover:bg-accent-10 transition-colors flex items-center justify-center gap-1.5"
             onClick={() => {
-              const ui = useUIStore.getState()
-              if (ui.activeSidebarTab === 'changes' && ui.isSidebarVisible) {
-                // Scroll the list to the top — "full history" lands on the latest group
-                const el = document.querySelector('[data-changes-scroll]')
-                el?.scrollTo({ top: 0, behavior: 'smooth' })
-              }
+              // Scroll the list to the top — "full history" lands on the latest group
+              const el = document.querySelector('[data-changes-scroll]')
+              el?.scrollTo({ top: 0, behavior: 'smooth' })
             }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

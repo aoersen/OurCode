@@ -613,6 +613,10 @@ function summarizeToolCall(tc: ToolCall): string {
   if (tc.name === 'ask_user_question') return String(a.question || '')
   if (tc.name === 'send_message') return String(a.targetSessionId || a.targetTitle || '')
   if (tc.name === 'list_agents') return String(a.search || '')
+  if (tc.name === 'list_file_changes') {
+    if (a.allSessions === true) return '全部会话'
+    return String(a.targetSessionId || a.targetTitle || '本次会话')
+  }
   if (tc.name === 'git_split_commit') {
     const groups = Array.isArray(a.groups) ? a.groups : []
     return `${groups.length} 组: ${groups.map((g: any) => String(g?.message || '').split(':')[0] || '').filter(Boolean).join(' / ')}`
@@ -753,6 +757,8 @@ export function toolCallSignature(tc: ToolCall): string {
 const PLAN_TOOLS = new Set([
   'read_file', 'read_multiple_files', 'list_directory', 'get_directory_tree', 'search_files', 'search_in_files',
   'web_search', 'read_url', 'manage_todo', 'submit_plan', 'ask_user_question', 'list_agents',
+  // 只读的变更历史（跨会话查「之前改过哪些文件」）不应被计划模式挡掉
+  'list_file_changes',
   // 原生只读 git 工具 — 计划模式也应能查看仓库状态（Claude Code 风格：
   // 提交前先 git_status / git_diff 探查，再提交计划）
   'git_status', 'git_diff', 'git_log', 'git_branch',
@@ -863,6 +869,7 @@ const RESULT_SENSITIVE_TOOLS = new Set([
   'git_log',
   'office_status',
   'list_agents',
+  'list_file_changes',
   'web_search',
   'read_url',
 ])
@@ -1174,6 +1181,9 @@ export interface ChatState {
   updateSessionProjectPath: (sessionId: string, projectPath: string) => void
   /** Claw 桥接专用：历史会话迁移 mode（旧会话标记为 'claw' 隔离出主界面）。 */
   updateSessionMode: (sessionId: string, mode: 'main' | 'office' | 'claw') => void
+  /** 欢迎页专用：把「还没发过消息」的新会话就地改绑到另一个项目。
+   *  只改内存里的归属（幽灵会话本就不落盘），已有消息的会话绝不改写。 */
+  rebindPendingSessionProject: (sessionId: string, projectPath?: string) => void
   createSession: (configGroupId: string, projectPath?: string, opts?: { mode?: 'main' | 'office' | 'claw' }) => string
   // 一人公司角色员工（M4）：员工会话对用户隐藏，由总监经 send_message 派活，
   // 完成后主动回报。ensureWorkers 幂等补齐项目的最低编制；addWorker/removeWorker
@@ -2945,6 +2955,21 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = create<ChatState
     }))
     void window.electronAPI.clawUpdateSessionMode(sessionId, mode)
     void get().saveSession(sessionId)
+  },
+
+  rebindPendingSessionProject: (sessionId, projectPath) => {
+    const target = get().sessions.find((sess) => sess.id === sessionId)
+    if (!target || target.messages.length > 0) return
+    const nextPath = projectPath || undefined
+    if (target.projectPath === nextPath) return
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === sessionId ? { ...sess, projectPath: nextPath, updatedAt: Date.now() } : sess,
+      ),
+    }))
+    // 新会话首条消息前不落盘（见 createSession 注释）—— 改绑也不应该把它写出来；
+    // 只有已经持久化过的空会话需要同步磁盘记录。
+    if (_persistedSessionIds.has(sessionId)) void get().saveSession(sessionId)
   },
 
   createSession: (configGroupId, projectPath, opts?: { mode?: 'main' | 'office' | 'claw' }) => {

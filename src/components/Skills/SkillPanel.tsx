@@ -24,9 +24,8 @@ async function configRootFor(s: SkillInfo): Promise<string> {
  * Lists ALL skills — global (follow the IDE) + every recent project's own —
  * each labeled with its source, independent of the active conversation.
  */
-export default function SkillPanel() {
+export default function SkillPanel({ embedded = false }: { embedded?: boolean }) {
   const t = useI18n()
-  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const openSkillRegistry = useUIStore((s) => s.openSkillRegistry)
   // Refresh whenever the recent-project list changes (opening a project brings
   // its skills into the list) — the list is independent of the active session.
@@ -108,40 +107,44 @@ export default function SkillPanel() {
 
   return (
     <div className="h-full flex flex-col bg-transparent">
-      {/* Header — 方案A 变体: 标题 + 右侧「管理」pill（打开完整技能管理） */}
-      <div
-        className="flex items-center justify-between shrink-0"
-        style={{ padding: '0 12px', height: 36 }}
-      >
-        <div className="flex items-center gap-1.5 min-w-0">
-          <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="text-nova-accent shrink-0">
-            <path d="M823.296 64.96l135.744 135.744-769.28 769.28-135.808-135.68L823.296 64.96z m0 108.544L162.432 834.24l27.2 27.136L850.432 200.704l-27.2-27.2zM803.2 512a15.68 15.68 0 0 1 15.232 14.336 146.88 146.88 0 0 0 127.68 133.12 15.68 15.68 0 0 1-0.64 31.232 146.752 146.752 0 0 0-133.12 127.744 15.68 15.68 0 0 1-31.104-0.64 146.816 146.816 0 0 0-127.488-133.184 15.68 15.68 0 0 1 0.64-31.232 146.752 146.752 0 0 0 132.992-127.744 15.68 15.68 0 0 1 12.032-13.248l3.84-0.384z m-576-448a15.68 15.68 0 0 1 15.232 14.336 146.88 146.88 0 0 0 127.68 133.12 15.68 15.68 0 0 1-0.64 31.232 146.752 146.752 0 0 0-133.12 127.744 15.68 15.68 0 0 1-31.104-0.64 146.816 146.816 0 0 0-127.488-133.184 15.68 15.68 0 0 1 0.64-31.232 146.752 146.752 0 0 0 132.992-127.744 15.68 15.68 0 0 1 12.032-13.248L227.328 64z m282.624 0a10.24 10.24 0 0 1 10.496 8.832c3.328 23.36 22.4 41.216 45.952 42.944a10.24 10.24 0 0 1 0.64 20.48 50.112 50.112 0 0 0-42.944 45.888 10.24 10.24 0 0 1-20.48 0.64 50.112 50.112 0 0 0-45.888-42.944 10.24 10.24 0 0 1-0.64-20.416 50.112 50.112 0 0 0 42.944-45.952 10.24 10.24 0 0 1 6.912-8.96L509.888 64z" />
-          </svg>
-          <span
-            className="font-bold uppercase tracking-[0.08em] truncate"
-            style={{ fontSize: 11, color: 'var(--text-secondary)', letterSpacing: '0.08em' }}
-          >
-            {t('skillPanel.title')}
-          </span>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
+      {/* Header — 方案A 变体: 标题 + 右侧「管理」pill（打开完整技能管理）。
+          embedded（设置页里）时由设置自己的页头展示标题，这里只留「管理」入口，
+          并隐藏会收起左侧栏的折叠按钮。 */}
+      {embedded ? (
+        <div className="flex items-center justify-end shrink-0" style={{ padding: '8px 12px 0' }}>
           <button
             onClick={openSkillRegistry}
             className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white bg-[var(--accent)] rounded-full hover:opacity-90 transition-opacity"
           >
             {t('skillPanel.manage')}
           </button>
-          <button
-            onClick={toggleSidebar}
-            className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
-            title={t('sidebar.collapse')}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-          </button>
         </div>
-      </div>
+      ) : (
+        <div
+          className="flex items-center justify-between shrink-0"
+          style={{ padding: '0 12px', height: 36 }}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="text-nova-accent shrink-0">
+              <path d="M823.296 64.96l135.744 135.744-769.28 769.28-135.808-135.68L823.296 64.96z m0 108.544L162.432 834.24l27.2 27.136L850.432 200.704l-27.2-27.2zM803.2 512a15.68 15.68 0 0 1 15.232 14.336 146.88 146.88 0 0 0 127.68 133.12 15.68 15.68 0 0 1-0.64 31.232 146.752 146.752 0 0 0-133.12 127.744 15.68 15.68 0 0 1-31.104-0.64 146.816 146.816 0 0 0-127.488-133.184 15.68 15.68 0 0 1 0.64-31.232 146.752 146.752 0 0 0 132.992-127.744 15.68 15.68 0 0 1 12.032-13.248l3.84-0.384z m-576-448a15.68 15.68 0 0 1 15.232 14.336 146.88 146.88 0 0 0 127.68 133.12 15.68 15.68 0 0 1-0.64 31.232 146.752 146.752 0 0 0-133.12 127.744 15.68 15.68 0 0 1-31.104-0.64 146.816 146.816 0 0 0-127.488-133.184 15.68 15.68 0 0 1 0.64-31.232 146.752 146.752 0 0 0 132.992-127.744 15.68 15.68 0 0 1 12.032-13.248L227.328 64z m282.624 0a10.24 10.24 0 0 1 10.496 8.832c3.328 23.36 22.4 41.216 45.952 42.944a10.24 10.24 0 0 1 0.64 20.48 50.112 50.112 0 0 0-42.944 45.888 10.24 10.24 0 0 1-20.48 0.64 50.112 50.112 0 0 0-45.888-42.944 10.24 10.24 0 0 1-0.64-20.416 50.112 50.112 0 0 0 42.944-45.952 10.24 10.24 0 0 1 6.912-8.96L509.888 64z" />
+            </svg>
+            <span
+              className="font-bold uppercase tracking-[0.08em] truncate"
+              style={{ fontSize: 11, color: 'var(--text-secondary)', letterSpacing: '0.08em' }}
+            >
+              {t('skillPanel.title')}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={openSkillRegistry}
+              className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white bg-[var(--accent)] rounded-full hover:opacity-90 transition-opacity"
+            >
+              {t('skillPanel.manage')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div style={{ padding: '4px 12px 8px' }} className="shrink-0">

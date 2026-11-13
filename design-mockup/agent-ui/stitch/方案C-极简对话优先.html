@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OurCode - 极简对话优先 AI 编码智能体</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "secondary-fixed": "#dee2f3",
+            "on-secondary-fixed-variant": "#424654",
+            "background": "#f8f9ff",
+            "outline": "#727784",
+            "inverse-surface": "#213145",
+            "on-tertiary-container": "#ccd5e3",
+            "on-secondary-container": "#5e6271",
+            "secondary-fixed-dim": "#c2c6d7",
+            "inverse-on-surface": "#eaf1ff",
+            "tertiary-fixed-dim": "#bfc7d5",
+            "on-surface-variant": "#424753",
+            "tertiary-container": "#545c68",
+            "surface-bright": "#f8f9ff",
+            "on-tertiary-fixed-variant": "#3f4753",
+            "on-primary-container": "#c3d4ff",
+            "on-tertiary": "#ffffff",
+            "on-error": "#ffffff",
+            "primary-fixed": "#d8e2ff",
+            "on-primary-fixed": "#001a41",
+            "surface-container-high": "#dce9ff",
+            "primary-container": "#0058bc",
+            "surface-tint": "#095bbf",
+            "on-background": "#0b1c30",
+            "tertiary": "#3c4550",
+            "on-secondary-fixed": "#161b28",
+            "on-surface": "#0b1c30",
+            "inverse-primary": "#adc6ff",
+            "on-secondary": "#ffffff",
+            "on-primary-fixed-variant": "#004494",
+            "on-error-container": "#93000a",
+            "outline-variant": "#c2c6d5",
+            "surface-container-lowest": "#ffffff",
+            "secondary-container": "#dbdff0",
+            "on-primary": "#ffffff",
+            "primary-fixed-dim": "#adc6ff",
+            "primary": "#00418f",
+            "surface-variant": "#d3e4fe",
+            "surface-dim": "#cbdbf5",
+            "error": "#ba1a1a",
+            "surface": "#f8f9ff",
+            "on-tertiary-fixed": "#141c27",
+            "secondary": "#595e6d",
+            "error-container": "#ffdad6",
+            "surface-container-highest": "#d3e4fe",
+            "surface-container": "#e5eeff",
+            "surface-container-low": "#eff4ff",
+            "tertiary-fixed": "#dbe3f2"
+          },
+          borderRadius: {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          spacing: {
+            "space-xl": "1.5rem",
+            "space-md": "0.75rem",
+            "space-xs": "0.25rem",
+            "margin-mobile": "0.5rem",
+            "space-lg": "1rem",
+            "margin": "1rem",
+            "gutter-compact": "0.375rem",
+            "gutter": "0.5rem",
+            "space-sm": "0.5rem"
+          },
+          fontFamily: {
+            "title-md": ["Plus Jakarta Sans"],
+            "headline-sm": ["Plus Jakarta Sans"],
+            "label-md": ["Plus Jakarta Sans"],
+            "title-sm": ["Plus Jakarta Sans"],
+            "code-md": ["JetBrains Mono"],
+            "body-sm": ["Plus Jakarta Sans"],
+            "code-sm": ["JetBrains Mono"],
+            "body-lg": ["Plus Jakarta Sans"],
+            "body-md": ["Plus Jakarta Sans"],
+            "label-sm": ["JetBrains Mono"],
+            "headline-md": ["Plus Jakarta Sans"],
+            "headline-lg": ["Plus Jakarta Sans"]
+          },
+          fontSize: {
+            "title-md": ["15px", { lineHeight: "22px", letterSpacing: "-0.005em", fontWeight: "600" }],
+            "headline-sm": ["18px", { lineHeight: "26px", letterSpacing: "-0.01em", fontWeight: "600" }],
+            "label-md": ["12px", { lineHeight: "16px", letterSpacing: "0.01em", fontWeight: "500" }],
+            "title-sm": ["13px", { lineHeight: "18px", letterSpacing: "0em", fontWeight: "600" }],
+            "code-md": ["13px", { lineHeight: "20px", letterSpacing: "-0.005em", fontWeight: "400" }],
+            "body-sm": ["12px", { lineHeight: "18px", letterSpacing: "0.01em", fontWeight: "400" }],
+            "code-sm": ["11px", { lineHeight: "16px", letterSpacing: "0em", fontWeight: "500" }],
+            "body-lg": ["15px", { lineHeight: "24px", letterSpacing: "0em", fontWeight: "400" }],
+            "body-md": ["13px", { lineHeight: "20px", letterSpacing: "0em", fontWeight: "400" }],
+            "label-sm": ["11px", { lineHeight: "14px", letterSpacing: "0.02em", fontWeight: "500" }],
+            "headline-md": ["22px", { lineHeight: "30px", letterSpacing: "-0.015em", fontWeight: "600" }],
+            "headline-lg": ["28px", { lineHeight: "36px", letterSpacing: "-0.02em", fontWeight: "700" }]
+          }
+        }
+      }
+    };
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    /* Subtle custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(15, 23, 42, 0.12);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(15, 23, 42, 0.22);
+    }
+  </style>
+</head>
+<body class="bg-[#f6f7fb] text-on-surface h-full flex flex-col font-body-md antialiased overflow-hidden select-none">
+<!-- 1. 极简顶栏 (52px, 优雅通透, 消除沉重分界) -->
+<header class="h-[52px] w-full px-5 flex items-center justify-between bg-surface-container-lowest/80 backdrop-blur-md z-30 flex-shrink-0 transition-colors">
+<!-- 左侧：Logo、会话名称、分支标签 -->
+<div class="flex items-center space-x-3">
+<!-- 品牌 Logo 簇 -->
+<div class="flex items-center space-x-2">
+<div class="w-6 h-6 rounded-lg bg-primary-container flex items-center justify-center text-white shadow-sm shadow-blue-500/20">
+<span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 1;">terminal</span>
+</div>
+<span class="font-title-md text-title-md text-on-surface font-bold tracking-tight">OurCode</span>
+</div>
+<!-- 轻微斜杠分隔符 -->
+<span class="text-outline-variant font-light text-sm select-none">/</span>
+<!-- 当前会话标题组 -->
+<div class="flex items-center space-x-2 group cursor-pointer">
+<span class="text-sm font-medium text-on-surface group-hover:text-primary transition-colors">修复 Composer 抖动</span>
+<button class="text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded" title="重命名会话">
+<span class="material-symbols-outlined text-[14px]">edit</span>
+</button>
+</div>
+<!-- 轻量分支胶囊 -->
+<div class="flex items-center space-x-1 px-2 py-0.5 rounded bg-surface-container text-on-surface-variant font-code-sm text-code-sm border border-outline-variant/30">
+<span class="material-symbols-outlined text-[12px] text-primary">commit</span>
+<span>feat/composer-fix</span>
+</div>
+</div>
+<!-- 右侧：三个纯净轻量图标操作按钮 -->
+<div class="flex items-center space-x-1 text-on-surface-variant">
+<button class="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container hover:text-on-surface transition-colors active:scale-95" title="历史记录">
+<span class="material-symbols-outlined text-[18px]">history</span>
+</button>
+<button class="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container hover:text-on-surface transition-colors active:scale-95" title="共享当前对话">
+<span class="material-symbols-outlined text-[18px]">share</span>
+</button>
+<button class="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container hover:text-on-surface transition-colors active:scale-95" title="全局设置">
+<span class="material-symbols-outlined text-[18px]">settings</span>
+</button>
+</div>
+</header>
+<!-- 主视口主体 (侧栏 + 对话工作区) -->
+<div class="flex-1 flex overflow-hidden relative">
+<!-- 2. 左侧紧凑会话抽屉（收起态，56px 宽纯图标极简竖条） -->
+<aside class="w-14 flex-shrink-0 bg-surface-container-lowest/90 backdrop-blur-md flex flex-col items-center py-3 justify-between z-20 shadow-[0_4px_20px_-2px_rgba(15,23,42,0.03)] border-r border-slate-900/[0.05]">
+<!-- 顶部操作组 -->
+<div class="flex flex-col items-center space-y-3 w-full">
+<!-- 新建会话 (+) 按钮 -->
+<button class="w-9 h-9 rounded-xl bg-surface-container hover:bg-primary-fixed text-primary flex items-center justify-center transition-all active:scale-90 shadow-sm" title="新建对话 (Cmd+N)">
+<span class="material-symbols-outlined text-[20px]">add</span>
+</button>
+<!-- 分割细线 -->
+<div class="w-6 h-[1px] bg-slate-900/[0.06]"></div>
+<!-- 导航图标列表 -->
+<nav class="flex flex-col items-center space-y-2 w-full">
+<!-- 搜索 -->
+<button class="w-9 h-9 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container flex items-center justify-center transition-colors group relative" title="搜索会话与代码 (Cmd+K)">
+<span class="material-symbols-outlined text-[19px]">search</span>
+</button>
+<!-- 会话列表 (当前激活态，带高亮指示条) -->
+<button class="w-9 h-9 rounded-lg bg-surface-container-high text-primary flex items-center justify-center relative transition-colors" title="会话列表">
+<!-- 激活状态左侧蓝色指示条 -->
+<div class="absolute left-0 top-2 bottom-2 w-1 bg-primary rounded-r-full"></div>
+<span class="material-symbols-outlined text-[19px]" style="font-variation-settings: 'FILL' 1;">chat_bubble</span>
+</button>
+<!-- 任务/工单 -->
+<button class="w-9 h-9 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container flex items-center justify-center transition-colors relative" title="自动化任务与审查">
+<span class="material-symbols-outlined text-[19px]">dashboard</span>
+</button>
+<!-- 历史记录 -->
+<button class="w-9 h-9 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container flex items-center justify-center transition-colors" title="归档记录">
+<span class="material-symbols-outlined text-[19px]">history</span>
+</button>
+</nav>
+</div>
+<!-- 底部状态与操作 -->
+<div class="flex flex-col items-center space-y-3 w-full">
+<!-- 运行状态绿点微标 -->
+<div class="relative group cursor-pointer flex items-center justify-center p-1" title="智能体核心引擎: 就绪 &amp; 监听中">
+<span class="relative flex h-2.5 w-2.5">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+</span>
+</div>
+<!-- 快速设置 -->
+<button class="w-9 h-9 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container flex items-center justify-center transition-colors" title="偏好设置">
+<span class="material-symbols-outlined text-[19px]">settings</span>
+</button>
+<!-- 用户圆形头像缩写 "OC" -->
+<div class="w-8 h-8 rounded-full bg-primary-container text-white flex items-center justify-center font-title-sm text-[11px] font-semibold tracking-wider cursor-pointer hover:ring-2 hover:ring-primary/30 transition-all shadow-sm">
+          OC
+        </div>
+</div>
+</aside>
+<!-- 3. 主对话流滚动区域 (定宽 720px，水平居中) -->
+<main class="flex-1 overflow-y-auto relative flex flex-col items-center px-4 pt-6 pb-48 scroll-smooth" id="conversation-container">
+<!-- 对话主体列：定宽 720px -->
+<div class="w-full max-w-[720px] flex flex-col space-y-8 select-text">
+<!-- 3.1 用户提问气泡 (右上浮动浅蓝气泡) -->
+<div class="flex justify-end pl-16">
+<div class="bg-[#e8f0ff] text-on-surface rounded-2xl rounded-tr-sm px-5 py-3.5 text-[14px] leading-[22px] border border-blue-500/15 shadow-[0_4px_16px_rgba(0,88,188,0.06)] font-body-md max-w-full">
+            修复底部输入框在流式输出时抖动 10px 的问题，不要改动外部 Flex 布局
+          </div>
+</div>
+<!-- 3.2 AI 回复排版：无外框气泡的自然纯文本阅读流 -->
+<div class="flex flex-col space-y-4 pr-2">
+<!-- AI 标识与模型头信息 -->
+<div class="flex items-center space-x-2 text-on-surface-variant">
+<div class="w-5 h-5 rounded-md bg-primary-container text-white flex items-center justify-center text-[11px] font-bold shadow-xs">
+<span class="material-symbols-outlined text-[13px]">smart_toy</span>
+</div>
+<span class="font-title-sm text-title-sm text-on-surface font-semibold">OurCode 助手</span>
+<span class="text-xs text-outline font-normal">·</span>
+<span class="text-xs text-on-surface-variant">Claude 3.7 Sonnet</span>
+<span class="text-xs text-outline font-normal">·</span>
+<span class="text-xs text-outline">刚刚</span>
+</div>
+<!-- 结构化分析段落 -->
+<div class="text-[14px] leading-[23px] text-on-surface space-y-3 font-normal">
+<p>
+              已深度排查 <code class="px-1.5 py-0.5 rounded bg-surface-container text-primary font-code-sm text-code-sm">ChatInput.tsx</code> 与 <code class="px-1.5 py-0.5 rounded bg-surface-container text-primary font-code-sm text-code-sm">useAutoResizeTextarea.ts</code> 的渲染生命周期。
+            </p>
+<p>
+              问题根源在于：流式文字逐步推入时，<span class="text-on-surface font-medium">ResizeObserver</span> 捕获高度变化的微任务执行时机，与浏览器原生文本流引发的滚动位置补偿发生了并发竞争，导致 DOM 重排瞬间产生 10px 的垂直位移抖动。
+            </p>
+<p class="text-on-surface-variant">
+              为保证完全不触及外部主轴 Flex 树结构，方案锁定在输入框内部运用 GPU 硬件加速的 <code class="px-1.5 py-0.5 rounded bg-surface-container font-code-sm text-code-sm text-on-surface">transform: translateY(...)</code> 与动态 <code class="px-1.5 py-0.5 rounded bg-surface-container font-code-sm text-code-sm text-on-surface">contain: paint</code> 做局部边界隔离。以下为核心修复补丁：
+            </p>
+</div>
+<!-- 深色内嵌代码卡片 (Level Terminal Obsidian Portal) -->
+<div class="bg-[#0f1420] text-slate-200 rounded-xl overflow-hidden border border-slate-800 shadow-[0_8px_24px_rgba(15,20,32,0.18)] font-code-md text-code-md">
+<!-- 头部文件信息与复制按钮 -->
+<div class="flex items-center justify-between px-4 py-2.5 bg-[#141b2b] border-b border-slate-800/80">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-[15px] text-blue-400">code</span>
+<span class="font-code-sm text-code-sm text-slate-300 font-medium">ChatInput.tsx · TypeScript</span>
+</div>
+<button class="flex items-center space-x-1 px-2 py-1 rounded hover:bg-slate-700/60 text-slate-400 hover:text-slate-200 text-xs transition-colors" title="复制代码">
+<span class="material-symbols-outlined text-[13px]">content_copy</span>
+<span class="font-label-sm text-label-sm">复制</span>
+</button>
+</div>
+<!-- 代码编辑 Diff 视口 -->
+<div class="p-3 text-[12px] leading-5 overflow-x-auto select-text font-code-sm">
+<div class="opacity-40 flex space-x-4">
+<span class="w-6 text-right select-none text-slate-600">42</span>
+<span class="text-slate-400">  // 避免 ResizeObserver 触发父层级重排流</span>
+</div>
+<div class="opacity-40 flex space-x-4">
+<span class="w-6 text-right select-none text-slate-600">43</span>
+<span class="text-slate-400">  const handleResize = useCallback(() =&gt; {</span>
+</div>
+<!-- 删除行 (Diff red) -->
+<div class="bg-red-500/15 text-red-300 flex space-x-4 -mx-3 px-3 py-0.5 border-l-2 border-red-500">
+<span class="w-6 text-right select-none text-red-400/80">− 44</span>
+<span>    containerRef.current.style.height = `${nextHeight}px`;</span>
+</div>
+<div class="bg-red-500/15 text-red-300 flex space-x-4 -mx-3 px-3 py-0.5 border-l-2 border-red-500">
+<span class="w-6 text-right select-none text-red-400/80">− 45</span>
+<span>    window.scrollTo({ top: document.body.scrollHeight });</span>
+</div>
+<!-- 新增行 (Diff green) -->
+<div class="bg-emerald-500/15 text-emerald-300 flex space-x-4 -mx-3 px-3 py-0.5 border-l-2 border-emerald-500">
+<span class="w-6 text-right select-none text-emerald-400/80">+ 44</span>
+<span>    requestAnimationFrame(() =&gt; {</span>
+</div>
+<div class="bg-emerald-500/15 text-emerald-300 flex space-x-4 -mx-3 px-3 py-0.5 border-l-2 border-emerald-500">
+<span class="w-6 text-right select-none text-emerald-400/80">+ 45</span>
+<span>      target.style.contain = 'paint layout';</span>
+</div>
+<div class="bg-emerald-500/15 text-emerald-300 flex space-x-4 -mx-3 px-3 py-0.5 border-l-2 border-emerald-500">
+<span class="w-6 text-right select-none text-emerald-400/80">+ 46</span>
+<span>      target.style.transform = `translate3d(0, 0, 0)`;</span>
+</div>
+<div class="bg-emerald-500/15 text-emerald-300 flex space-x-4 -mx-3 px-3 py-0.5 border-l-2 border-emerald-500">
+<span class="w-6 text-right select-none text-emerald-400/80">+ 47</span>
+<span>    });</span>
+</div>
+<div class="opacity-40 flex space-x-4">
+<span class="w-6 text-right select-none text-slate-600">48</span>
+<span class="text-slate-400">  }, [streamState]);</span>
+</div>
+</div>
+</div>
+<!-- 行内关联文件 Chip -->
+<div class="flex items-center space-x-2 pt-1 flex-wrap">
+<span class="text-xs text-on-surface-variant font-medium">变更涉及：</span>
+<div class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-white hover:bg-surface-container border border-slate-900/[0.08] shadow-xs cursor-pointer transition-all active:scale-95 group">
+<span class="material-symbols-outlined text-[13px] text-primary">attach_file</span>
+<span class="font-code-sm text-code-sm text-on-surface group-hover:text-primary">ChatInput.tsx</span>
+<span class="font-label-sm text-[10px] text-emerald-600 bg-emerald-50 px-1 rounded font-medium">+24</span>
+<span class="font-label-sm text-[10px] text-red-500 bg-red-50 px-1 rounded font-medium">−6</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-white hover:bg-surface-container border border-slate-900/[0.08] shadow-xs cursor-pointer transition-all active:scale-95 group">
+<span class="material-symbols-outlined text-[13px] text-primary">attach_file</span>
+<span class="font-code-sm text-code-sm text-on-surface group-hover:text-primary">useAutoResizeTextarea.ts</span>
+<span class="font-label-sm text-[10px] text-emerald-600 bg-emerald-50 px-1 rounded font-medium">+11</span>
+<span class="font-label-sm text-[10px] text-red-500 bg-red-50 px-1 rounded font-medium">−2</span>
+</div>
+</div>
+<!-- 执行轨迹折叠条 (手风琴条目) -->
+<div class="rounded-xl border border-slate-900/[0.08] bg-white p-3 shadow-xs hover:border-slate-900/[0.12] transition-all cursor-pointer flex items-center justify-between">
+<div class="flex items-center space-x-2 text-on-surface">
+<span class="material-symbols-outlined text-[16px] text-outline">play_arrow</span>
+<span class="text-xs font-semibold">查看执行轨迹</span>
+<span class="text-xs text-outline">· 18 步 · 40s</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200/60 text-emerald-700 font-label-sm text-label-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+<span>全部通过 (All Passed)</span>
+</div>
+</div>
+<!-- 实时运行指示条 (浅蓝胶囊内嵌卡片) -->
+<div class="bg-[#e8f0ff]/80 border border-blue-200/60 rounded-xl px-4 py-2.5 flex items-center justify-between shadow-xs">
+<div class="flex items-center space-x-2.5">
+<span class="relative flex h-2 w-2">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+<span class="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
+</span>
+<span class="font-code-sm text-code-sm text-on-surface font-medium truncate max-w-[480px]">
+                正在运行 pnpm test:unit --filter composer…
+              </span>
+</div>
+<button class="px-2.5 py-1 rounded-lg border border-red-200 bg-white hover:bg-red-50 text-error hover:text-red-700 text-xs font-medium transition-colors active:scale-95 shadow-xs">
+              停止执行
+            </button>
+</div>
+</div>
+</div>
+</main>
+<!-- 4. 右下角悬浮快捷岛 (Workspace Floating Drawer Capsule) -->
+<div class="fixed bottom-28 right-8 z-30 flex items-center space-x-2.5">
+<!-- 回到最新 ↑ 纯白圆形微按钮 -->
+<button class="w-10 h-10 rounded-full bg-white/95 backdrop-blur-md border border-slate-900/[0.08] text-on-surface shadow-[0_8px_20px_-2px_rgba(15,23,42,0.08)] hover:bg-surface-container flex items-center justify-center transition-all active:scale-90" onclick="document.getElementById('conversation-container').scrollTo({top: 99999, behavior: 'smooth'})" title="回到最新内容">
+<span class="material-symbols-outlined text-[18px]">arrow_upward</span>
+</button>
+<!-- 工作区展开药丸胶囊 -->
+<button class="h-10 px-3.5 rounded-full bg-white/95 backdrop-blur-md border border-slate-900/[0.08] text-on-surface shadow-[0_8px_20px_-2px_rgba(15,23,42,0.08)] hover:bg-surface-container flex items-center space-x-2 transition-all active:scale-95 group" title="点击展开右侧 Diff 与交互终端工作区">
+<span class="material-symbols-outlined text-[18px] text-primary">splitscreen</span>
+<span class="text-xs font-semibold">工作区</span>
+<span class="w-4 h-4 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center">2</span>
+<span class="material-symbols-outlined text-[15px] text-outline group-hover:translate-x-0.5 transition-transform">chevron_right</span>
+</button>
+</div>
+<!-- 5. 底部居中悬浮输入胶囊 (定宽 720px 与对话列完全对齐，高阶玻璃拟态) -->
+<div class="absolute bottom-4 left-14 right-0 flex flex-col items-center pointer-events-none z-30">
+<div class="w-full max-w-[720px] pointer-events-auto">
+<!-- 输入卡片主体 -->
+<div class="bg-white/95 backdrop-blur-xl border border-slate-900/[0.08] rounded-2xl shadow-[0_12px_36px_rgba(15,23,42,0.08)] p-3 flex flex-col space-y-2 transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
+<!-- 上半部分：多行输入框区 -->
+<div class="relative w-full">
+<textarea class="w-full resize-none border-0 bg-transparent p-1 text-[14px] leading-[22px] text-on-surface placeholder:text-outline-variant focus:ring-0 focus:outline-none font-body-md" placeholder="给 OurCode 发消息，或 @ 引用文件…" rows="2"></textarea>
+</div>
+<!-- 下半部分：工具栏与发送控制 -->
+<div class="flex items-center justify-between pt-1 border-t border-slate-900/[0.04]">
+<!-- 左侧功能组 -->
+<div class="flex items-center space-x-1.5 text-on-surface-variant">
+<!-- 附件 -->
+<button class="flex items-center space-x-1 px-2 py-1 rounded-lg hover:bg-surface-container text-xs font-medium transition-colors" title="添加文件上下文 (@)">
+<span class="material-symbols-outlined text-[15px]">attach_file</span>
+<span>附件</span>
+</button>
+<!-- 自动执行下拉菜单 -->
+<button class="flex items-center space-x-1 px-2 py-1 rounded-lg hover:bg-surface-container text-xs font-medium transition-colors" title="智能体自主执行模式配置">
+<span class="material-symbols-outlined text-[15px]">settings_suggest</span>
+<span>自动执行</span>
+<span class="material-symbols-outlined text-[13px] text-outline">arrow_drop_down</span>
+</button>
+<!-- 模型选择器 (带就绪绿点) -->
+<button class="flex items-center space-x-1.5 px-2 py-1 rounded-lg hover:bg-surface-container text-xs font-medium text-on-surface transition-colors" title="切换推理底层大模型">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+<span>Claude 3.7 Sonnet</span>
+<span class="material-symbols-outlined text-[13px] text-outline">arrow_drop_down</span>
+</button>
+</div>
+<!-- 右侧发送主按钮 -->
+<button class="w-8 h-8 rounded-full bg-primary-container text-white flex items-center justify-center shadow-md shadow-blue-600/30 hover:bg-[#00479a] active:scale-90 transition-all cursor-pointer" title="发送指令 (Enter)">
+<span class="material-symbols-outlined text-[17px] font-bold">arrow_upward</span>
+</button>
+</div>
+</div>
+<!-- 胶囊下方居中微小提示文字 -->
+<p class="text-center text-[11px] text-outline font-normal mt-2 select-none tracking-normal">
+          OurCode 可能出错，请核对重要改动 · Enter 发送 / Shift+Enter 换行
+        </p>
+</div>
+</div>
+</div>
+</body></html>

@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OurCode Desktop Cockpit - 规格三段式 (Spec → Plan → Code)</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&amp;family=Plus Jakarta Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 with Container Queries & Forms -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-primary-fixed-variant": "#004494",
+            "on-primary-container": "#c3d4ff",
+            "surface-dim": "#cbdbf5",
+            "primary": "#00418f",
+            "surface-container-low": "#eff4ff",
+            "on-secondary-fixed-variant": "#424654",
+            "inverse-on-surface": "#eaf1ff",
+            "background": "#f8f9ff",
+            "outline": "#727784",
+            "on-surface-variant": "#424753",
+            "error-container": "#ffdad6",
+            "surface-bright": "#f8f9ff",
+            "tertiary-fixed": "#dbe3f2",
+            "tertiary-container": "#545c68",
+            "surface-tint": "#095bbf",
+            "surface-container": "#e5eeff",
+            "outline-variant": "#c2c6d5",
+            "inverse-surface": "#213145",
+            "on-tertiary-container": "#ccd5e3",
+            "primary-fixed-dim": "#adc6ff",
+            "secondary-container": "#dbdff0",
+            "on-primary": "#ffffff",
+            "on-primary-fixed": "#001a41",
+            "inverse-primary": "#adc6ff",
+            "on-error-container": "#93000a",
+            "on-error": "#ffffff",
+            "surface": "#f8f9ff",
+            "surface-container-highest": "#d3e4fe",
+            "secondary-fixed": "#dee2f3",
+            "surface-container-high": "#dce9ff",
+            "on-secondary": "#ffffff",
+            "on-secondary-fixed": "#161b28",
+            "primary-container": "#0058bc",
+            "on-tertiary-fixed-variant": "#3f4753",
+            "on-background": "#0b1c30",
+            "secondary-fixed-dim": "#c2c6d7",
+            "primary-fixed": "#d8e2ff",
+            "on-tertiary-fixed": "#141c27",
+            "tertiary-fixed-dim": "#bfc7d5",
+            "on-secondary-container": "#5e6271",
+            "error": "#ba1a1a",
+            "on-surface": "#0b1c30",
+            "secondary": "#595e6d",
+            "on-tertiary": "#ffffff",
+            "surface-container-lowest": "#ffffff",
+            "tertiary": "#3c4550",
+            "surface-variant": "#d3e4fe"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "space-xs": "0.25rem",
+            "space-xl": "1.5rem",
+            "margin": "1rem",
+            "space-lg": "1rem",
+            "margin-mobile": "0.5rem",
+            "space-sm": "0.5rem",
+            "space-md": "0.75rem",
+            "gutter-compact": "0.375rem",
+            "gutter": "0.5rem"
+          },
+          "fontFamily": {
+            "label-md": ["Plus Jakarta Sans"],
+            "title-md": ["Plus Jakarta Sans"],
+            "code-sm": ["JetBrains Mono"],
+            "code-md": ["JetBrains Mono"],
+            "label-sm": ["JetBrains Mono"],
+            "headline-md": ["Plus Jakarta Sans"],
+            "title-sm": ["Plus Jakarta Sans"],
+            "headline-sm": ["Plus Jakarta Sans"],
+            "headline-lg": ["Plus Jakarta Sans"],
+            "body-sm": ["Plus Jakarta Sans"],
+            "body-md": ["Plus Jakarta Sans"],
+            "body-lg": ["Plus Jakarta Sans"]
+          },
+          "fontSize": {
+            "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.01em", "fontWeight": "500" }],
+            "title-md": ["15px", { "lineHeight": "22px", "letterSpacing": "-0.005em", "fontWeight": "600" }],
+            "code-sm": ["11px", { "lineHeight": "16px", "letterSpacing": "0em", "fontWeight": "500" }],
+            "code-md": ["13px", { "lineHeight": "20px", "letterSpacing": "-0.005em", "fontWeight": "400" }],
+            "label-sm": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+            "headline-md": ["22px", { "lineHeight": "30px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+            "title-sm": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "600" }],
+            "headline-sm": ["18px", { "lineHeight": "26px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "headline-lg": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "body-sm": ["12px", { "lineHeight": "18px", "letterSpacing": "0.01em", "fontWeight": "400" }],
+            "body-md": ["13px", { "lineHeight": "20px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "body-lg": ["15px", { "lineHeight": "24px", "letterSpacing": "0em", "fontWeight": "400" }]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      font-size: 16px;
+      line-height: 1;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(15, 23, 42, 0.15);
+      border-radius: 4px;
+    }
+    .terminal-scrollbar::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    .terminal-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }
+    @keyframes pulse-halo {
+      0%, 100% { opacity: 0.9; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.15); }
+    }
+    .pulse-halo {
+      animation: pulse-halo 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+</head>
+<body class="bg-[#f6f7fb] text-on-surface font-body-md antialiased h-screen w-screen overflow-hidden flex flex-col select-none">
+<!-- ========================================================================= -->
+<!-- 1. 顶部标题栏 (48px 高度，毛玻璃效果，规格三段式顶部全局指引) -->
+<!-- ========================================================================= -->
+<header class="h-12 w-full bg-surface-container-lowest/85 backdrop-blur-md border-b border-outline-variant/50 px-space-lg flex items-center justify-between z-30 shrink-0 shadow-sm">
+<!-- 左侧：OurCode 品牌标识 + 任务名 + 任务编号 chip -->
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded-lg bg-primary-container flex items-center justify-center text-on-primary shadow-sm ring-1 ring-primary/20">
+<span class="material-symbols-outlined text-[17px]">terminal</span>
+</div>
+<span class="text-headline-sm font-headline-sm font-extrabold tracking-tight text-primary">OurCode</span>
+</div>
+<div class="h-4 w-[1px] bg-outline-variant/60"></div>
+<div class="flex items-center gap-space-sm">
+<span class="text-title-sm font-title-sm text-on-surface font-medium truncate max-w-[220px]">修复 Composer 流式抖动</span>
+<span class="px-2 py-0.5 rounded bg-surface-container-low text-primary text-code-sm font-code-sm border border-outline-variant/40 tracking-wider">FIX-8842</span>
+</div>
+</div>
+<!-- 中间：横向三阶段步骤指示条 (规格 → 计划 → 实现) -->
+<nav class="flex items-center bg-surface-container-low/80 p-1 rounded-full border border-outline-variant/40 shadow-inner">
+<!-- 步骤 1：规格 Spec (已完成锁定) -->
+<div class="flex items-center gap-1.5 px-3 py-1 rounded-full text-secondary transition-all">
+<span class="w-4 h-4 rounded-full bg-[#16a34a] text-white flex items-center justify-center text-[10px] font-bold">✓</span>
+<span class="text-label-md font-label-md font-semibold text-on-surface">① 规格 Spec</span>
+<span class="text-[11px] text-[#16a34a] font-medium">(已确认)</span>
+</div>
+<span class="text-outline-variant text-xs px-0.5">→</span>
+<!-- 步骤 2：计划 Plan (执行中 - 当前活动高亮胶囊) -->
+<div class="flex items-center gap-2 px-3.5 py-1 rounded-full bg-primary-container text-on-primary shadow-sm ring-2 ring-primary/30">
+<span class="w-2 h-2 rounded-full bg-white pulse-halo"></span>
+<span class="text-label-md font-label-md font-bold tracking-wide">② 计划 Plan</span>
+<span class="text-[11px] bg-white/20 text-white font-medium px-1.5 py-0.2 rounded-full">(执行中)</span>
+</div>
+<span class="text-outline-variant text-xs px-0.5">→</span>
+<!-- 步骤 3：实现 Code (待完成) -->
+<div class="flex items-center gap-1.5 px-3 py-1 rounded-full text-on-surface-variant opacity-75">
+<span class="w-4 h-4 rounded-full bg-outline-variant/60 text-on-surface-variant flex items-center justify-center text-[10px] font-bold">3</span>
+<span class="text-label-md font-label-md font-medium">③ 实现 Code</span>
+<span class="text-[11px] text-secondary">(待完成)</span>
+</div>
+</nav>
+<!-- 右侧：模型选择器 + Git 分支 + 操作与个人信息 -->
+<div class="flex items-center gap-space-md">
+<!-- 模型选择器 -->
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-lowest border border-outline-variant/70 rounded-lg text-body-sm shadow-xs cursor-pointer hover:border-primary/50 transition-colors">
+<span class="material-symbols-outlined text-[15px] text-primary">psychology</span>
+<span class="text-title-sm font-title-sm text-on-surface">Claude 3.7 Sonnet</span>
+<span class="material-symbols-outlined text-[13px] text-outline">expand_more</span>
+</div>
+<!-- Git 分支 Chip -->
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container border border-outline-variant/60 rounded-lg text-code-sm font-code-sm text-on-surface-variant shadow-xs">
+<span class="material-symbols-outlined text-[14px] text-primary">alt_route</span>
+<span class="font-medium text-primary">fix/composer-jitter</span>
+</div>
+<!-- 分享按钮 -->
+<button class="flex items-center gap-1 px-3 py-1 bg-surface-container-low hover:bg-surface-container border border-outline-variant/60 rounded-lg text-title-sm font-title-sm text-on-surface transition-all active:scale-[0.98]">
+<span class="material-symbols-outlined text-[14px]">share</span>
+<span>共享</span>
+</button>
+<!-- 快捷图标操作 -->
+<div class="flex items-center gap-1 text-on-surface-variant">
+<button class="p-1.5 hover:bg-surface-container rounded-lg transition-colors" title="通知">
+<span class="material-symbols-outlined text-[18px]">notifications</span>
+</button>
+<button class="p-1.5 hover:bg-surface-container rounded-lg transition-colors" title="设置">
+<span class="material-symbols-outlined text-[18px]">tune</span>
+</button>
+</div>
+<!-- 用户头像 -->
+<div class="flex items-center gap-2 pl-1 border-l border-outline-variant/60">
+<div class="w-7 h-7 rounded-full bg-surface-container-highest border border-primary/30 flex items-center justify-center text-primary font-bold text-xs ring-1 ring-primary/10">
+          YG
+        </div>
+<span class="text-label-md font-label-md text-on-surface font-semibold hidden xl:inline">YG (Tech Lead)</span>
+</div>
+</div>
+</header>
+<!-- ========================================================================= -->
+<!-- 2. 主体三列阶段布局 (8px 间距，水平流呈现: 规格 Spec → 计划 Plan → 实现 Code) -->
+<!-- ========================================================================= -->
+<main class="flex-1 p-2 gap-2 flex overflow-hidden w-full max-w-[1440px] mx-auto">
+<!-- ----------------------------------------------------------------------- -->
+<!-- 列 1: 规格 Spec (约 310px 宽度，白色卡片，已签署锁定) -->
+<!-- ----------------------------------------------------------------------- -->
+<section class="w-[310px] shrink-0 bg-surface-container-lowest/95 backdrop-blur-md rounded-2xl border border-outline-variant/60 shadow-[0_4px_20px_-2px_rgba(15,23,42,0.04)] p-4 flex flex-col justify-between overflow-hidden">
+<!-- 规格卡片头部 -->
+<div>
+<div class="flex items-center justify-between mb-2">
+<span class="text-[10px] font-bold tracking-wider text-secondary uppercase font-code-sm">PHASE 01 · SPECIFICATION</span>
+<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#f0fdf4] text-[#16a34a] border border-[#16a34a]/20">
+<span class="material-symbols-outlined text-[13px] text-[#16a34a]">verified</span>
+            已签署锁定
+          </span>
+</div>
+<div class="flex items-baseline justify-between border-b border-outline-variant/30 pb-3 mb-3">
+<h2 class="text-headline-sm font-headline-sm font-bold text-on-surface">规格 SPEC</h2>
+<span class="text-label-sm font-code-sm text-outline">v1.2 Signed</span>
+</div>
+<!-- 规格正文滚动区 -->
+<div class="space-y-4 max-h-[calc(100vh-230px)] overflow-y-auto pr-1 custom-scrollbar">
+<!-- 小节 1: 需求目标 -->
+<div>
+<div class="flex items-center gap-1.5 text-xs font-bold text-on-surface-variant tracking-wider uppercase mb-1.5 font-code-sm">
+<span class="material-symbols-outlined text-[14px] text-primary">target</span>
+              需求目标 / OBJECTIVE
+            </div>
+<div class="bg-surface-container-low/70 rounded-xl p-3 border border-outline-variant/40 text-body-sm leading-relaxed text-on-surface">
+              解决底部输入框在流式输出与大量 token 推送时持续抖动 10px 的视觉重排缺陷，平滑锁定高度并避免 ResizeObserver 触发父层布局抖动。
+            </div>
+</div>
+<!-- 小节 2: 技术约束 -->
+<div>
+<div class="flex items-center gap-1.5 text-xs font-bold text-on-surface-variant tracking-wider uppercase mb-1.5 font-code-sm">
+<span class="material-symbols-outlined text-[14px] text-[#d97706]">gavel</span>
+              技术约束 / CONSTRAINTS
+            </div>
+<ul class="space-y-2 text-body-sm">
+<li class="flex items-start gap-2 bg-surface-container-lowest p-2 rounded-lg border border-outline-variant/40">
+<span class="material-symbols-outlined text-[15px] text-[#d97706] shrink-0 mt-0.5">shield</span>
+<span class="text-on-surface-variant text-xs">禁止改动外部 Flex 布局主轴与全局 Layout 容器</span>
+</li>
+<li class="flex items-start gap-2 bg-surface-container-lowest p-2 rounded-lg border border-outline-variant/40">
+<span class="material-symbols-outlined text-[15px] text-[#d97706] shrink-0 mt-0.5">verified_user</span>
+<span class="text-on-surface-variant text-xs">保持跨平台 WebKit 与 Gecko 渲染引擎平滑兼容</span>
+</li>
+<li class="flex items-start gap-2 bg-surface-container-lowest p-2 rounded-lg border border-outline-variant/40">
+<span class="material-symbols-outlined text-[15px] text-[#d97706] shrink-0 mt-0.5">bug_report</span>
+<span class="text-on-surface-variant text-xs">必须补充单测防止 ResizeObserver 异步宏任务竞态</span>
+</li>
+</ul>
+</div>
+<!-- 小节 3: 验收标准 -->
+<div>
+<div class="flex items-center gap-1.5 text-xs font-bold text-on-surface-variant tracking-wider uppercase mb-1.5 font-code-sm">
+<span class="material-symbols-outlined text-[14px] text-[#16a34a]">fact_check</span>
+              验收标准 / CRITERIA
+            </div>
+<div class="space-y-2">
+<label class="flex items-center gap-2 p-2 rounded-lg bg-[#f0fdf4]/50 border border-[#16a34a]/20 cursor-pointer">
+<input checked="" class="rounded text-[#16a34a] focus:ring-[#16a34a] border-outline-variant w-3.5 h-3.5" disabled="" type="checkbox"/>
+<span class="text-xs text-on-surface font-medium">DOM 树高度抖动幅值 ≤ 1px (DevTools 录制)</span>
+</label>
+<label class="flex items-center gap-2 p-2 rounded-lg bg-[#f0fdf4]/50 border border-[#16a34a]/20 cursor-pointer">
+<input checked="" class="rounded text-[#16a34a] focus:ring-[#16a34a] border-outline-variant w-3.5 h-3.5" disabled="" type="checkbox"/>
+<span class="text-xs text-on-surface font-medium">pnpm typecheck 静态分析 0 错误</span>
+</label>
+<label class="flex items-center gap-2 p-2 rounded-lg bg-[#f0fdf4]/50 border border-[#16a34a]/20 cursor-pointer">
+<input checked="" class="rounded text-[#16a34a] focus:ring-[#16a34a] border-outline-variant w-3.5 h-3.5" disabled="" type="checkbox"/>
+<span class="text-xs text-on-surface font-medium">单测完整模拟流式 Token 突发注入无卡死</span>
+</label>
+</div>
+</div>
+</div>
+</div>
+<!-- 规格卡片底部工具栏 -->
+<div class="pt-3 border-t border-outline-variant/40 flex items-center justify-between text-xs mt-2">
+<button class="flex items-center gap-1 text-on-surface-variant hover:text-primary transition-colors py-1 px-2 rounded-md hover:bg-surface-container">
+<span class="material-symbols-outlined text-[14px]">edit_note</span>
+<span>✎ 编辑规格</span>
+</button>
+<span class="flex items-center gap-1 text-[#16a34a] font-semibold">
+<span class="material-symbols-outlined text-[14px]">check_circle</span>
+          规格已确认 ✓
+        </span>
+</div>
+</section>
+<!-- ----------------------------------------------------------------------- -->
+<!-- 列 2: 计划 Plan (约 430px 宽度，高亮主色强化卡片，执行中) -->
+<!-- ----------------------------------------------------------------------- -->
+<section class="w-[430px] shrink-0 bg-surface-container-lowest rounded-2xl border-2 border-primary/40 shadow-[0_8px_24px_-4px_rgba(0,88,188,0.12)] p-4 flex flex-col justify-between overflow-hidden relative ring-1 ring-primary/20">
+<!-- 计划卡片头部 -->
+<div>
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-primary-container pulse-halo"></span>
+<span class="text-[10px] font-bold tracking-wider text-primary uppercase font-code-sm">PHASE 02 · 当前活动</span>
+</div>
+<span class="text-code-sm font-code-sm px-2 py-0.5 rounded bg-primary-fixed text-primary font-bold">
+            进度: 2/3 (66%)
+          </span>
+</div>
+<div class="flex items-baseline justify-between border-b border-outline-variant/30 pb-3 mb-3">
+<div>
+<h2 class="text-headline-sm font-headline-sm font-bold text-on-surface">执行计划 PLAN</h2>
+<p class="text-xs text-secondary mt-0.5">已生成 3 步原子任务，当前执行中</p>
+</div>
+<span class="material-symbols-outlined text-primary text-[20px]">account_tree</span>
+</div>
+<!-- 任务步骤列表卡片群 -->
+<div class="space-y-3 max-h-[calc(100vh-230px)] overflow-y-auto pr-1 custom-scrollbar">
+<!-- 步骤 1 (已完成) -->
+<div class="rounded-xl border border-outline-variant/50 bg-surface-container-lowest p-3 transition-all hover:border-outline-variant">
+<div class="flex items-start justify-between gap-2">
+<div class="flex items-center gap-2">
+<div class="w-5 h-5 rounded-full bg-[#f0fdf4] text-[#16a34a] border border-[#16a34a]/30 flex items-center justify-center text-xs font-bold">
+                  ✓
+                </div>
+<h3 class="text-title-sm font-title-sm font-semibold text-on-surface">1. 锁定 textarea 高度测量时机</h3>
+</div>
+<span class="text-[11px] font-medium text-[#16a34a] bg-[#f0fdf4] px-1.5 py-0.5 rounded border border-[#16a34a]/20 shrink-0">✓ 已生成 Diff</span>
+</div>
+<div class="mt-2.5 pl-7 flex items-center justify-between">
+<div class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container-low text-code-sm font-code-sm text-on-surface-variant border border-outline-variant/40">
+<span class="material-symbols-outlined text-[13px] text-primary">description</span>
+                useAutoResizeTextarea.ts
+                <span class="text-[#16a34a] font-medium">+18</span>
+<span class="text-[#dc2626] font-medium">-4</span>
+</div>
+<span class="text-[11px] text-outline">已通过静态检查</span>
+</div>
+</div>
+<!-- 步骤 2 (当前高亮活跃，Agent 编译中) -->
+<div class="rounded-xl border-2 border-primary bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest p-3.5 shadow-sm relative overflow-hidden">
+<div class="flex items-start justify-between gap-2">
+<div class="flex items-center gap-2">
+<div class="w-5 h-5 rounded-full bg-primary-container text-white flex items-center justify-center text-xs font-bold shadow-xs">
+                  2
+                </div>
+<h3 class="text-title-sm font-title-sm font-bold text-on-surface">2. 注入 8px 阈值防抖截断器</h3>
+</div>
+<!-- 胶囊指示 -->
+<div class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-primary text-white shadow-xs">
+<span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                Agent 编译中
+              </div>
+</div>
+<!-- 涉及文件 -->
+<div class="mt-2 pl-7 flex items-center gap-2">
+<div class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container-lowest text-code-sm font-code-sm text-primary font-medium border border-primary/20 shadow-xs">
+<span class="material-symbols-outlined text-[13px]">code</span>
+                ChatInput.tsx
+                <span class="text-[#16a34a]">+24</span>
+<span class="text-[#dc2626]">-6 lines</span>
+</div>
+</div>
+<!-- 展开说明 -->
+<p class="mt-2 pl-7 text-body-sm text-on-surface-variant leading-relaxed">
+              通过 <code class="font-code-sm bg-surface-container px-1 py-0.5 rounded text-primary">Math.abs(delta) &gt; 8</code> 过滤瞬时高度抖动，同时使用 RAF 节流避免微任务递归触发表单失焦。
+            </p>
+<!-- 活跃状态行 -->
+<div class="mt-3 pl-7 pt-2.5 border-t border-primary/10 flex items-center gap-2 text-xs font-code-sm text-primary font-medium">
+<span class="material-symbols-outlined text-[15px] animate-spin">sync</span>
+<span>⟳ 正在向实现面板输出 AST 补丁并执行沙盒校验...</span>
+</div>
+</div>
+<!-- 步骤 3 (排队中) -->
+<div class="rounded-xl border border-outline-variant/40 bg-surface-container-low/40 p-3 opacity-80">
+<div class="flex items-start justify-between gap-2">
+<div class="flex items-center gap-2">
+<div class="w-5 h-5 rounded-full bg-surface-container text-secondary flex items-center justify-center text-xs font-bold border border-outline-variant/50">
+                  3
+                </div>
+<h3 class="text-title-sm font-title-sm font-medium text-secondary">3. 补充 ResizeObserver 竞态单测</h3>
+</div>
+<span class="text-[11px] text-outline bg-surface-container px-1.5 py-0.5 rounded font-mono">排队等待前序</span>
+</div>
+<div class="mt-2 pl-7">
+<div class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container-lowest text-code-sm font-code-sm text-secondary border border-outline-variant/40">
+<span class="material-symbols-outlined text-[13px]">pending</span>
+                ChatInput.test.ts 待生成
+              </div>
+</div>
+</div>
+</div>
+</div>
+<!-- 计划卡片底部操作条 -->
+<div class="pt-3 border-t border-outline-variant/40 flex items-center justify-between gap-2 mt-2">
+<button class="px-3 py-1.5 rounded-lg border border-outline-variant text-body-sm text-on-surface hover:bg-surface-container transition-all">
+          调整步骤
+        </button>
+<button class="flex-1 flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-title-sm text-title-sm font-semibold shadow-sm transition-all active:scale-[0.98]">
+<span>批准并应用全部变更</span>
+<span class="material-symbols-outlined text-[16px]">arrow_forward</span>
+</button>
+</div>
+</section>
+<!-- ----------------------------------------------------------------------- -->
+<!-- 列 3: 实现 Code (剩余弹性宽度，深色代码与沙盒终端) -->
+<!-- ----------------------------------------------------------------------- -->
+<section class="flex-1 min-w-[500px] bg-surface-container-lowest rounded-2xl border border-outline-variant/60 shadow-[0_4px_20px_-2px_rgba(15,23,42,0.04)] p-4 flex flex-col justify-between overflow-hidden">
+<!-- 顶部工具栏与 Tab 切换 -->
+<div class="flex items-center justify-between border-b border-outline-variant/40 pb-2.5 mb-2">
+<!-- Tab 组 -->
+<div class="flex items-center gap-1">
+<button class="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-surface-container text-primary font-title-sm text-title-sm font-semibold border border-primary/20">
+<span class="material-symbols-outlined text-[15px]">difference</span>
+<span>变更 2 (ChatInput.tsx +24 -6)</span>
+</button>
+<button class="flex items-center gap-1.5 px-3 py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-low font-body-sm text-body-sm transition-colors">
+<span class="w-1.5 h-1.5 rounded-full bg-[#16a34a]"></span>
+<span>实时终端</span>
+</button>
+<button class="px-2.5 py-1 rounded-lg text-secondary hover:text-on-surface hover:bg-surface-container-low font-body-sm text-body-sm transition-colors">
+            运行遥测
+          </button>
+<button class="px-2.5 py-1 rounded-lg text-secondary hover:text-on-surface hover:bg-surface-container-low font-body-sm text-body-sm transition-colors">
+            逐文件审阅
+          </button>
+</div>
+<!-- 右侧操作按钮组 -->
+<div class="flex items-center gap-2">
+<!-- Unified / Split 切换 -->
+<div class="flex items-center bg-surface-container-low rounded-lg p-0.5 border border-outline-variant/50 text-xs">
+<button class="px-2 py-0.5 rounded bg-surface-container-lowest font-medium text-on-surface shadow-xs">Unified</button>
+<button class="px-2 py-0.5 rounded text-secondary hover:text-on-surface">Split</button>
+</div>
+<!-- 接受全部变更 -->
+<button class="flex items-center gap-1 px-3 py-1 rounded-lg bg-[#16a34a] hover:bg-[#15803d] text-white font-title-sm text-title-sm font-semibold shadow-xs transition-all active:scale-[0.98]">
+<span class="material-symbols-outlined text-[15px]">done_all</span>
+<span>全部接受变更 (Accept)</span>
+</button>
+</div>
+</div>
+<!-- 主体代码与终端容器 (上下拆分) -->
+<div class="flex-1 flex flex-col gap-2 overflow-hidden">
+<!-- 上半区：深色代码 Diff 检视器 (背景 #0f1420) -->
+<div class="flex-1 min-h-[220px] bg-[#0f1420] rounded-xl border border-slate-800 shadow-inner flex flex-col overflow-hidden">
+<!-- Diff 标题与快捷操作 -->
+<div class="h-8 bg-[#161d2d] px-3 flex items-center justify-between border-b border-slate-800 text-xs text-slate-300 font-mono">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[14px] text-blue-400">code_blocks</span>
+<span class="text-slate-100 font-medium font-code-sm">src/components/composer/ChatInput.tsx</span>
+<span class="text-emerald-400 text-code-sm">+24</span>
+<span class="text-rose-400 text-code-sm">-6</span>
+<span class="text-slate-500 text-[11px]">| TypeScript · Unified</span>
+</div>
+<div class="flex items-center gap-2 text-slate-400">
+<button class="hover:text-white flex items-center gap-1 text-[11px]" title="复制补丁">
+<span class="material-symbols-outlined text-[13px]">content_copy</span>
+<span>Copy</span>
+</button>
+<button class="hover:text-white" title="打开在独立编辑器">
+<span class="material-symbols-outlined text-[13px]">open_in_new</span>
+</button>
+</div>
+</div>
+<!-- Diff 代码高亮行 -->
+<div class="flex-1 p-2.5 overflow-y-auto font-code-sm text-xs text-slate-200 leading-relaxed font-mono custom-scrollbar">
+<div class="text-slate-500 py-0.5 select-none">// @@ -112,8 +112,14 @@ export function ChatInput({ onSendMessage }: ChatInputProps)</div>
+<!-- 删除行 -->
+<div class="bg-red-950/40 text-red-300 border-l-2 border-red-500 px-2 py-0.5 flex">
+<span class="w-6 text-red-500/70 select-none">-</span>
+<code>const [height, setHeight] = useState(48);</code>
+</div>
+<div class="bg-red-950/40 text-red-300 border-l-2 border-red-500 px-2 py-0.5 flex">
+<span class="w-6 text-red-500/70 select-none">-</span>
+<code>useResizeObserver(textareaRef, (entry) =&gt; setHeight(entry.contentRect.height));</code>
+</div>
+<!-- 新增行 -->
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>const [stableHeight, setStableHeight] = useState(48);</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>const lastMeasuredRef = useRef(48);</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code class="text-emerald-400/80">// 8px 滞后阈值截断微小抖动</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>const handleResize = useCallback((newH: number) =&gt; {</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>  if (Math.abs(newH - lastMeasuredRef.current) &gt;= 8) {</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>    lastMeasuredRef.current = newH;</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>    requestAnimationFrame(() =&gt; setStableHeight(newH));</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>  }</code>
+</div>
+<div class="bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500 px-2 py-0.5 flex">
+<span class="w-6 text-emerald-500/70 select-none">+</span>
+<code>}, []);</code>
+</div>
+<!-- 上下文上下文行 -->
+<div class="text-slate-400 px-2 py-0.5 flex">
+<span class="w-6 text-slate-600 select-none"> </span>
+<code>useResizeObserver(textareaRef, (entry) =&gt; handleResize(entry.contentRect.height));</code>
+</div>
+</div>
+</div>
+<!-- 下半区：深色沙盒测试终端 (背景 #0f1420) -->
+<div class="h-44 bg-[#0f1420] rounded-xl border border-slate-800 flex flex-col overflow-hidden">
+<!-- 终端标题栏 -->
+<div class="h-7 bg-[#161d2d] px-3 flex items-center justify-between border-b border-slate-800 text-[11px] text-slate-300 font-mono">
+<div class="flex items-center gap-2">
+<span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+<span class="text-slate-100 font-medium">沙盒模拟终端 / Sandbox Host (Node.js v20.11)</span>
+<span class="text-slate-500">| PID: 90241</span>
+</div>
+<div class="flex items-center gap-3 text-slate-400 text-[10px]">
+<span class="text-emerald-400">● 端口 3000 就绪</span>
+<span>内存: 184MB</span>
+</div>
+</div>
+<!-- 终端控制台流 -->
+<div class="flex-1 p-2.5 font-mono text-xs text-slate-300 overflow-y-auto leading-normal terminal-scrollbar space-y-1">
+<div class="flex items-center gap-1.5 text-slate-400">
+<span class="text-emerald-400 font-bold">➜</span>
+<span class="text-blue-400">~/repo/ourcode-desktop</span>
+<span class="text-slate-200">pnpm test:unit --filter composer</span>
+</div>
+<div class="text-slate-400 text-[11px] pl-4">
+              &gt; @ourcode/composer@0.1.0 test:unit /sandbox/workspaces/app
+            </div>
+<div class="flex items-center gap-2 text-emerald-400 text-xs pl-4 pt-1 font-semibold">
+<span class="bg-emerald-500/20 text-emerald-300 px-1 py-0.2 rounded text-[10px]">PASS</span>
+<span>src/components/composer/ChatInput.test.ts (2.1s)</span>
+</div>
+<div class="flex items-center gap-2 text-emerald-400 text-xs pl-4 font-semibold">
+<span class="bg-emerald-500/20 text-emerald-300 px-1 py-0.2 rounded text-[10px]">PASS</span>
+<span>src/hooks/useAutoResizeTextarea.test.ts (1.1s)</span>
+</div>
+<!-- 状态指标高亮条 -->
+<div class="mt-2 p-1.5 rounded bg-emerald-950/30 border border-emerald-500/30 text-emerald-300 text-[11px] flex items-center justify-between">
+<div class="flex items-center gap-1.5 font-medium">
+<span class="material-symbols-outlined text-[14px]">check_circle</span>
+<span>✓ 0 errors in 3.2s · PASS 4 tests · Typecheck clean · Coverage: 94.2%</span>
+</div>
+<span class="text-emerald-400 font-mono font-bold">ALL PASS</span>
+</div>
+<!-- Agent 提示语 -->
+<div class="text-blue-300 text-xs flex items-center gap-1.5 pt-1">
+<span class="text-blue-400 font-bold">✦ Agent:</span>
+<span>patch verified and AST clean. Ready to auto-apply Step 2.</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 实现面板底部操作 -->
+<div class="pt-2 border-t border-outline-variant/30 flex items-center justify-between text-xs mt-2">
+<div class="flex items-center gap-2 text-secondary">
+<span class="material-symbols-outlined text-[15px] text-[#16a34a]">security</span>
+<span>代码变更高保真隔离执行中 · 沙盒无持久副作用</span>
+</div>
+<div class="flex items-center gap-2">
+<button class="px-2.5 py-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container">丢弃当前补丁</button>
+<button class="px-3 py-1 rounded bg-primary text-white font-medium hover:bg-primary/90 flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]">commit</span>
+<span>暂存当前变更</span>
+</button>
+</div>
+</div>
+</section>
+</main>
+<!-- ========================================================================= -->
+<!-- 3. 底部轻量状态栏 (28px 高度，系统级环境与遥测提示) -->
+<!-- ========================================================================= -->
+<footer class="h-7 w-full bg-surface-container-lowest/90 backdrop-blur-sm border-t border-outline-variant/50 px-space-lg flex items-center justify-between text-xs text-secondary font-mono shrink-0 select-none z-30">
+<!-- 左侧状态 -->
+<div class="flex items-center gap-space-md">
+<span class="flex items-center gap-1 font-medium text-on-surface">
+<span class="material-symbols-outlined text-[13px] text-primary">alt_route</span>
+        ⎇ fix/composer-jitter
+      </span>
+<span class="text-outline-variant">|</span>
+<span>阶段 2/3 (执行计划中)</span>
+<span class="text-outline-variant">|</span>
+<span class="text-primary font-medium">3 个文件已暂存变更</span>
+</div>
+<!-- 右侧状态 -->
+<div class="flex items-center gap-space-lg">
+<div class="flex items-center gap-1.5 text-on-surface">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-container pulse-halo"></span>
+<span class="font-medium">● Agent 执行中</span>
+</div>
+<span class="text-outline-variant">·</span>
+<span>6.2k tokens</span>
+<span class="text-outline-variant">·</span>
+<span>延迟 240ms</span>
+<span class="text-outline-variant">·</span>
+<span class="text-[#16a34a] font-medium flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]">check_box</span>
+        严格沙盒隔离
+      </span>
+</div>
+</footer>
+</body></html>

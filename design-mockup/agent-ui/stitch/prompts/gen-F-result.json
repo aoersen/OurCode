@@ -1,0 +1,386 @@
+{
+  "projectId": "7782445583613816394",
+  "sessionId": "18122681750452653939",
+  "outputComponents": [
+    {
+      "design": {
+        "screens": [
+          {
+            "screenshot": {
+              "name": "projects/7782445583613816394/files/0127013744154d41a9b95b63f5715626",
+              "downloadUrl": "https://stitch.googleapis.com/v1/projects/7782445583613816394/files/0127013744154d41a9b95b63f5715626:download"
+            },
+            "htmlCode": {
+              "name": "projects/7782445583613816394/files/a03fe26ba7494516ab2047da19e889b8",
+              "downloadUrl": "https://stitch.googleapis.com/v1/projects/7782445583613816394/files/a03fe26ba7494516ab2047da19e889b8:download",
+              "mimeType": "text/html"
+            },
+            "id": "e9f957d1faa744a88e4c411f3510e09e",
+            "generatedBy": "figaro_agent",
+            "width": "2560",
+            "height": "2048",
+            "title": "OurCode - 规格三段式 (方案 F)",
+            "prompt": "桌面端 AI 编码智能体应用 OurCode 的主界面（1440×900 桌面视口），方案 F「规格三段式」：参考 GitHub Copilot Workspace —— 任务经过「规格 → 计划 → 实现」三个阶段，先对齐再动手；界面以三列阶段流呈现。\n浅色玻璃拟态风格：应用背景 #f6f7fb，白色圆角卡片（圆角 16px、面板间 8px 间隙、hairline 描边 rgba(15,23,42,0.08)、极浅投影），主色 #0058bc 用于主按钮、当前阶段、选中态；文字 #0f172a / #334155 / #64748b；状态色 成功 #16a34a、警告 #d97706、错误 #dc2626；深色块 #0f1420 仅用于 diff 与终端；字体 Plus Jakarta Sans，代码 JetBrains Mono；正文 13-14px；面板标题 12px 大写字母加宽字距；90% 中性色。全站所有 UI 文案为简体中文。\n\n布局结构细节要求：\n1. 顶部标题栏（48px，bg-white/80 backdrop-blur-md，border-b border-slate-200/80 px-4 flex items-center justify-between）：\n   - 左侧：OurCode 蓝色品牌 logo 图标 + 加粗字标「OurCode」，竖线分隔符，任务名「修复 Composer 流式抖动」，任务编号 chip「FIX-8842」；\n   - 中间：横向三阶段步骤指示条「① 规格 Spec (已确认 ✓)」→「② 计划 Plan (执行中)」→「③ 实现 Code (待完成)」，其中「② 计划 Plan」为高亮主色蓝色胶囊并带呼吸微光指示，「① 规格」带绿色对勾圆标；\n   - 右侧：模型选择器「Claude 3.7 Sonnet」、Git 分支 chip「fix/composer-jitter」、分享按钮「共享」、通知图标、设置图标、用户头像「YG (Tech Lead)」。\n\n2. 主体三列阶段布局（整体高度占据主体，水平间距 8px，padding 8px）：\n   - 左列「规格 Spec」（约 310px 宽度，白色卡片 rounded-2xl border border-slate-200/80 shadow-sm p-4 flex flex-col justify-between）：\n     * 顶部卡片 Header：小标签「PHASE 01 · SPECIFICATION」，主标题「规格 SPEC」，右上角绿色药丸徽标「✓ 已签署锁定」；\n     * 小节 1「需求目标 / OBJECTIVE」：卡片包裹「解决底部输入框在流式输出与大量 token 推送时持续抖动 10px 的视觉重排缺陷，平滑锁定高度并避免 ResizeObserver 触发父层布局抖动。」；\n     * 小节 2「技术约束 / CONSTRAINTS」列表项（带警告/防护图标）：\n       - 「禁止改动外部 Flex 布局主轴与全局 Layout 容器」\n       - 「保持跨平台 WebKit 与 Gecko 渲染引擎平滑兼容」\n       - 「必须补充单测防止 ResizeObserver 异步宏任务竞态」\n     * 小节 3「验收标准 / ACCEPTANCE CRITERIA」复选框勾选项：\n       - [✓]「DOM 树高度抖动幅值 ≤ 1px (DevTools 录制)」\n       - [✓]「pnpm typecheck 静态分析 0 错误」\n       - [✓]「单测完整模拟流式 Token 突发注入无卡死」\n     * 底部工具栏：左侧幽灵按钮「✎ 编辑规格」，右侧状态「规格已确认 ✓」。\n\n   - 中列「计划 Plan」（约 430px 宽度，白色卡片 rounded-2xl border-2 border-primary/30 shadow-md p-4 flex flex-col justify-between relative ring-1 ring-primary/20）：\n     * 顶部卡片 Header：小标签「PHASE 02 · 当前活动 ●」，主标题「执行计划 PLAN」，进度指示「进度: 2/3 (66%)」，副标题「已生成 3 步原子任务，当前执行中」；\n     * 步骤列表卡片群：\n       - 步骤 1（已完成）：「1. 锁定 textarea 高度测量时机」，涉及文件 chip「useAutoResizeTextarea.ts +18 -4 lines」，状态徽标「✓ 已生成 Diff」；\n       - 步骤 2（当前高亮活跃，蓝色边框 + 浅蓝渐变背景）：顶部「Agent 编译中」蓝色指示胶囊，标题「2. 注入 8px 阈值防抖截断器」，涉及文件 chip「ChatInput.tsx +24 -6 lines」，展开说明「通过 Math.abs(delta) > 8 过滤瞬时高度抖动，同时使用 RAF 节流避免微任务递归触发表单失焦。」，下方状态行「⟳ 正在向实现面板输出 AST 补丁并执行沙盒校验...」；\n       - 步骤 3（排队中）：「3. 补充 ResizeObserver 竞态单测」，文件 chip「ChatInput.test.ts 待生成」，状态徽标「排队等待前序」；\n     * 底部操作条：幽灵按钮「调整步骤」，主要操作按钮「批准并应用全部变更」（蓝色高亮主按钮，带右箭头图标）。\n\n   - 右列「实现 Code」（剩余弹性宽度，白色卡片 rounded-2xl border border-slate-200/80 shadow-sm p-4 flex flex-col justify-between overflow-hidden）：\n     * 顶部工具栏与 Tab 切换：\n       - Tab 组：「变更 2 (ChatInput.tsx +24 -6)」「实时终端 ●」「运行遥测」「逐文件审阅」；\n       - 右侧操作按钮组：「全部接受变更 (Accept)」绿色主按钮（#16a34a）+「Unified / Split」切换按钮；\n     * 主体上半区：深色代码 Diff 检视器（背景 #0f1420，圆角 rounded-xl p-3 font-mono text-xs text-slate-200 leading-relaxed border border-slate-800 shadow-inner）：\n       - 标题栏：「src/components/composer/ChatInput.tsx +24 -6 | TypeScript · Unified」；\n       - Diff 代码高亮片段（红底删除行、绿底新增行）：\n         ```typescript\n         // @@ -112,8 +112,14 @@ export function ChatInput({ onSendMessage }: ChatInputProps)\n         - const [height, setHeight] = useState(48);\n         - useResizeObserver(textareaRef, (entry) => setHeight(entry.contentRect.height));\n         + const [stableHeight, setStableHeight] = useState(48);\n         + const lastMeasuredRef = useRef(48);\n         + // 8px 滞后阈值截断微小抖动\n         + const handleResize = useCallback((newH: number) => {\n         +   if (Math.abs(newH - lastMeasuredRef.current) >= 8) {\n         +     lastMeasuredRef.current = newH;\n         +     requestAnimationFrame(() => setStableHeight(newH));\n         +   }\n         + }, []);\n         ```\n     * 主体下半区：深色沙盒测试终端（背景 #0f1420，圆角 rounded-xl p-3 font-mono text-xs text-slate-300 border border-slate-800 mt-2）：\n       - 终端头部：「沙盒模拟终端 / Sandbox Host (Node.js v20.11) | PID: 90241」；\n       - 执行命令输出：「~/repo/ourcode-desktop pnpm test:unit --filter composer」；\n       - 测试套件结果：「PASS src/components/composer/ChatInput.test.ts (2.1s)」「PASS src/hooks/useAutoResizeTextarea.test.ts (1.1s)」；\n       - 状态指标高亮条：「✓ 0 errors in 3.2s · PASS 4 tests · Typecheck clean · Coverage: 94.2%」；\n       - Agent 提示：「✦ Agent: patch verified and AST clean. Ready to auto-apply Step 2.」；\n\n3. 底部轻量状态栏（28px，bg-white/90 border-t border-slate-200/80 px-4 flex items-center justify-between text-xs text-slate-500 font-mono）：\n   - 左侧：「⎇ fix/composer-jitter · 阶段 2/3 (执行计划中) · 3 个文件已暂存变更」；\n   - 右侧：「● Agent 执行中 · 6.2k tokens · 延迟 240ms · 严格沙盒隔离」。",
+            "name": "projects/7782445583613816394/screens/e9f957d1faa744a88e4c411f3510e09e",
+            "theme": {
+              "colorMode": "LIGHT",
+              "font": "PLUS_JAKARTA_SANS",
+              "roundness": "ROUND_EIGHT",
+              "customColor": "#0058bc",
+              "headlineFont": "PLUS_JAKARTA_SANS",
+              "bodyFont": "PLUS_JAKARTA_SANS",
+              "labelFont": "JETBRAINS_MONO",
+              "namedColors": {
+                "on_primary_container": "#c3d4ff",
+                "surface_bright": "#f8f9ff",
+                "secondary_container": "#dbdff0",
+                "secondary_fixed": "#dee2f3",
+                "on_primary_fixed_variant": "#004494",
+                "primary_container": "#0058bc",
+                "inverse_on_surface": "#eaf1ff",
+                "secondary_fixed_dim": "#c2c6d7",
+                "surface_container_lowest": "#ffffff",
+                "on_background": "#0b1c30",
+                "outline": "#727784",
+                "surface_container_low": "#eff4ff",
+                "surface_dim": "#cbdbf5",
+                "on_primary_fixed": "#001a41",
+                "on_error_container": "#93000a",
+                "on_tertiary": "#ffffff",
+                "error_container": "#ffdad6",
+                "tertiary": "#3c4550",
+                "surface_tint": "#095bbf",
+                "primary_fixed_dim": "#adc6ff",
+                "surface_variant": "#d3e4fe",
+                "surface_container_high": "#dce9ff",
+                "tertiary_fixed_dim": "#bfc7d5",
+                "secondary": "#595e6d",
+                "outline_variant": "#c2c6d5",
+                "on_secondary_fixed_variant": "#424654",
+                "on_surface_variant": "#424753",
+                "error": "#ba1a1a",
+                "on_secondary": "#ffffff",
+                "surface": "#f8f9ff",
+                "inverse_surface": "#213145",
+                "tertiary_fixed": "#dbe3f2",
+                "on_tertiary_fixed_variant": "#3f4753",
+                "on_secondary_container": "#5e6271",
+                "surface_container_highest": "#d3e4fe",
+                "on_primary": "#ffffff",
+                "on_error": "#ffffff",
+                "surface_container": "#e5eeff",
+                "on_tertiary_container": "#ccd5e3",
+                "inverse_primary": "#adc6ff",
+                "primary": "#00418f",
+                "on_secondary_fixed": "#161b28",
+                "on_tertiary_fixed": "#141c27",
+                "tertiary_container": "#545c68",
+                "primary_fixed": "#d8e2ff",
+                "background": "#f8f9ff",
+                "on_surface": "#0b1c30"
+              },
+              "colorVariant": "FIDELITY",
+              "overridePrimaryColor": "#0058bc",
+              "overrideSecondaryColor": "#0f1420",
+              "overrideTertiaryColor": "#e8f0ff",
+              "overrideNeutralColor": "#64748b",
+              "spacingScale": 2,
+              "typography": {
+                "body-sm": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "12px",
+                  "fontWeight": "400",
+                  "lineHeight": "18px",
+                  "letterSpacing": "0.01em"
+                },
+                "body-md": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "13px",
+                  "fontWeight": "400",
+                  "lineHeight": "20px",
+                  "letterSpacing": "0em"
+                },
+                "label-md": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "12px",
+                  "fontWeight": "500",
+                  "lineHeight": "16px",
+                  "letterSpacing": "0.01em"
+                },
+                "code-md": {
+                  "fontFamily": "JetBrains Mono",
+                  "fontSize": "13px",
+                  "fontWeight": "400",
+                  "lineHeight": "20px",
+                  "letterSpacing": "-0.005em"
+                },
+                "code-sm": {
+                  "fontFamily": "JetBrains Mono",
+                  "fontSize": "11px",
+                  "fontWeight": "500",
+                  "lineHeight": "16px",
+                  "letterSpacing": "0em"
+                },
+                "headline-sm": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "18px",
+                  "fontWeight": "600",
+                  "lineHeight": "26px",
+                  "letterSpacing": "-0.01em"
+                },
+                "label-sm": {
+                  "fontFamily": "JetBrains Mono",
+                  "fontSize": "11px",
+                  "fontWeight": "500",
+                  "lineHeight": "14px",
+                  "letterSpacing": "0.02em"
+                },
+                "body-lg": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "15px",
+                  "fontWeight": "400",
+                  "lineHeight": "24px",
+                  "letterSpacing": "0em"
+                },
+                "headline-lg": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "28px",
+                  "fontWeight": "700",
+                  "lineHeight": "36px",
+                  "letterSpacing": "-0.02em"
+                },
+                "headline-md": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "22px",
+                  "fontWeight": "600",
+                  "lineHeight": "30px",
+                  "letterSpacing": "-0.015em"
+                },
+                "title-sm": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "13px",
+                  "fontWeight": "600",
+                  "lineHeight": "18px",
+                  "letterSpacing": "0em"
+                },
+                "title-md": {
+                  "fontFamily": "Plus Jakarta Sans",
+                  "fontSize": "15px",
+                  "fontWeight": "600",
+                  "lineHeight": "22px",
+                  "letterSpacing": "-0.005em"
+                }
+              },
+              "spacing": {
+                "gutter-compact": "0.375rem",
+                "space-xs": "0.25rem",
+                "margin": "1rem",
+                "space-sm": "0.5rem",
+                "gutter": "0.5rem",
+                "space-md": "0.75rem",
+                "margin-mobile": "0.5rem",
+                "space-xl": "1.5rem",
+                "space-lg": "1rem"
+              },
+              "headlineFontFamily": "Plus Jakarta Sans",
+              "bodyFontFamily": "Plus Jakarta Sans",
+              "labelFontFamily": "JetBrains Mono"
+            },
+            "deviceType": "DESKTOP",
+            "screenType": "DESIGN",
+            "screenMetadata": {
+              "agentType": "PRO_AGENT",
+              "status": "COMPLETE"
+            },
+            "designSystem": {
+              "name": "assets/8172acbddc504aae962287d4c1a9054f",
+              "designSystem": {
+                "displayName": "Technical Glassmorphism Cockpit",
+                "styleGuidelines": "## Brand & Style\n\n### Brand Personality & Philosophy\nThis design system defines an intelligent, dependable, and highly focused cockpit interface for an AI coding agent. It balances developer-grade ergonomic efficiency with a luminous, modern editorial tech feel. The interface feels weightless, precise, and non-distracting—prioritizing context comprehension, low visual fatigue during prolonged sessions, and crystalline hierarchical order.\n\n### Target Audience\nSoftware engineers, tech leads, system architects, and technical operators orchestrating semi-autonomous AI coding agents, refactoring pipelines, terminal outputs, and complex codebase graphs.\n\n### Aesthetic Foundation: Technical Glassmorphism & High-Density Minimal\n- **Soft Light Canvas Base:** The overall application canvas rests on a soft atmospheric off-white, preventing the stark eye strain of pure #ffffff while keeping the workspace bright and deliberate.\n- **Floating Glass Surfaces:** UI panels and tool docks float above the canvas with pure white fills, subtle backdrop filtration, fine 1px hairline borders (`rgba(15, 23, 42, 0.08)`), and soft ambient drop shadows.\n- **Deep Obsidian Anchors:** Code viewports, terminal emulators, and active execution logs use a singular, stark dark theme (`#0f1420`) as high-contrast windows into raw machine execution within an otherwise light, airy environment.\n- **Density & Precision:** Tight, calculated micro-spacing, compact heights, and high-visibility status indicators emulate mission control tooling without visual clutter.\n\n## Layout & Spacing\n\n### Cockpit Layout Model\nThe cockpit employs a strict modular multi-pane docking architecture:\n- **Default Multi-Panel Layout:**\n  - Left Rail: Collapsible activity and file hierarchy panel (240px - 280px).\n  - Center Cockpit: Agent conversation stream, step breakdown, and instruction prompt (Flex-grow 1, min-width 480px).\n  - Right Dock: Split panel comprising code preview / diff review on the top half and active interactive terminal (`#0f1420`) on the bottom half.\n- **Unified 8px Grid (`gutter: 0.5rem`):**\n  - All floating panels sit exactly 8px apart from adjacent tool panels and outer view containers, establishing the modular multi-card floating desk experience.\n- **Internal Padding:**\n  - Panel internal padding defaults to `space-lg` (16px) for spacious views, dropping to `space-md` (12px) in dense data trees and breadcrumb headers.\n\n## Elevation & Depth\n\nVisual hierarchy is constructed via subtle layered glass planes, crisp hairlines, and ambient drop shadows rather than heavy skeuomorphism or harsh solid borders.\n\n### Surface Tiers & Glass Properties\n- **Level 0 (Canvas Base):**\n  - Solid `#f6f7fb`, backdrop filter: none.\n- **Level 1 (Default Floating Panels & Modular Cards):**\n  - Background: `rgba(255, 255, 255, 0.94)`\n  - Backdrop Blur: `blur(12px)`\n  - Border: 1px solid `rgba(15, 23, 42, 0.08)`\n  - Shadow: `0 4px 20px -2px rgba(15, 23, 42, 0.04), 0 1px 3px 0 rgba(15, 23, 42, 0.02)`\n- **Level 2 (Hovered Cards & Active Docks):**\n  - Background: `#ffffff`\n  - Border: 1px solid `rgba(15, 23, 42, 0.12)`\n  - Shadow: `0 8px 24px -4px rgba(15, 23, 42, 0.07), 0 2px 6px -1px rgba(15, 23, 42, 0.03)`\n- **Level 3 (Dropdowns, Command Palette & Modal Dialogues):**\n  - Background: `rgba(255, 255, 255, 0.98)`\n  - Backdrop Blur: `blur(16px)`\n  - Border: 1px solid `rgba(15, 23, 42, 0.12)`\n  - Shadow: `0 16px 36px -8px rgba(15, 23, 42, 0.12), 0 4px 12px -2px rgba(15, 23, 42, 0.05)`\n- **Level Terminal (The Obsidian Portal):**\n  - Background: `#0f1420`\n  - Border: 1px solid `rgba(255, 255, 255, 0.1)`\n  - Shadow: `inset 0 1px 1px 0 rgba(255, 255, 255, 0.05), 0 4px 16px -2px rgba(15, 20, 32, 0.25)`\n\n## Components\n\n### 1. Primary & Secondary Buttons\n- **Primary Button:** Background `#0058bc`, text `#ffffff`, border radius 8px, height 36px (dense: 32px), horizontal padding 14px. Hover: `#00479a`. Active: `#003777`. Focus outline: 2px solid `rgba(0, 88, 188, 0.3)`.\n- **Secondary / Ghost Button:** Background `rgba(15, 23, 42, 0.04)`, text `#0f172a`, border 1px solid `rgba(15, 23, 42, 0.08)`. Hover: background `rgba(15, 23, 42, 0.08)`.\n\n### 2. Message Bubbles (AI & User Stream)\n- **User Prompt Bubble:** Background `#e8f0ff`, text `#0f172a`, border 1px solid `rgba(0, 88, 188, 0.12)`, radius 12px, aligned with clear right-indented margin. Text size 13px (`body-md`).\n- **AI Agent Response Box:** Transparent/pure white surface, flush left alignment, unencumbered by strong bubbles. Progresses smoothly using micro-steps, tool call tags, and syntax-highlighted blocks.\n\n### 3. Floating Modular Cards\n- Solid white `#ffffff` or `rgba(255, 255, 255, 0.94)` background, rounded 16px, hairline border `rgba(15, 23, 42, 0.08)`, 8px gap separation from neighboring modules. Header contains 13px bold title, action icons (minimize, split, refresh), and subtle divider line.\n\n### 4. Code Blocks & Terminal Console\n- Container background `#0f1420`, text `#e2e8f0`, font `JetBrains Mono` (13px, line-height 20px).\n- Embedded status header with branch name chip, copy code action, and file path display (`code-sm`).\n- Terminal command prompt prefix `#16a34a` (green `➜`) followed by `#0058bc` active path.\n\n### 5. Chips, Badges & Status Tags\n- Height 22px, font size 11px (`label-sm`).\n- Success (`#16a34a` text, `#f0fdf4` background, border `rgba(22, 163, 74, 0.2)`).\n- Warning (`#d97706` text, `#fffbeb` background, border `rgba(217, 119, 6, 0.2)`).\n- Error (`#dc2626` text, `#fef2f2` background, border `rgba(220, 38, 38, 0.2)`).\n- Agent Running / Thinking (`#0058bc` text, `#eff6ff` background, animated 2px pulsing dot).\n\n### 6. Input Fields & Prompt Composer\n- Background `#ffffff`, border 1px solid `rgba(15, 23, 42, 0.12)`, radius 10px, padding 10px 14px. Focus state: border `#0058bc`, ring `0 0 0 3px rgba(0, 88, 188, 0.12)`.\n- Multi-line agent composer docks at cockpit bottom with action accessory bar (attach context `@file`, model selector dropdown, execute button).\n\n### 7. Form Controls (Checkbox, Radio, Switch)\n- **Checkbox & Radio:** 16px square/circle, border 1.5px solid `rgba(15, 23, 42, 0.2)`. Checked state fills `#0058bc` with crisp white checkmark/dot.\n- **Switch:** 36px × 20px track, background `rgba(15, 23, 42, 0.12)` when off, `#0058bc` when active; thumb 16px white circle with ambient drop shadow.",
+                "theme": {
+                  "colorMode": "LIGHT",
+                  "font": "PLUS_JAKARTA_SANS",
+                  "roundness": "ROUND_EIGHT",
+                  "customColor": "#0058bc",
+                  "headlineFont": "PLUS_JAKARTA_SANS",
+                  "bodyFont": "PLUS_JAKARTA_SANS",
+                  "labelFont": "JETBRAINS_MONO",
+                  "namedColors": {
+                    "on_surface_variant": "#424753",
+                    "secondary_fixed": "#dee2f3",
+                    "surface_dim": "#cbdbf5",
+                    "on_secondary_fixed_variant": "#424654",
+                    "primary": "#00418f",
+                    "primary_container": "#0058bc",
+                    "tertiary": "#3c4550",
+                    "primary_fixed": "#d8e2ff",
+                    "error_container": "#ffdad6",
+                    "surface": "#f8f9ff",
+                    "surface_container_lowest": "#ffffff",
+                    "surface_container_high": "#dce9ff",
+                    "surface_container_low": "#eff4ff",
+                    "tertiary_container": "#545c68",
+                    "on_secondary": "#ffffff",
+                    "on_tertiary": "#ffffff",
+                    "on_primary_fixed_variant": "#004494",
+                    "on_secondary_fixed": "#161b28",
+                    "surface_variant": "#d3e4fe",
+                    "surface_bright": "#f8f9ff",
+                    "outline_variant": "#c2c6d5",
+                    "primary_fixed_dim": "#adc6ff",
+                    "on_secondary_container": "#5e6271",
+                    "inverse_surface": "#213145",
+                    "inverse_on_surface": "#eaf1ff",
+                    "background": "#f8f9ff",
+                    "surface_tint": "#095bbf",
+                    "surface_container": "#e5eeff",
+                    "on_surface": "#0b1c30",
+                    "on_primary_container": "#c3d4ff",
+                    "secondary": "#595e6d",
+                    "tertiary_fixed": "#dbe3f2",
+                    "inverse_primary": "#adc6ff",
+                    "on_primary_fixed": "#001a41",
+                    "on_error_container": "#93000a",
+                    "secondary_container": "#dbdff0",
+                    "error": "#ba1a1a",
+                    "on_error": "#ffffff",
+                    "on_primary": "#ffffff",
+                    "on_tertiary_container": "#ccd5e3",
+                    "outline": "#727784",
+                    "secondary_fixed_dim": "#c2c6d7",
+                    "on_tertiary_fixed": "#141c27",
+                    "surface_container_highest": "#d3e4fe",
+                    "on_background": "#0b1c30",
+                    "tertiary_fixed_dim": "#bfc7d5",
+                    "on_tertiary_fixed_variant": "#3f4753"
+                  },
+                  "designMd": "---\nname: Technical Glassmorphism Cockpit\ncolors:\n  surface: '#f8f9ff'\n  surface-dim: '#cbdbf5'\n  surface-bright: '#f8f9ff'\n  surface-container-lowest: '#ffffff'\n  surface-container-low: '#eff4ff'\n  surface-container: '#e5eeff'\n  surface-container-high: '#dce9ff'\n  surface-container-highest: '#d3e4fe'\n  on-surface: '#0b1c30'\n  on-surface-variant: '#424753'\n  inverse-surface: '#213145'\n  inverse-on-surface: '#eaf1ff'\n  outline: '#727784'\n  outline-variant: '#c2c6d5'\n  surface-tint: '#095bbf'\n  primary: '#00418f'\n  on-primary: '#ffffff'\n  primary-container: '#0058bc'\n  on-primary-container: '#c3d4ff'\n  inverse-primary: '#adc6ff'\n  secondary: '#595e6d'\n  on-secondary: '#ffffff'\n  secondary-container: '#dbdff0'\n  on-secondary-container: '#5e6271'\n  tertiary: '#3c4550'\n  on-tertiary: '#ffffff'\n  tertiary-container: '#545c68'\n  on-tertiary-container: '#ccd5e3'\n  error: '#ba1a1a'\n  on-error: '#ffffff'\n  error-container: '#ffdad6'\n  on-error-container: '#93000a'\n  primary-fixed: '#d8e2ff'\n  primary-fixed-dim: '#adc6ff'\n  on-primary-fixed: '#001a41'\n  on-primary-fixed-variant: '#004494'\n  secondary-fixed: '#dee2f3'\n  secondary-fixed-dim: '#c2c6d7'\n  on-secondary-fixed: '#161b28'\n  on-secondary-fixed-variant: '#424654'\n  tertiary-fixed: '#dbe3f2'\n  tertiary-fixed-dim: '#bfc7d5'\n  on-tertiary-fixed: '#141c27'\n  on-tertiary-fixed-variant: '#3f4753'\n  background: '#f8f9ff'\n  on-background: '#0b1c30'\n  surface-variant: '#d3e4fe'\ntypography:\n  headline-lg:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 28px\n    fontWeight: '700'\n    lineHeight: 36px\n    letterSpacing: -0.02em\n  headline-md:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 22px\n    fontWeight: '600'\n    lineHeight: 30px\n    letterSpacing: -0.015em\n  headline-sm:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 18px\n    fontWeight: '600'\n    lineHeight: 26px\n    letterSpacing: -0.01em\n  title-md:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 15px\n    fontWeight: '600'\n    lineHeight: 22px\n    letterSpacing: -0.005em\n  title-sm:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 13px\n    fontWeight: '600'\n    lineHeight: 18px\n    letterSpacing: 0em\n  body-lg:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 15px\n    fontWeight: '400'\n    lineHeight: 24px\n    letterSpacing: 0em\n  body-md:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 13px\n    fontWeight: '400'\n    lineHeight: 20px\n    letterSpacing: 0em\n  body-sm:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 12px\n    fontWeight: '400'\n    lineHeight: 18px\n    letterSpacing: 0.01em\n  code-md:\n    fontFamily: JetBrains Mono\n    fontSize: 13px\n    fontWeight: '400'\n    lineHeight: 20px\n    letterSpacing: -0.005em\n  code-sm:\n    fontFamily: JetBrains Mono\n    fontSize: 11px\n    fontWeight: '500'\n    lineHeight: 16px\n    letterSpacing: 0em\n  label-md:\n    fontFamily: Plus Jakarta Sans\n    fontSize: 12px\n    fontWeight: '500'\n    lineHeight: 16px\n    letterSpacing: 0.01em\n  label-sm:\n    fontFamily: JetBrains Mono\n    fontSize: 11px\n    fontWeight: '500'\n    lineHeight: 14px\n    letterSpacing: 0.02em\nrounded:\n  sm: 0.25rem\n  DEFAULT: 0.5rem\n  md: 0.75rem\n  lg: 1rem\n  xl: 1.5rem\n  full: 9999px\nspacing:\n  gutter: 0.5rem\n  gutter-compact: 0.375rem\n  margin: 1rem\n  margin-mobile: 0.5rem\n  space-xs: 0.25rem\n  space-sm: 0.5rem\n  space-md: 0.75rem\n  space-lg: 1rem\n  space-xl: 1.5rem\n---\n\n## Brand & Style\n\n### Brand Personality & Philosophy\nThis design system defines an intelligent, dependable, and highly focused cockpit interface for an AI coding agent. It balances developer-grade ergonomic efficiency with a luminous, modern editorial tech feel. The interface feels weightless, precise, and non-distracting—prioritizing context comprehension, low visual fatigue during prolonged sessions, and crystalline hierarchical order.\n\n### Target Audience\nSoftware engineers, tech leads, system architects, and technical operators orchestrating semi-autonomous AI coding agents, refactoring pipelines, terminal outputs, and complex codebase graphs.\n\n### Aesthetic Foundation: Technical Glassmorphism & High-Density Minimal\n- **Soft Light Canvas Base:** The overall application canvas rests on a soft atmospheric off-white, preventing the stark eye strain of pure #ffffff while keeping the workspace bright and deliberate.\n- **Floating Glass Surfaces:** UI panels and tool docks float above the canvas with pure white fills, subtle backdrop filtration, fine 1px hairline borders (`rgba(15, 23, 42, 0.08)`), and soft ambient drop shadows.\n- **Deep Obsidian Anchors:** Code viewports, terminal emulators, and active execution logs use a singular, stark dark theme (`#0f1420`) as high-contrast windows into raw machine execution within an otherwise light, airy environment.\n- **Density & Precision:** Tight, calculated micro-spacing, compact heights, and high-visibility status indicators emulate mission control tooling without visual clutter.\n\n## Colors\n\n### Palette System\nThe palette maintains a 90% neutral foundation with disciplined, surgical color placements for focus and state signaling.\n\n- **Canvas & Background:**\n  - App Canvas Base: `#f6f7fb`\n  - Floating Card / Panel Surface: `#ffffff`\n  - Deep Terminal / Code Sandbox: `#0f1420`\n  - Sub-surface / Muted Inset: `#f1f4f9`\n\n- **Primary Interactive Accent (`#0058bc`):**\n  - Used strictly for primary trigger buttons, agent run confirmation, active tab indicators, selected radio/checkbox fills, and focused input states.\n  - Hover: `#00479a` | Pressed: `#003777` | Subtle Tint Focus Ring: `rgba(0, 88, 188, 0.16)`.\n\n- **Secondary Accent / Deep Dark (`#0f1420`):**\n  - Reserved exclusively for the code block views, command line terminal, shell output tabs, and high-contrast system badges.\n  - Border for dark panels: `rgba(255, 255, 255, 0.12)`.\n\n- **Tertiary Tint (`#e8f0ff`):**\n  - User prompt and message bubble background, subtle interactive row selections, and active code line highlights in light mode diff views.\n\n- **Neutral Shades:**\n  - Text Primary: `#0f172a` (Slate 900)\n  - Text Secondary: `#475569` (Slate 600)\n  - Text Tertiary / Placeholder: `#94a3b8` (Slate 400)\n  - Hairline Border: `rgba(15, 23, 42, 0.08)`\n  - Elevated Border Hover: `rgba(15, 23, 42, 0.14)`\n\n- **System State & Feedback:**\n  - Success: `#16a34a` (Badge tint: `#f0fdf4`, Border: `rgba(22, 163, 74, 0.2)`)\n  - Warning: `#d97706` (Badge tint: `#fffbeb`, Border: `rgba(217, 119, 6, 0.2)`)\n  - Error: `#dc2626` (Badge tint: `#fef2f2`, Border: `rgba(220, 38, 38, 0.2)`)\n  - Streaming / Generating Pulse: `#0058bc`\n\n## Typography\n\n### Hierarchy & Pairings\n- **Primary Interface Font (`Plus Jakarta Sans`):** Selected for high legibility, clean geometric forms, and soft grotesque personality. Handles all navigational menus, dialogues, task cards, button prompts, and narrative agent explanations. All product copy is tailored to Simplified Chinese (PingFang SC / Microsoft YaHei as system fallbacks) maintaining rhythmic baseline alignment.\n- **Technical & Monospace Font (`JetBrains Mono`):** Applied exclusively across file paths, Git branch chips, terminal logs, code snippets, diff inspectors, token counts, and telemetry counters.\n- **Typesetting Standard:**\n  - Microcopy in Chinese must avoid awkward line wraps; use `break-words` and `word-break: break-all` specifically on technical tokens and JSON responses.\n  - UI labels and indicators use concise sentence case (e.g., “任务概览”, “终端输出”, “正在索引代码库”).\n\n## Layout & Spacing\n\n### Cockpit Layout Model\nThe cockpit employs a strict modular multi-pane docking architecture:\n- **Default Multi-Panel Layout:**\n  - Left Rail: Collapsible activity and file hierarchy panel (240px - 280px).\n  - Center Cockpit: Agent conversation stream, step breakdown, and instruction prompt (Flex-grow 1, min-width 480px).\n  - Right Dock: Split panel comprising code preview / diff review on the top half and active interactive terminal (`#0f1420`) on the bottom half.\n- **Unified 8px Grid (`gutter: 0.5rem`):**\n  - All floating panels sit exactly 8px apart from adjacent tool panels and outer view containers, establishing the modular multi-card floating desk experience.\n- **Internal Padding:**\n  - Panel internal padding defaults to `space-lg` (16px) for spacious views, dropping to `space-md` (12px) in dense data trees and breadcrumb headers.\n\n## Elevation & Depth\n\nVisual hierarchy is constructed via subtle layered glass planes, crisp hairlines, and ambient drop shadows rather than heavy skeuomorphism or harsh solid borders.\n\n### Surface Tiers & Glass Properties\n- **Level 0 (Canvas Base):**\n  - Solid `#f6f7fb`, backdrop filter: none.\n- **Level 1 (Default Floating Panels & Modular Cards):**\n  - Background: `rgba(255, 255, 255, 0.94)`\n  - Backdrop Blur: `blur(12px)`\n  - Border: 1px solid `rgba(15, 23, 42, 0.08)`\n  - Shadow: `0 4px 20px -2px rgba(15, 23, 42, 0.04), 0 1px 3px 0 rgba(15, 23, 42, 0.02)`\n- **Level 2 (Hovered Cards & Active Docks):**\n  - Background: `#ffffff`\n  - Border: 1px solid `rgba(15, 23, 42, 0.12)`\n  - Shadow: `0 8px 24px -4px rgba(15, 23, 42, 0.07), 0 2px 6px -1px rgba(15, 23, 42, 0.03)`\n- **Level 3 (Dropdowns, Command Palette & Modal Dialogues):**\n  - Background: `rgba(255, 255, 255, 0.98)`\n  - Backdrop Blur: `blur(16px)`\n  - Border: 1px solid `rgba(15, 23, 42, 0.12)`\n  - Shadow: `0 16px 36px -8px rgba(15, 23, 42, 0.12), 0 4px 12px -2px rgba(15, 23, 42, 0.05)`\n- **Level Terminal (The Obsidian Portal):**\n  - Background: `#0f1420`\n  - Border: 1px solid `rgba(255, 255, 255, 0.1)`\n  - Shadow: `inset 0 1px 1px 0 rgba(255, 255, 255, 0.05), 0 4px 16px -2px rgba(15, 20, 32, 0.25)`\n\n## Shapes\n\n### Geometry Rules\n- **Core Panels & Modules:** Standardized to a uniform `16px` border-radius (`rounded-xl` under configuration scale), presenting soft, tactile standalone floating islands.\n- **Controls & Form Elements:** Buttons, search fields, chips, prompt inputs, and dropdown triggers utilize `8px` (`rounded-md` / 0.5rem) to maintain crisp, disciplined developer ergonomics.\n- **Status Pills & Inline Tags:** Full pill format (`rounded-full` / 9999px) for status indicators, Git branch markers, and execution state pills.\n- **Code Panes & Embedded Terminals:** Outer container inherits the modular `16px` border-radius; internal split gutter rows remain straight with sharp rectangular dividers (`rounded-none`).\n\n## Components\n\n### 1. Primary & Secondary Buttons\n- **Primary Button:** Background `#0058bc`, text `#ffffff`, border radius 8px, height 36px (dense: 32px), horizontal padding 14px. Hover: `#00479a`. Active: `#003777`. Focus outline: 2px solid `rgba(0, 88, 188, 0.3)`.\n- **Secondary / Ghost Button:** Background `rgba(15, 23, 42, 0.04)`, text `#0f172a`, border 1px solid `rgba(15, 23, 42, 0.08)`. Hover: background `rgba(15, 23, 42, 0.08)`.\n\n### 2. Message Bubbles (AI & User Stream)\n- **User Prompt Bubble:** Background `#e8f0ff`, text `#0f172a`, border 1px solid `rgba(0, 88, 188, 0.12)`, radius 12px, aligned with clear right-indented margin. Text size 13px (`body-md`).\n- **AI Agent Response Box:** Transparent/pure white surface, flush left alignment, unencumbered by strong bubbles. Progresses smoothly using micro-steps, tool call tags, and syntax-highlighted blocks.\n\n### 3. Floating Modular Cards\n- Solid white `#ffffff` or `rgba(255, 255, 255, 0.94)` background, rounded 16px, hairline border `rgba(15, 23, 42, 0.08)`, 8px gap separation from neighboring modules. Header contains 13px bold title, action icons (minimize, split, refresh), and subtle divider line.\n\n### 4. Code Blocks & Terminal Console\n- Container background `#0f1420`, text `#e2e8f0`, font `JetBrains Mono` (13px, line-height 20px).\n- Embedded status header with branch name chip, copy code action, and file path display (`code-sm`).\n- Terminal command prompt prefix `#16a34a` (green `➜`) followed by `#0058bc` active path.\n\n### 5. Chips, Badges & Status Tags\n- Height 22px, font size 11px (`label-sm`).\n- Success (`#16a34a` text, `#f0fdf4` background, border `rgba(22, 163, 74, 0.2)`).\n- Warning (`#d97706` text, `#fffbeb` background, border `rgba(217, 119, 6, 0.2)`).\n- Error (`#dc2626` text, `#fef2f2` background, border `rgba(220, 38, 38, 0.2)`).\n- Agent Running / Thinking (`#0058bc` text, `#eff6ff` background, animated 2px pulsing dot).\n\n### 6. Input Fields & Prompt Composer\n- Background `#ffffff`, border 1px solid `rgba(15, 23, 42, 0.12)`, radius 10px, padding 10px 14px. Focus state: border `#0058bc`, ring `0 0 0 3px rgba(0, 88, 188, 0.12)`.\n- Multi-line agent composer docks at cockpit bottom with action accessory bar (attach context `@file`, model selector dropdown, execute button).\n\n### 7. Form Controls (Checkbox, Radio, Switch)\n- **Checkbox & Radio:** 16px square/circle, border 1.5px solid `rgba(15, 23, 42, 0.2)`. Checked state fills `#0058bc` with crisp white checkmark/dot.\n- **Switch:** 36px × 20px track, background `rgba(15, 23, 42, 0.12)` when off, `#0058bc` when active; thumb 16px white circle with ambient drop shadow.",
+                  "colorVariant": "FIDELITY",
+                  "overridePrimaryColor": "#0058bc",
+                  "overrideSecondaryColor": "#0f1420",
+                  "overrideTertiaryColor": "#e8f0ff",
+                  "overrideNeutralColor": "#64748b",
+                  "spacingScale": 2,
+                  "typography": {
+                    "code-sm": {
+                      "fontFamily": "JetBrains Mono",
+                      "fontSize": "11px",
+                      "fontWeight": "500",
+                      "lineHeight": "16px",
+                      "letterSpacing": "0em"
+                    },
+                    "headline-sm": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "18px",
+                      "fontWeight": "600",
+                      "lineHeight": "26px",
+                      "letterSpacing": "-0.01em"
+                    },
+                    "label-sm": {
+                      "fontFamily": "JetBrains Mono",
+                      "fontSize": "11px",
+                      "fontWeight": "500",
+                      "lineHeight": "14px",
+                      "letterSpacing": "0.02em"
+                    },
+                    "headline-md": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "22px",
+                      "fontWeight": "600",
+                      "lineHeight": "30px",
+                      "letterSpacing": "-0.015em"
+                    },
+                    "body-lg": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "15px",
+                      "fontWeight": "400",
+                      "lineHeight": "24px",
+                      "letterSpacing": "0em"
+                    },
+                    "headline-lg": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "28px",
+                      "fontWeight": "700",
+                      "lineHeight": "36px",
+                      "letterSpacing": "-0.02em"
+                    },
+                    "title-md": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "15px",
+                      "fontWeight": "600",
+                      "lineHeight": "22px",
+                      "letterSpacing": "-0.005em"
+                    },
+                    "title-sm": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "13px",
+                      "fontWeight": "600",
+                      "lineHeight": "18px",
+                      "letterSpacing": "0em"
+                    },
+                    "body-sm": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "12px",
+                      "fontWeight": "400",
+                      "lineHeight": "18px",
+                      "letterSpacing": "0.01em"
+                    },
+                    "body-md": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "13px",
+                      "fontWeight": "400",
+                      "lineHeight": "20px",
+                      "letterSpacing": "0em"
+                    },
+                    "label-md": {
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": "12px",
+                      "fontWeight": "500",
+                      "lineHeight": "16px",
+                      "letterSpacing": "0.01em"
+                    },
+                    "code-md": {
+                      "fontFamily": "JetBrains Mono",
+                      "fontSize": "13px",
+                      "fontWeight": "400",
+                      "lineHeight": "20px",
+                      "letterSpacing": "-0.005em"
+                    }
+                  },
+                  "spacing": {
+                    "gutter": "0.5rem",
+                    "margin-mobile": "0.5rem",
+                    "space-xs": "0.25rem",
+                    "margin": "1rem",
+                    "space-sm": "0.5rem",
+                    "gutter-compact": "0.375rem",
+                    "space-md": "0.75rem",
+                    "space-lg": "1rem",
+                    "space-xl": "1.5rem"
+                  },
+                  "headlineFontFamily": "Plus Jakarta Sans",
+                  "bodyFontFamily": "Plus Jakarta Sans",
+                  "labelFontFamily": "JetBrains Mono"
+                }
+              },
+              "version": "1"
+            }
+          }
+        ],
+        "theme": {}
+      }
+    },
+    {
+      "text": "已为您完成 **OurCode 桌面端 AI 编码智能体应用主界面 —— 方案 F「规格三段式」**（1440×900 桌面视口）。\n\n### 🎨 设计与架构实现亮点\n\n1. **GitHub Copilot Workspace 式三列阶段流 (Spec → Plan → Code)**\n   - **顶栏阶段导航（48px）**：呈现直观的 `① 规格 Spec`（已确认 ✓）→ `② 计划 Plan`（当前活动高亮蓝色胶囊）→ `③ 实现 Code` 阶段流转指示，并集成任务标识 `FIX-8842`、模型切换 `Claude 3.7 Sonnet` 与 Git 分支 chip。\n   - **左列「规格 Spec」（310px）**：展示锁定后的需求目标（解决 Composer 抖动 10px）、技术约束（禁止改外部 Flex、保持 Gecko/WebKit 兼容）以及明确的验收标准复选列表。\n   - **中列「计划 Plan」（430px，当前阶段）**：结构化步骤卡片，突出当前正在执行的第 2 步（注入 8px 阈值防抖截断器），附带 AST 校验状态与底层操作按钮「批准并应用全部变更」。\n   - **右列「实现 Code」（自适应宽）**：\n     - **上半部 Diff 视窗**：深色背景（`#0f1420`）带精准行内红绿 Diff 对比（`ChatInput.tsx +24 -6`）。\n     - **下半部模拟沙盒终端**：实时输出 `pnpm test:unit` 的 4 项单元测试 PASS 结果与 Coverage 94.2% 报告。\n   - **底部状态栏（28px）**：显示分支状态、当前执行阶段进度、Token 消耗（6.2k）与沙盒隔离指示。\n\n2. **浅色玻璃拟态质感**\n   - 整体背景遵循 `#f6f7fb`，采用 16px 圆角白色卡片、面板间 8px 精致间隙、微投影与 hairline 极浅描边，仅在代码 Diff 与终端处使用 `#0f1420` 保持纯粹沉浸感。"
+    },
+    {
+      "suggestion": "切换至 Step 3（单测生成阶段）的计划与终端交互视图"
+    },
+    {
+      "suggestion": "查看点击「逐文件审阅 (Split)」时的左右分栏对比视图"
+    },
+    {
+      "suggestion": "添加多 Agent 协同接入本任务的实时状态抽屉"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import AgentStatusMiniPanel from './AgentStatusMiniPanel'
 import AgentTraceView from './AgentTraceView'
 import ChatInput from './ChatInput'
 import ChatSidebar from './ChatSidebar'
+import BrowserBubble from './BrowserBubble'
 import QuestionConfirmBar from './QuestionConfirmBar'
 import InlineDecisionArea from './InlineDecisionArea'
 import ModeMenu from './ModeMenu'
@@ -333,6 +334,8 @@ export default function ChatPanel() {
 
         {/* Chat Content */}
         <div className="flex-1 flex flex-col overflow-hidden relative">
+          {/* 内置浏览器气泡 —— 固定右上角，随时显示/隐藏 Agent 的独立浏览器窗口 */}
+          <BrowserBubble />
           {activeSession ? (
             <>
               {/* Agent 执行状态胶囊 —— 占一行自己的空间，不再浮在消息之上。

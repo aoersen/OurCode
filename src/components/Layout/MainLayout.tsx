@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import TitleBar from './TitleBar'
 import StatusBar from './StatusBar'
-import ActivityBar from './ActivityBar'
 import Sidebar from '../Sidebar/Sidebar'
 import EditorContainer from '../Editor/EditorContainer'
-import WelcomeHub from '../Welcome/WelcomeHub'
 import TabBar from '../Editor/TabBar'
 import ChatPanel from '../ChatPanel/ChatPanel'
+import WelcomeHub from '../Welcome/WelcomeHub'
 import MemoryModal from '../ChatPanel/MemoryModal'
 import TerminalPanel from '../Terminal/TerminalPanel'
 import SettingsModal from '../Settings/SettingsModal'
@@ -38,7 +37,6 @@ const NARROW_BREAKPOINT = 768
 export default function MainLayout() {
   // Individual selectors: the layout must not re-render on every uiStore change
   // (notifications, context menus) or every editorStore keystroke/cursor move.
-  const isSidebarVisible = useUIStore((s) => s.isSidebarVisible)
   const sidebarWidth = useUIStore((s) => s.sidebarWidth)
   const activeSidebarTab = useUIStore((s) => s.activeSidebarTab)
   const chatWidth = useUIStore((s) => s.chatWidth)
@@ -66,13 +64,19 @@ export default function MainLayout() {
   // otherwise 查看变更 from the 文件变更历史 panel silently does nothing.
   const hasActiveDiff = useEditorStore((s) => !!s.activeDiff)
   const editorShown = isEditorVisible && (hasOpenTabs || hasActiveDiff)
-  // Welcome hub: the editor slot is empty, so it shows the launch pad instead of
-  // nothing. Gated on the same visibility flag as the editor — a user who hid
-  // the editor keeps the full-width chat panel.
-  const welcomeShown = isEditorVisible && !hasOpenTabs && !hasActiveDiff
-  // Either one occupies the "main" column; the chat panel's fixed width depends
-  // on that column existing at all.
-  const mainColumnShown = editorShown || welcomeShown
+  // 「新建会话」= 欢迎对话页：活跃会话还没有任何消息时，对话区呈现欢迎页
+  // （项目归属 + 续接 + 输入卡 + 起手模板），首条消息发出后自动切回聊天面板。
+  // 正在跑的会话不算空白（运行中可能暂时没有消息），仍显示聊天面板。
+  const activeSession = useChatStore((s) =>
+    s.activeSessionId ? s.sessions.find((x) => x.id === s.activeSessionId) ?? null : null,
+  )
+  const activeSessionRunning = useChatStore(
+    (s) => !!s.activeSessionId && s.runningSessionIds.includes(s.activeSessionId),
+  )
+  const welcomeShown =
+    !IS_OFFICE &&
+    isChatVisible &&
+    (!activeSession || (activeSession.messages.length === 0 && !activeSessionRunning))
   const splitDirection = useEditorStore((s) => s.splitDirection)
   const splitRatios = useEditorStore((s) => s.splitRatios)
   const isProblemsOpen = useProblemsStore((s) => s.isOpen)
@@ -159,7 +163,6 @@ export default function MainLayout() {
         ['closeTab', 'closeTab'],
         ['find', 'find'],
         ['replace', 'replace'],
-        ['toggleSidebar', 'toggleSidebar'],
         ['toggleTerminal', 'toggleTerminal', ['Ctrl+`']],
         ['toggleChat', 'toggleChat'],
         ['toggleProblems', 'toggleProblems'],
@@ -216,19 +219,11 @@ export default function MainLayout() {
   }, []) // No deps — reads live store state
 
   const effectiveSidebarWidth = isCompact ? Math.min(sidebarWidth, 200) : sidebarWidth
-  // The sidebar column keeps its COMPONENT mounted once it has been shown —
-  // only the column is hidden (display:none). Collapsing used to unmount the
-  // whole panel tree, which tore down the workspace file watcher (chokidar) and
-  // every panel's state; re-opening then paid for a watcher restart + a fresh
-  // `git status` + the panel's config IPC before anything appeared — the
-  // "切换卡一下" the user feels on every Ctrl+B / activity-bar click.
-  // Before the first reveal nothing is mounted (unchanged startup cost: a
-  // sidebar that was never opened must not read the workspace / scan skills).
-  const [sidebarEverShown, setSidebarEverShown] = useState(isSidebarVisible)
-  useEffect(() => {
-    if (isSidebarVisible) setSidebarEverShown(true)
-  }, [isSidebarVisible])
-  const sidebarShown = isSidebarVisible && !(isNarrow && isChatVisible)
+  // The project list is part of the fixed layout — there is no hide/collapse
+  // affordance anymore. On a very narrow window the chat panel wins the width
+  // (responsive rule only): below 768px a 200px rail plus the chat leaves no
+  // room to read either side.
+  const sidebarShown = !(isNarrow && isChatVisible)
 
   // Resizable panel drag handler
   const handlePanelResize = useCallback((panel: 'sidebar' | 'chat', e: React.MouseEvent) => {
@@ -266,13 +261,15 @@ export default function MainLayout() {
     <div className="h-full min-h-0 flex flex-col bg-nova-bg text-nova-text-primary overflow-hidden p-2 gap-2 isolate">
       <TitleBar />
       <div className="flex-1 h-full min-h-0 flex gap-2 overflow-hidden">
-        <ActivityBar />
         <div className="relative flex-1 h-full min-h-0 overflow-hidden">
           {/* 常规工作区（侧栏 + 编辑器 + 聊天 + 终端）：始终挂载。
               办公室展示时仅 visibility:hidden，切回对话/编辑器是纯显示切换，
               不再整体重建（见 isOfficeShown 注释）。 */}
           <div className={`h-full min-h-0 flex gap-2 overflow-hidden ${isOfficeShown ? 'invisible' : ''}`}>
-            {sidebarEverShown && (
+            {/* 办公室视图整窗展示时不挂侧栏（它自带「项目/任务」左栏）；
+                从办公室文件树打开文件进入工作区后，侧栏（项目/文件树）照常
+                挂载，左上角也有「返回一人公司」入口。 */}
+            {(!IS_OFFICE || !isOfficeShown) && (
               <div
                 style={{ width: effectiveSidebarWidth }}
                 className={`shrink-0 relative ${sidebarShown ? '' : 'hidden'}`}
@@ -286,19 +283,6 @@ export default function MainLayout() {
             )}
             <div className="flex-1 h-full min-h-0 flex flex-col gap-2 overflow-hidden">
               <div className={`flex-1 h-full min-h-0 flex ${isNarrow ? 'flex-col' : ''} overflow-hidden`}>
-                {welcomeShown && (
-                  <>
-                    <div className="flex-1 h-full min-w-0 min-h-0 overflow-hidden flex rounded-xl glass-flat">
-                      <WelcomeHub />
-                    </div>
-                    {isChatVisible && !isNarrow && (
-                      <div
-                        className="resizer"
-                        onMouseDown={(e) => handlePanelResize('chat', e)}
-                      />
-                    )}
-                  </>
-                )}
                 {editorShown && (
                   <>
                     {/* glass-flat (no backdrop-filter) instead of glass-chrome: on
@@ -356,9 +340,9 @@ export default function MainLayout() {
                 )}
                 {isChatVisible && !IS_OFFICE && (
                   <div
-                    style={isNarrow || !mainColumnShown ? undefined : { width: Math.min(chatWidth, Math.max(360, windowWidth - 100)) + 'px' }}
-                    className={`h-full rounded-xl overflow-hidden glass-chrome ${mainColumnShown && !isNarrow ? 'shrink-0' : 'flex-1 min-w-0'} ${isNarrow ? 'flex-1 min-w-0' : ''}`}
-                  ><ChatPanel /></div>
+                    style={isNarrow || !editorShown ? undefined : { width: Math.min(chatWidth, Math.max(360, windowWidth - 100)) + 'px' }}
+                    className={`h-full rounded-xl overflow-hidden glass-chrome ${editorShown && !isNarrow ? 'shrink-0' : 'flex-1 min-w-0'} ${isNarrow ? 'flex-1 min-w-0' : ''}`}
+                  >{welcomeShown ? <WelcomeHub /> : <ChatPanel />}</div>
                 )}
               </div>
               {isProblemsOpen && (

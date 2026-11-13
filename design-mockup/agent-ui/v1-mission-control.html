@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V1 · 任务驾驶舱 — OurCode Agent UI</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  /* ---------- V1: Mission Control / Agent home ---------- */
+  .rail {
+    width: 64px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 10px 7px;
+  }
+  .rail-new {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 8px 20px rgba(0, 88, 188, 0.28);
+    margin-bottom: 8px;
+  }
+  .rail-new .ic { width: 19px; height: 19px; stroke-width: 2; }
+  .rail-item {
+    width: 50px;
+    height: 50px;
+    border-radius: 11px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--text-3);
+    font-size: 9px;
+    font-weight: 600;
+  }
+  .rail-item .ic { width: 18px; height: 18px; stroke-width: 1.65; }
+  .rail-item.active { background: rgba(0, 88, 188, 0.09); color: var(--accent); }
+  .rail-sep { width: 28px; height: 1px; background: var(--border); margin: 7px 0; }
+  .rail-bottom { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+
+  .home {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 19px 20px 16px;
+    overflow: hidden;
+  }
+  .home-head { display: flex; align-items: flex-start; gap: 16px; flex: none; }
+  .home-head h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.55px; }
+  .home-head p { font-size: 12px; color: var(--text-3); margin-top: 3px; }
+  .head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+  /* hero composer */
+  .hero {
+    flex: none;
+    margin-top: 14px;
+    padding: 11px 13px 9px;
+    border: 1px solid rgba(0, 88, 188, 0.17);
+    border-radius: 16px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(232, 240, 255, 0.6));
+    box-shadow: 0 8px 28px rgba(0, 88, 188, 0.07), inset 0 1px 0 #fff;
+  }
+  .hero-top { display: flex; align-items: center; gap: 8px; }
+  .hero-top .avatar { width: 24px; height: 24px; }
+  .hero-top b { font-size: 12.5px; }
+  .hero-top .pill { margin-left: auto; }
+  .hero-input {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 9px 3px 6px;
+    font-size: 14px;
+    color: var(--text-4);
+  }
+  .hero-input .caret { width: 1.5px; height: 16px; border-radius: 1px; background: var(--accent); animation: caret 1.1s steps(1) infinite; }
+  .hero-bar { display: flex; align-items: center; gap: 4px; }
+  .hero-bar .send-btn { margin-left: 4px; }
+  .starters { display: flex; align-items: center; gap: 5px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(15, 23, 42, 0.08); }
+  .starter {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid var(--border);
+    color: var(--text-2);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .starter .ic { width: 12px; height: 12px; color: var(--accent); }
+  .starter:nth-child(2) .ic { color: var(--purple); }
+  .starter:nth-child(3) .ic { color: var(--amber); }
+  .starter:nth-child(4) .ic { color: var(--green); }
+
+  /* body */
+  .home-body { flex: 1; min-height: 0; display: flex; gap: 18px; margin-top: 14px; }
+  .runs-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .side-col { width: 352px; flex: none; display: flex; flex-direction: column; overflow: hidden; }
+
+  .run-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .run-card {
+    position: relative;
+    display: flex;
+    gap: 12px;
+    padding: 8px 13px 8px 15px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.6);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .run-card.active {
+    border-color: rgba(0, 88, 188, 0.22);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(232, 240, 255, 0.5));
+    box-shadow: 0 8px 24px rgba(0, 88, 188, 0.08);
+  }
+  .run-card.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 12px; bottom: 12px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent);
+  }
+  .run-main { flex: 1; min-width: 0; }
+  .run-top { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--text-3); }
+  .run-top .proj { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--text-3); }
+  .run-top .proj .ic { width: 11px; height: 11px; }
+  .run-top .time { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--text-4); }
+  .run-title { font-size: 13px; font-weight: 700; margin-top: 3px; letter-spacing: -0.1px; }
+  .run-step { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-step code { font-family: var(--mono); font-size: 10px; color: var(--text-2); background: rgba(15, 23, 42, 0.045); padding: 1px 5px; border-radius: 4px; }
+  .run-step .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+  .run-progress { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+  .run-progress .progress { flex: 1; height: 4px; }
+  .run-progress span { font-family: var(--mono); font-size: 9.5px; color: var(--text-4); flex: none; }
+  .run-meta { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 10px; color: var(--text-4); }
+  .run-meta .mi { display: inline-flex; align-items: center; gap: 3px; }
+  .run-meta .ic { width: 11px; height: 11px; }
+  .run-side { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
+  .ring.sm { width: 44px; height: 44px; }
+  .ring.sm span { font-size: 9.5px; }
+  .ring.sm::before { inset: 3.5px; }
+
+  /* approvals */
+  .approval {
+    margin-top: 7px;
+    padding: 9px 11px 10px;
+    border: 1px solid rgba(217, 119, 6, 0.2);
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(255, 251, 235, 0.9), rgba(255, 255, 255, 0.6));
+  }
+  .ap-head { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--amber-text); }
+  .ap-head .ic { width: 12px; height: 12px; }
+  .ap-head .time { margin-left: auto; font-family: var(--mono); font-size: 9px; font-weight: 500; color: var(--text-4); }
+  .ap-title { font-size: 12px; font-weight: 700; margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+  .ap-title code { font-family: var(--mono); font-size: 10px; color: var(--text-2); background: rgba(15, 23, 42, 0.05); padding: 1px 4px; border-radius: 4px; font-weight: 500; }
+  .ap-desc { font-size: 10.5px; line-height: 1.5; color: var(--text-3); margin-top: 2px; }
+  .ap-actions { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
+  .ap-actions .btn { height: 24px; padding: 0 8px; font-size: 10px; border-radius: 7px; }
+  .ap-actions .grow { flex: 1; }
+
+  /* artifacts + stats */
+  .arti { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+  .arti:last-child { border-bottom: 0; }
+  .arti-ic { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: rgba(0, 88, 188, 0.07); color: var(--accent); flex: none; }
+  .arti-ic .ic { width: 13px; height: 13px; }
+  .arti-ic.purple { background: rgba(124, 58, 237, 0.08); color: var(--purple); }
+  .arti-ic.green { background: rgba(22, 163, 74, 0.08); color: var(--green-text); }
+  .arti-title { font-size: 11px; font-weight: 600; color: var(--text-2); }
+  .arti-meta { font-size: 9.5px; color: var(--text-4); font-family: var(--mono); }
+  .today { display: flex; align-items: center; margin-top: auto; padding: 8px 10px; border-radius: 11px; background: rgba(15, 23, 42, 0.035); }
+  .today div { flex: 1; text-align: center; }
+  .today b { display: block; font-size: 14px; letter-spacing: -0.3px; }
+  .today span { font-size: 9px; color: var(--text-4); }
+  .today .vsep { width: 1px; height: 22px; background: var(--border); flex: none; }
+
+  .subagent-row { display: flex; align-items: center; gap: 5px; }
+  .subagent-row .avatar { width: 17px; height: 17px; font-size: 7px; margin-left: -4px; border: 1.5px solid #fff; }
+  .subagent-row .avatar:first-child { margin-left: 0; }
+
+  .done-list { margin-top: 3px; }
+  .done-item { display: flex; align-items: center; gap: 7px; height: 30px; border-bottom: 1px dashed var(--border); font-size: 11px; }
+  .done-item:last-child { border-bottom: 0; }
+  .done-item > .ic { width: 13px; height: 13px; color: var(--green-text); flex: none; }
+  .done-item .t { font-weight: 600; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .done-item .m { margin-left: auto; font-size: 9.5px; color: var(--text-4); font-family: var(--mono); white-space: nowrap; }
+  .done-item .pill { height: 19px; font-size: 9.5px; padding: 0 6px; }
+</style>
+</head>
+<body>
+<div class="win">
+
+  <!-- ===== window chrome ===== -->
+  <header class="titlebar">
+    <div class="tb-left">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24"><path d="M3.5 13.2c2.3 0 2.7-4.2 5-4.2s2.7 4.2 5 4.2 2.7-4.2 5-4.2 2.7 4.2 5 4.2"/></svg>
+        </span>
+        OurCode
+      </div>
+      <div class="ws">
+        <svg class="ic xs"><use href="#i-folder"/></svg>
+        ourcode-ide
+        <span class="sep">/</span>
+        <code>agent-ui</code>
+        <svg class="ic xs" style="color:var(--text-4)"><use href="#i-chevron-down"/></svg>
+      </div>
+    </div>
+    <div class="tb-center">
+      <div class="cmd">
+        <svg class="ic sm"><use href="#i-search"/></svg>
+        搜索任务、文件或 @agent
+        <span class="kbd">Ctrl K</span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span class="tb-status"><i class="dot live"></i>3 个 Agent 在线</span>
+      <span class="pill"><svg class="ic xs"><use href="#i-zap"/></svg>182k tokens</span>
+      <span class="avatar sm">YG</span>
+      <div class="wbtns">
+        <button class="wbtn"><svg class="ic sm"><use href="#i-minimize"/></svg></button>
+        <button class="wbtn"><svg class="ic xs"><use href="#i-window"/></svg></button>
+        <button class="wbtn close"><svg class="ic sm"><use href="#i-x"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ===== icon rail ===== -->
+    <aside class="panel rail">
+      <button class="rail-new" title="新建任务"><svg class="ic"><use href="#i-plus"/></svg></button>
+      <div class="rail-item active"><svg class="ic"><use href="#i-home"/></svg>驾驶舱</div>
+      <div class="rail-item"><svg class="ic"><use href="#i-list"/></svg>任务</div>
+      <div class="rail-item"><svg class="ic"><use href="#i-columns"/></svg>看板</div>
+      <div class="rail-item"><svg class="ic"><use href="#i-message"/></svg>会话</div>
+      <div class="rail-item"><svg class="ic"><use href="#i-puzzle"/></svg>技能</div>
+      <div class="rail-sep"></div>
+      <div class="rail-item"><svg class="ic"><use href="#i-database"/></svg>记忆</div>
+      <div class="rail-bottom">
+        <div class="rail-item"><svg class="ic"><use href="#i-settings"/></svg>设置</div>
+        <span class="avatar sm" style="margin-top:6px">YG</span>
+      </div>
+    </aside>
+
+    <!-- ===== main ===== -->
+    <main class="panel home">
+      <div class="home-head">
+        <div>
+          <h1>下午好，YG</h1>
+          <p>3 个 Agent 正在替你干活，有 2 件事需要你拍板。</p>
+        </div>
+        <div class="head-actions">
+          <span class="pill plain"><svg class="ic xs" style="color:var(--green-text)"><use href="#i-check-circle"/></svg>今日完成 12</span>
+          <button class="btn btn-primary"><svg class="ic"><use href="#i-plus"/></svg>新建任务</button>
+        </div>
+      </div>
+
+      <!-- hero composer -->
+      <section class="hero">
+        <div class="hero-top">
+          <span class="avatar agent"><svg class="ic"><use href="#i-bot"/></svg></span>
+          <b>派发一个新任务</b>
+          <span class="pill accent"><i class="dot" style="background:var(--accent)"></i>Agent 自主拆解</span>
+        </div>
+        <div class="hero-input">描述目标，Agent 会读代码、改文件、跑测试，完成后交给你验收…<span class="caret"></span></div>
+        <div class="hero-bar">
+          <button class="chip"><svg class="ic"><use href="#i-plus"/></svg>附件</button>
+          <button class="chip"><svg class="ic"><use href="#i-folder"/></svg>ourcode-ide<svg class="ic xs"><use href="#i-chevron-down"/></svg></button>
+          <span class="chip subtle">Claude Sonnet 4.5<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+          <span class="chip subtle"><svg class="ic xs" style="color:var(--green-text)"><use href="#i-shield"/></svg>手动确认<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+          <span class="grow"></span>
+          <span class="ctx-ring" style="--p:38"><span>38</span></span>
+          <button class="send-btn" title="派发"><svg class="ic"><use href="#i-send"/></svg></button>
+        </div>
+        <div class="starters">
+          <button class="starter"><svg class="ic"><use href="#i-refresh"/></svg>修复失败测试</button>
+          <button class="starter"><svg class="ic"><use href="#i-columns"/></svg>重构对话面板</button>
+          <button class="starter"><svg class="ic"><use href="#i-file-text"/></svg>生成发布说明</button>
+          <button class="starter"><svg class="ic"><use href="#i-zap"/></svg>分析性能瓶颈</button>
+        </div>
+      </section>
+
+      <div class="home-body">
+        <!-- running agents -->
+        <section class="runs-col">
+          <div class="section-title">
+            进行中 <span class="count">3</span>
+            <span class="more">查看全部<svg class="ic xs"><use href="#i-arrow-right"/></svg></span>
+          </div>
+
+          <div class="run-list">
+            <article class="run-card active">
+              <div class="run-main">
+                <div class="run-top">
+                  <span class="proj"><svg class="ic"><use href="#i-folder"/></svg>ourcode-ide</span>
+                  <span class="pill accent"><i class="dot live" style="background:var(--accent)"></i>运行中</span>
+                  <span class="time">01:24</span>
+                </div>
+                <div class="run-title">重构 Agent 主画布</div>
+                <div class="run-step"><span class="spinner"></span>正在运行 <code>npm run typecheck</code></div>
+                <div class="run-progress"><div class="progress"><i style="width:68%"></i></div><span>14 / 18 步</span></div>
+                <div class="run-meta">
+                  <span class="mi"><svg class="ic"><use href="#i-file-code"/></svg>3 个文件已改</span>
+                  <span class="mi"><svg class="ic"><use href="#i-zap"/></svg>24.6k tokens</span>
+                  <span class="mi"><svg class="ic"><use href="#i-clock"/></svg>预计还需 1m</span>
+                </div>
+              </div>
+              <div class="run-side">
+                <div class="ring sm" style="--p:68"><span>68%</span></div>
+                <button class="icon-btn sm" title="暂停"><svg class="ic sm"><use href="#i-pause"/></svg></button>
+              </div>
+            </article>
+
+            <article class="run-card">
+              <div class="run-main">
+                <div class="run-top">
+                  <span class="proj"><svg class="ic"><use href="#i-folder"/></svg>ourcode-ide</span>
+                  <span class="pill amber"><i class="dot amber live"></i>等待审批</span>
+                  <span class="time">04:12</span>
+                </div>
+                <div class="run-title">修复 Composer 高度抖动</div>
+                <div class="run-step"><svg class="ic xs" style="color:var(--amber)"><use href="#i-alert"/></svg>等待确认 <code>npm run build</code> · 写入 out/</div>
+                <div class="run-progress"><div class="progress amber"><i style="width:92%"></i></div><span>11 / 12 步</span></div>
+                <div class="run-meta">
+                  <span class="mi"><svg class="ic"><use href="#i-file-code"/></svg>2 个文件已改</span>
+                  <span class="mi"><svg class="ic"><use href="#i-zap"/></svg>11.2k tokens</span>
+                  <span class="mi"><svg class="ic"><use href="#i-clock"/></svg>等你 2 分钟</span>
+                </div>
+              </div>
+              <div class="run-side">
+                <div class="ring sm" style="--p:92;--rc:var(--amber)"><span>92%</span></div>
+                <button class="icon-btn sm" title="打开"><svg class="ic sm"><use href="#i-arrow-up-right"/></svg></button>
+              </div>
+            </article>
+
+            <article class="run-card">
+              <div class="run-main">
+                <div class="run-top">
+                  <span class="proj"><svg class="ic"><use href="#i-folder"/></svg>q3-report</span>
+                  <span class="pill purple"><i class="dot purple live"></i>2 个子 Agent</span>
+                  <span class="time">07:48</span>
+                </div>
+                <div class="run-title">补齐 diff 查看器与回归用例</div>
+                <div class="run-step"><span class="spinner" style="border-color:rgba(124,58,237,.18);border-top-color:var(--purple)"></span>子 Agent 正在读取 <code>src/components/Editor/DiffView.tsx</code></div>
+                <div class="run-progress"><div class="progress"><i style="width:41%"></i></div><span>5 / 13 步</span></div>
+                <div class="run-meta">
+                  <span class="subagent-row">
+                    <span class="avatar sm blue">R</span><span class="avatar sm violet">T</span>
+                    <span style="margin-left:3px">Reviewer · Tester</span>
+                  </span>
+                  <span class="mi"><svg class="ic"><use href="#i-zap"/></svg>8.8k tokens</span>
+                </div>
+              </div>
+              <div class="run-side">
+                <div class="ring sm" style="--p:41;--rc:var(--purple)"><span>41%</span></div>
+                <button class="icon-btn sm" title="暂停"><svg class="ic sm"><use href="#i-pause"/></svg></button>
+              </div>
+            </article>
+          </div>
+
+          <div class="section-title" style="margin-top:10px">最近完成 <span class="count">2</span><span class="more">全部<svg class="ic xs"><use href="#i-arrow-right"/></svg></span></div>
+          <div class="done-list">
+            <div class="done-item">
+              <svg class="ic"><use href="#i-check-circle"/></svg>
+              <span class="t">更新 Windows 打包脚本</span>
+              <span class="m">5 分钟前 · 2m 10s</span>
+            </div>
+            <div class="done-item">
+              <svg class="ic"><use href="#i-check-circle"/></svg>
+              <span class="t">生成 Q3 周报数据</span>
+              <span class="m">32 分钟前 · 4m 02s</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- inbox -->
+        <aside class="side-col">
+          <div class="section-title">待你决定 <span class="count" style="background:rgba(217,119,6,.12);color:var(--amber-text)">2</span></div>
+
+          <article class="approval">
+            <div class="ap-head">
+              <svg class="ic"><use href="#i-alert"/></svg>需要确认
+              <span class="time">2 分钟前</span>
+            </div>
+            <div class="ap-title">运行构建校验 <code>npm run build</code></div>
+            <div class="ap-desc">会写入 <b>out/</b> 目录，约 40 秒。Agent 需要它来验证生产构建。</div>
+            <div class="ap-actions">
+              <button class="btn">拒绝</button>
+              <span class="grow"></span>
+              <button class="btn" style="border-color:var(--border-2)">本会话允许</button>
+              <button class="btn btn-primary">允许一次</button>
+            </div>
+          </article>
+
+          <article class="approval">
+            <div class="ap-head">
+              <svg class="ic"><use href="#i-list"/></svg>计划变更
+              <span class="time">6 分钟前</span>
+            </div>
+            <div class="ap-title">改动范围从 3 个文件扩大到 5 个</div>
+            <div class="ap-desc">发现 <b>TabBar.tsx</b> 与 <b>uiStore.ts</b> 也需要同步调整。</div>
+            <div class="ap-actions">
+              <button class="btn">看看计划</button>
+              <span class="grow"></span>
+              <button class="btn btn-primary">批准扩大</button>
+            </div>
+          </article>
+
+          <div class="section-title" style="margin-top:14px">最近产物 <span class="more">全部<svg class="ic xs"><use href="#i-arrow-right"/></svg></span></div>
+          <div style="margin-top:2px">
+            <div class="arti">
+              <span class="arti-ic"><svg class="ic"><use href="#i-diff"/></svg></span>
+              <div class="grow">
+                <div class="arti-title">AgentShell.tsx</div>
+                <div class="arti-meta">+86 −24 · 3 分钟前</div>
+              </div>
+              <span class="pill green">已审阅</span>
+            </div>
+            <div class="arti">
+              <span class="arti-ic purple"><svg class="ic"><use href="#i-file-text"/></svg></span>
+              <div class="grow">
+                <div class="arti-title">重构方案.md</div>
+                <div class="arti-meta">4.2 KB · 18 分钟前</div>
+              </div>
+              <span class="pill">打开</span>
+            </div>
+            <div class="arti">
+              <span class="arti-ic green"><svg class="ic"><use href="#i-terminal"/></svg></span>
+              <div class="grow">
+                <div class="arti-title">测试报告</div>
+                <div class="arti-meta">127 文件通过 · 26 分钟前</div>
+              </div>
+              <span class="pill green">全绿</span>
+            </div>
+          </div>
+
+          <div class="today">
+            <div><b>12</b><span>今日完成</span></div>
+            <span class="vsep"></span>
+            <div><b>182k</b><span>tokens</span></div>
+            <span class="vsep"></span>
+            <div><b>4h 12m</b><span>节省时间</span></div>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <!-- ===== status bar ===== -->
+  <footer class="statusbar">
+    <span class="si"><svg class="ic xs"><use href="#i-git-branch"/></svg>agent-ui</span>
+    <span class="si"><svg class="ic xs"><use href="#i-check-circle"/></svg>0 个问题</span>
+    <span class="grow"></span>
+    <span class="si" style="color:var(--accent)"><i class="dot blue live"></i>Agent 运行中 · 3 个任务</span>
+    <span class="si">上下文 38% · 24.6k tokens</span>
+    <span class="si ok"><svg class="ic xs"><use href="#i-check"/></svg>已保存</span>
+  </footer>
+</div>
+<script src="sprite.js"></script>
+</body>
+</html>

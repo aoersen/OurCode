@@ -64,11 +64,13 @@ const layoutMetrics = (win: Page) => win.evaluate(() => {
 })
 
 async function ensureSidebarVisible(win: Page) {
-  await win.keyboard.press('Control+b')
-  await win.waitForTimeout(600)
-  const vis = await win.evaluate(() => !!document.querySelector('.resizer.absolute'))
-  if (!vis) { await win.keyboard.press('Control+b'); await win.waitForTimeout(600) }
-  expect(await win.evaluate(() => !!document.querySelector('.resizer.absolute'))).toBe(true)
+  // The project list is always visible (no collapse/hide feature). Assert the
+  // column is actually laid out — its resizer node is unique and stable.
+  const visible = await win.evaluate(() => {
+    const el = document.querySelector('.resizer.absolute')?.parentElement as HTMLElement | null
+    return !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none'
+  })
+  expect(visible).toBe(true)
 }
 
 test('sidebar resizer is out-of-flow (no hidden overflow)', async () => {
@@ -99,8 +101,8 @@ test('new chat does not scroll the layout', async () => {
   await ensureSidebarVisible(win)
 
   const before = await layoutMetrics(win)
-  // The new-chat button is icon-only (label lives in its title attribute)
-  await win.locator('button[title="新建对话"]').first().click()
+  // 新建会话（侧栏常驻按钮）→ 新会话落在欢迎对话页；布局仍须纹丝不动
+  await win.getByRole('button', { name: /新建会话/ }).first().click()
   await win.waitForTimeout(800)
 
   const after = await layoutMetrics(win)

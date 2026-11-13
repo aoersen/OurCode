@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V2 · 画布流 — OurCode Agent UI</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  /* ---------- V2: Canvas Stream ---------- */
+  .sessions {
+    width: 256px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 10px 10px;
+    overflow: hidden;
+  }
+  .sess-new {
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    box-shadow: 0 6px 16px rgba(0, 88, 188, 0.22);
+    flex: none;
+  }
+  .sess-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 8px;
+    margin-top: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.48);
+    color: var(--text-4);
+    font-size: 11px;
+    flex: none;
+  }
+  .sess-search .ic { width: 13px; height: 13px; }
+  .sess-group { margin-top: 11px; flex: none; }
+  .sess-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 6px 4px;
+    color: var(--text-4);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+  }
+  .sess-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    color: var(--text-2);
+    font-size: 11.5px;
+    line-height: 1.35;
+    position: relative;
+  }
+  .sess-item .ic { width: 13px; height: 13px; color: var(--text-4); flex: none; }
+  .sess-item .txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess-item .meta { font-size: 9px; color: var(--text-4); font-family: var(--mono); flex: none; }
+  .sess-item .dot { width: 6px; height: 6px; }
+  .sess-item.active {
+    background: linear-gradient(90deg, rgba(0, 88, 188, 0.11), rgba(0, 88, 188, 0.05));
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .sess-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 6px; bottom: 6px;
+    width: 2.5px;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent);
+  }
+  .sess-item.active .ic { color: var(--accent); }
+  .proj-row { display: flex; align-items: center; gap: 7px; padding: 5px 8px; border-radius: 8px; font-size: 11px; color: var(--text-2); font-weight: 600; }
+  .proj-row .ic { width: 13px; height: 13px; color: var(--text-3); }
+  .proj-row .n { margin-left: auto; font-size: 9.5px; color: var(--text-4); font-family: var(--mono); }
+  .sess-foot { margin-top: auto; padding-top: 8px; flex: none; }
+  .usage-card { padding: 8px 9px; border-radius: 10px; background: rgba(15, 23, 42, 0.035); }
+  .usage-top { display: flex; align-items: center; font-size: 9.5px; color: var(--text-3); }
+  .usage-top b { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--text-2); }
+  .usage-card .progress { height: 3.5px; margin-top: 6px; }
+  .user-row { display: flex; align-items: center; gap: 7px; padding: 8px 4px 2px; font-size: 11px; font-weight: 600; color: var(--text-2); }
+  .user-row .muted { font-size: 9.5px; }
+
+  /* canvas */
+  .canvas { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .canvas-head {
+    flex: none;
+    height: 54px;
+    padding: 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .crumb { font-size: 10px; color: var(--text-4); display: flex; align-items: center; gap: 4px; }
+  .crumb b { color: var(--text-2); font-weight: 600; }
+  .canvas-title { display: flex; align-items: center; gap: 8px; margin-top: 1px; }
+  .canvas-title h2 { font-size: 14.5px; font-weight: 800; letter-spacing: -0.2px; }
+  .seg {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.5);
+  }
+  .seg span {
+    height: 23px;
+    padding: 0 9px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-3);
+  }
+  .seg span.on { background: #fff; color: var(--accent); box-shadow: var(--shadow-sm); }
+  .seg .ic { width: 12px; height: 12px; }
+  .head-right { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+
+  .thread-wrap { flex: 1; min-height: 0; position: relative; }
+  .thread {
+    width: 860px;
+    max-width: calc(100% - 44px);
+    margin: 0 auto;
+    padding: 10px 0 4px;
+  }
+
+  .msg-user { display: flex; justify-content: flex-end; }
+  .msg-user > div { max-width: 88%; display: flex; flex-direction: column; align-items: flex-end; }
+  .bubble {
+    max-width: 100%;
+    padding: 9px 13px;
+    border-radius: 14px 14px 4px 14px;
+    background: linear-gradient(135deg, #e8f0ff, #eef4ff);
+    border: 1px solid rgba(0, 88, 188, 0.1);
+    color: #17335e;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .msg-meta { text-align: right; font-size: 9.5px; color: var(--text-4); margin-top: 4px; }
+
+  .assistant { display: flex; gap: 9px; margin-top: 12px; }
+  .assistant .avatar { width: 27px; height: 27px; margin-top: 1px; }
+  .assistant-main { flex: 1; min-width: 0; }
+  .assistant-name { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; }
+  .assistant-name .pill { height: 18px; font-size: 9.5px; padding: 0 6px; }
+  .assistant-text { font-size: 12.5px; line-height: 1.68; color: var(--text-2); margin-top: 4px; }
+  .assistant-text b { color: var(--text); }
+
+  /* plan card */
+  .plan {
+    margin-top: 10px;
+    padding: 8px 13px 9px;
+    border: 1px solid rgba(0, 88, 188, 0.16);
+    border-radius: 13px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(232, 240, 255, 0.48));
+    box-shadow: var(--shadow-sm);
+  }
+  .plan-head { display: flex; align-items: center; gap: 7px; }
+  .plan-head b { font-size: 11.5px; }
+  .plan-head .more { margin-left: auto; font-size: 10px; color: var(--text-3); display: inline-flex; align-items: center; gap: 3px; }
+  .steps { display: flex; align-items: flex-start; margin-top: 7px; }
+  .step { flex: 1; position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 9.5px; color: var(--text-4); text-align: center; }
+  .step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: calc(50% + 9px);
+    right: calc(-50% + 9px);
+    height: 1.5px;
+    background: rgba(15, 23, 42, 0.1);
+  }
+  .step.done:not(:last-child)::after { background: rgba(22, 163, 74, 0.4); }
+  .step i {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(15, 23, 42, 0.16);
+    background: #fff;
+    display: grid;
+    place-items: center;
+    position: relative;
+    z-index: 1;
+  }
+  .step i .ic { width: 8px; height: 8px; stroke-width: 3; color: #fff; }
+  .step.done i { background: var(--green); border-color: var(--green); }
+  .step.active i { border-color: var(--accent); border-width: 3px; box-shadow: 0 0 0 3px rgba(0, 88, 188, 0.1); }
+  .step.active { color: var(--accent); font-weight: 700; }
+  .step.done { color: var(--text-2); }
+
+  /* artifact mosaic */
+  .mosaic { display: grid; grid-template-columns: 1.55fr 1fr; gap: 10px; margin-top: 10px; height: 214px; }
+  .artifact {
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .art-head { flex: none; height: 32px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); }
+  .art-head .ic { color: var(--text-3); }
+  .art-head b { font-size: 10.5px; font-family: var(--mono); font-weight: 600; color: var(--text-2); }
+  .art-head .grow { flex: 1; }
+  .art-body { flex: 1; min-height: 0; }
+  .art-foot { flex: none; height: 28px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--border); font-size: 9.5px; color: var(--text-4); }
+
+  .diff-code { padding: 0; }
+  .diff-code .code-row { font-size: 10.5px; line-height: 1.44; }
+  .diff-code .code-row .ln { width: 24px; padding-right: 7px; }
+  .diff-code .code-row.add, .diff-code .code-row.del { position: relative; }
+
+  /* mini preview */
+  .mini {
+    margin: 9px 10px 8px;
+    height: calc(100% - 17px);
+    border-radius: 8px;
+    border: 1px solid rgba(15, 23, 42, 0.1);
+    overflow: hidden;
+    background: #fbfcff;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+    display: flex;
+    flex-direction: column;
+  }
+  .mini-bar { height: 17px; flex: none; display: flex; align-items: center; gap: 3px; padding: 0 6px; background: #f1f4fa; border-bottom: 1px solid rgba(15, 23, 42, 0.06); }
+  .mini-bar i { width: 4px; height: 4px; border-radius: 50%; background: #d2dae7; }
+  .mini-bar i:first-child { background: #f4a9a9; }
+  .mini-bar i:nth-child(2) { background: #f6d08c; }
+  .mini-bar i:nth-child(3) { background: #a9dfb5; }
+  .mini-bar span { margin-left: 4px; font-family: var(--mono); font-size: 6px; color: #a9b4c4; }
+  .mini-body { flex: 1; display: flex; min-height: 0; background: linear-gradient(135deg, #f7f9fe, #fdfbff); }
+  .mini-rail { width: 20px; flex: none; background: rgba(255, 255, 255, 0.75); border-right: 1px solid rgba(15, 23, 42, 0.05); display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 5px; }
+  .mini-rail i { width: 8px; height: 8px; border-radius: 3px; background: #e3eaf6; }
+  .mini-rail i:first-child { background: var(--accent); }
+  .mini-main { flex: 1; padding: 6px 7px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .mini-title { width: 46px; height: 4px; border-radius: 2px; background: #c9d8ee; }
+  .mini-bubble { width: 58%; height: 10px; border-radius: 4px; background: #e3edfd; margin-left: auto; }
+  .mini-text { height: 3px; border-radius: 2px; background: #e8edf5; }
+  .mini-text.s { width: 70%; }
+  .mini-card { margin-top: 1px; height: 28px; border-radius: 5px; border: 1px solid rgba(0, 88, 188, 0.13); background: linear-gradient(135deg, #fff, #eef5ff); display: flex; align-items: center; gap: 4px; padding: 0 5px; }
+  .mini-card .sq { width: 10px; height: 10px; border-radius: 3px; background: rgba(0, 88, 188, 0.14); }
+  .mini-card .l { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .mini-card .l i { display: block; height: 2.5px; border-radius: 2px; background: #dbe6f6; }
+  .mini-card .l i:first-child { width: 60%; background: #c8d9f1; }
+  .mini-composer { margin-top: auto; height: 13px; border-radius: 5px; border: 1px solid rgba(15, 23, 42, 0.1); background: #fff; display: flex; align-items: center; gap: 3px; padding: 0 4px; }
+  .mini-composer i { width: 3px; height: 3px; border-radius: 50%; background: #c3cfdf; }
+  .mini-composer b { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .mini-panel { width: 27%; flex: none; border-left: 1px solid rgba(15, 23, 42, 0.06); background: rgba(232, 240, 255, 0.45); display: flex; flex-direction: column; gap: 4px; padding: 7px 5px; }
+  .mini-panel i { display: block; height: 3px; border-radius: 2px; background: #cfdff5; }
+  .mini-panel i:nth-child(2) { width: 72%; background: #dde8f7; }
+  .mini-panel i:nth-child(3) { width: 84%; background: #e4ecf7; }
+  .mini-panel i.b { margin-top: 3px; height: 22px; border-radius: 4px; border: 1px solid rgba(0, 88, 188, 0.12); background: #fff; }
+
+  /* collapsed tool row */
+  .tool-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 8px;
+    padding: 5px 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.56);
+    font-size: 10.5px;
+    color: var(--text-3);
+  }
+  .tool-row .ok-ic { width: 15px; height: 15px; color: var(--green-text); }
+  .tool-row b { font-size: 10.5px; color: var(--text-2); }
+  .tool-row code { font-family: var(--mono); font-size: 9.5px; color: var(--text-2); }
+  .tool-row .grow { flex: 1; }
+  .tool-row .link { color: var(--accent); font-weight: 600; font-size: 10px; display: inline-flex; align-items: center; gap: 2px; }
+
+  .summary { margin-top: 8px; }
+  .summary p { font-size: 12.5px; line-height: 1.65; color: var(--text-2); }
+  .summary ul { margin-top: 4px; padding-left: 0; }
+  .summary li { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.48; color: var(--text-2); }
+  .summary li .ic { width: 12px; height: 12px; color: var(--green-text); margin-top: 3px; flex: none; }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 5px; font-size: 10px; color: var(--text-4); }
+  .actions span { display: inline-flex; align-items: center; gap: 4px; }
+  .actions .ic { width: 12px; height: 12px; }
+  .actions .tok { margin-left: 2px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; font-family: var(--mono); font-size: 9px; }
+
+  /* dock */
+  .dock { flex: none; padding: 7px 0 11px; background: linear-gradient(transparent, rgba(255, 255, 255, 0.42) 34%); }
+  .dock-inner { width: 860px; max-width: calc(100% - 44px); margin: 0 auto; }
+  .suggest { display: flex; align-items: center; gap: 5px; margin-bottom: 7px; }
+  .suggest .sg {
+    height: 23px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.62);
+    color: var(--text-3);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .suggest .sg .ic { width: 11px; height: 11px; color: var(--accent); }
+  .dock .composer { border-radius: 17px; }
+  .dock .hint-row { margin-top: 6px; }
+
+  /* utility rail */
+  .util {
+    width: 52px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 10px 0;
+  }
+  .util-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    color: var(--text-3);
+  }
+  .util-btn .ic { width: 17px; height: 17px; }
+  .util-btn.on { background: rgba(0, 88, 188, 0.09); color: var(--accent); }
+  .util-sep { width: 22px; height: 1px; background: var(--border); margin: 5px 0; }
+  .util .avatar { margin-top: auto; }
+</style>
+</head>
+<body>
+<div class="win">
+
+  <header class="titlebar">
+    <div class="tb-left">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24"><path d="M3.5 13.2c2.3 0 2.7-4.2 5-4.2s2.7 4.2 5 4.2 2.7-4.2 5-4.2 2.7 4.2 5 4.2"/></svg>
+        </span>
+        OurCode
+      </div>
+      <div class="ws">
+        <svg class="ic xs"><use href="#i-folder"/></svg>
+        ourcode-ide
+        <span class="sep">/</span>
+        <code>agent-ui</code>
+        <svg class="ic xs" style="color:var(--text-4)"><use href="#i-chevron-down"/></svg>
+      </div>
+    </div>
+    <div class="tb-center">
+      <div class="cmd">
+        <svg class="ic sm"><use href="#i-search"/></svg>
+        搜索会话、文件或命令
+        <span class="kbd">Ctrl K</span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span class="tb-status" style="background:rgba(0,88,188,.08);color:var(--accent)"><i class="dot blue live"></i>Agent 运行中</span>
+      <span class="pill"><svg class="ic xs"><use href="#i-zap"/></svg>24.6k</span>
+      <span class="avatar sm">YG</span>
+      <div class="wbtns">
+        <button class="wbtn"><svg class="ic sm"><use href="#i-minimize"/></svg></button>
+        <button class="wbtn"><svg class="ic xs"><use href="#i-window"/></svg></button>
+        <button class="wbtn close"><svg class="ic sm"><use href="#i-x"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ===== sessions ===== -->
+    <aside class="panel sessions">
+      <button class="sess-new"><svg class="ic"><use href="#i-plus"/></svg>新对话</button>
+      <div class="sess-search"><svg class="ic"><use href="#i-search"/></svg>搜索会话<span style="margin-left:auto" class="kbd">Ctrl K</span></div>
+
+      <div class="sess-group">
+        <div class="sess-label">今天</div>
+        <div class="sess-item active">
+          <svg class="ic"><use href="#i-message"/></svg>
+          <span class="txt">Agent 主画布重构</span>
+          <i class="dot blue live"></i>
+        </div>
+        <div class="sess-item">
+          <svg class="ic"><use href="#i-message"/></svg>
+          <span class="txt">Composer 高度抖动</span>
+          <i class="dot amber"></i>
+        </div>
+        <div class="sess-item">
+          <svg class="ic"><use href="#i-message"/></svg>
+          <span class="txt">diff 查看器补齐</span>
+          <i class="dot purple"></i>
+        </div>
+      </div>
+
+      <div class="sess-group">
+        <div class="sess-label">本周</div>
+        <div class="sess-item">
+          <svg class="ic"><use href="#i-message"/></svg>
+          <span class="txt">Windows 打包脚本</span>
+          <span class="meta">周一</span>
+        </div>
+        <div class="sess-item">
+          <svg class="ic"><use href="#i-message"/></svg>
+          <span class="txt">Q3 周报数据整理</span>
+          <span class="meta">周日</span>
+        </div>
+      </div>
+
+      <div class="sess-group">
+        <div class="sess-label">项目</div>
+        <div class="proj-row"><svg class="ic"><use href="#i-folder"/></svg>ourcode-ide<span class="n">12</span></div>
+        <div class="proj-row"><svg class="ic"><use href="#i-folder"/></svg>q3-report<span class="n">4</span></div>
+        <div class="proj-row"><svg class="ic"><use href="#i-folder"/></svg>wechat-twin<span class="n">3</span></div>
+      </div>
+
+      <div class="sess-foot">
+        <div class="usage-card">
+          <div class="usage-top">本月 Agent 用量<b>1.82M / 5M</b></div>
+          <div class="progress"><i style="width:36%"></i></div>
+        </div>
+        <div class="user-row"><span class="avatar sm">YG</span>YG<span class="muted" style="margin-left:auto">Pro</span></div>
+      </div>
+    </aside>
+
+    <!-- ===== conversation canvas ===== -->
+    <main class="panel canvas">
+      <header class="canvas-head">
+        <div>
+          <div class="crumb">ourcode-ide <span>/</span> agent-ui <span>/</span> <b>重构主画布</b></div>
+          <div class="canvas-title">
+            <h2>Agent 主画布重构</h2>
+            <span class="pill accent"><span class="spinner" style="width:9px;height:9px;border-width:1.5px"></span>运行中 · 14/18</span>
+            <span class="pill plain"><svg class="ic xs"><use href="#i-zap"/></svg>24.6k tokens</span>
+          </div>
+        </div>
+        <div class="head-right">
+          <div class="seg">
+            <span><svg class="ic"><use href="#i-message"/></svg>对话</span>
+            <span class="on"><svg class="ic"><use href="#i-columns"/></svg>画布</span>
+            <span><svg class="ic"><use href="#i-panel-right"/></svg>分屏</span>
+          </div>
+          <button class="icon-btn"><svg class="ic"><use href="#i-search"/></svg></button>
+          <button class="icon-btn"><svg class="ic"><use href="#i-more"/></svg></button>
+        </div>
+      </header>
+
+      <div class="thread-wrap scroll">
+        <div class="thread">
+          <!-- user -->
+          <div class="msg-user">
+            <div>
+              <div class="bubble">把主画布改成会话优先，右侧只保留产物栏；编辑器降级为可唤醒的工作台。运行过程不要再让我切视图。</div>
+              <div class="msg-meta">14:02 · 你</div>
+            </div>
+          </div>
+
+          <!-- assistant -->
+          <div class="assistant">
+            <span class="avatar agent"><svg class="ic"><use href="#i-bot"/></svg></span>
+            <div class="assistant-main">
+              <div class="assistant-name">
+                OurCode Agent
+                <span class="pill plain">Claude Sonnet 4.5</span>
+                <span class="pill green"><svg class="ic xs"><use href="#i-shield"/></svg>手动确认</span>
+              </div>
+              <div class="assistant-text">我先把壳拆成三段，再把运行过程收进消息流。计划、diff 和预览都放在下面，你可以直接在这里审。</div>
+
+              <!-- plan -->
+              <div class="plan">
+                <div class="plan-head">
+                  <svg class="ic sm" style="color:var(--accent)"><use href="#i-list"/></svg>
+                  <b>执行计划</b>
+                  <span class="pill green">3 / 5 完成</span>
+                  <span class="more">收起<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+                </div>
+                <div class="steps">
+                  <div class="step done"><i><svg class="ic"><use href="#i-check"/></svg></i>读取结构</div>
+                  <div class="step done"><i><svg class="ic"><use href="#i-check"/></svg></i>抽三栏骨架</div>
+                  <div class="step done"><i><svg class="ic"><use href="#i-check"/></svg></i>会话栏常驻</div>
+                  <div class="step active"><i></i>RunTimeline</div>
+                  <div class="step"><i></i>窄窗核对</div>
+                </div>
+              </div>
+
+              <!-- artifacts -->
+              <div class="mosaic">
+                <div class="artifact">
+                  <div class="art-head">
+                    <svg class="ic sm"><use href="#i-file-code"/></svg>
+                    <b>AgentShell.tsx</b>
+                    <span class="pill green" style="height:18px;font-size:9px;padding:0 5px">+42</span>
+                    <span class="pill red" style="height:18px;font-size:9px;padding:0 5px">−18</span>
+                    <span class="grow"></span>
+                    <span style="font-size:9px;color:var(--text-4)" class="mono">已修改</span>
+                  </div>
+                  <div class="art-body codebox diff-code">
+                    <div class="code-row"><span class="ln">21</span><span class="sign"></span><span><span class="tok-k">export function</span> <span class="tok-f">AgentShell</span>() {</span></div>
+                    <div class="code-row"><span class="ln">22</span><span class="sign"></span><span>  <span class="tok-k">return</span> (</span></div>
+                    <div class="code-row"><span class="ln">23</span><span class="sign"></span><span>    &lt;<span class="tok-t">div</span> <span class="tok-p">className</span>=<span class="tok-s">"flex h-full gap-2 p-2"</span>&gt;</span></div>
+                    <div class="code-row del"><span class="ln">24</span><span class="sign">−</span><span>      &lt;<span class="tok-t">ChatPanel</span> width={<span class="tok-p">chatWidth</span>} /&gt;</span></div>
+                    <div class="code-row add"><span class="ln">24</span><span class="sign">+</span><span>      &lt;<span class="tok-t">SessionRail</span> /&gt;</span></div>
+                    <div class="code-row add"><span class="ln">25</span><span class="sign">+</span><span>      &lt;<span class="tok-t">ConversationView</span> <span class="tok-p">maxWidth</span>={<span class="tok-n">860</span>} /&gt;</span></div>
+                    <div class="code-row add"><span class="ln">26</span><span class="sign">+</span><span>      &lt;<span class="tok-t">ArtifactPanel</span> /&gt;</span></div>
+                    <div class="code-row"><span class="ln">27</span><span class="sign"></span><span>    &lt;/<span class="tok-t">div</span>&gt;</span></div>
+                    <div class="code-row"><span class="ln">28</span><span class="sign"></span><span>  )</span></div>
+                    <div class="code-row"><span class="ln">29</span><span class="sign"></span><span>}</span></div>
+                  </div>
+                  <div class="art-foot">
+                    <span class="mono">3 个文件 · +86 −24</span>
+                    <span class="grow"></span>
+                    <span style="color:var(--accent);font-weight:600;display:inline-flex;align-items:center;gap:2px">审阅全部<svg class="ic xs"><use href="#i-arrow-right"/></svg></span>
+                  </div>
+                </div>
+
+                <div class="artifact">
+                  <div class="art-head">
+                    <svg class="ic sm"><use href="#i-monitor"/></svg>
+                    <b style="font-family:var(--font)">实时预览</b>
+                    <span class="grow"></span>
+                    <span class="pill green" style="height:18px;font-size:9px;padding:0 5px"><i class="dot" style="width:5px;height:5px"></i>HMR</span>
+                  </div>
+                  <div class="art-body">
+                    <div class="mini">
+                      <div class="mini-bar"><i></i><i></i><i></i><span>localhost:5199/agent</span></div>
+                      <div class="mini-body">
+                        <div class="mini-rail"><i></i><i></i><i></i><i></i></div>
+                        <div class="mini-main">
+                          <div class="mini-title"></div>
+                          <div class="mini-bubble"></div>
+                          <div class="mini-text"></div>
+                          <div class="mini-text s"></div>
+                          <div class="mini-card"><span class="sq"></span><span class="l"><i></i><i></i></span></div>
+                          <div class="mini-composer"><i></i><i></i><b></b></div>
+                        </div>
+                        <div class="mini-panel"><i></i><i></i><i></i><i class="b"></i></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="art-foot">
+                    <span class="mono">localhost:5199</span>
+                    <span class="grow"></span>
+                    <span style="display:inline-flex;align-items:center;gap:3px;color:var(--accent);font-weight:600">在画布打开<svg class="ic xs"><use href="#i-external"/></svg></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- collapsed terminal -->
+              <div class="tool-row">
+                <svg class="ic ok-ic"><use href="#i-check-circle"/></svg>
+                <b>typecheck</b>
+                <code>npm run typecheck</code>
+                <span class="pill green" style="height:18px;font-size:9px;padding:0 5px">0 errors · 12.4s</span>
+                <span class="grow"></span>
+                <span class="link">查看输出<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+              </div>
+
+              <!-- summary -->
+              <div class="summary">
+                <p>骨架已经跑通：1280 / 1920 两档下阅读列都稳定在 860px，1024px 以下自动收成单列。</p>
+                <ul>
+                  <li><svg class="ic"><use href="#i-check"/></svg>会话栏改为常驻，运行状态收进消息流，不再需要切「轨迹」。</li>
+                  <li><svg class="ic"><use href="#i-check"/></svg>产物栏只在需要时展开，diff 与预览支持就地审阅。</li>
+                </ul>
+                <div class="actions">
+                  <span><svg class="ic"><use href="#i-refresh"/></svg>重新生成</span>
+                  <span><svg class="ic"><use href="#i-copy"/></svg>复制</span>
+                  <span><svg class="ic"><use href="#i-thumbs-up"/></svg>有帮助</span>
+                  <span class="tok">⏱ 24.6k Token</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- dock -->
+      <div class="dock">
+        <div class="dock-inner">
+          <div class="suggest">
+            <span class="sg"><svg class="ic"><use href="#i-sparkles"/></svg>继续优化窄窗</span>
+            <span class="sg"><svg class="ic"><use href="#i-check-circle"/></svg>补 e2e 断言</span>
+            <span class="sg"><svg class="ic"><use href="#i-git-branch"/></svg>生成提交信息</span>
+          </div>
+          <div class="composer">
+            <div class="input">继续追问，或输入 / 命令…<span class="caret"></span></div>
+            <div class="cbar">
+              <button class="chip"><svg class="ic"><use href="#i-plus"/></svg></button>
+              <button class="chip"><svg class="ic"><use href="#i-paperclip"/></svg>附件</button>
+              <span class="chip subtle">Claude Sonnet 4.5<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+              <span class="chip subtle"><svg class="ic xs" style="color:var(--green-text)"><use href="#i-shield"/></svg>手动确认<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+              <span class="grow"></span>
+              <span class="ctx-ring" style="--p:42"><span>42</span></span>
+              <button class="send-btn"><svg class="ic"><use href="#i-send"/></svg></button>
+            </div>
+          </div>
+          <div class="hint-row"><span class="kbd">Enter</span>发送<span class="kbd">Shift Enter</span>换行<span class="kbd">@</span>引用文件</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===== utility rail ===== -->
+    <aside class="panel util">
+      <button class="util-btn on" title="文件"><svg class="ic"><use href="#i-folder"/></svg></button>
+      <button class="util-btn" title="终端"><svg class="ic"><use href="#i-terminal"/></svg></button>
+      <button class="util-btn" title="预览"><svg class="ic"><use href="#i-monitor"/></svg></button>
+      <button class="util-btn" title="产物"><svg class="ic"><use href="#i-layers"/></svg></button>
+      <div class="util-sep"></div>
+      <button class="util-btn" title="搜索"><svg class="ic"><use href="#i-search"/></svg></button>
+      <button class="util-btn" title="设置"><svg class="ic"><use href="#i-settings"/></svg></button>
+      <span class="avatar sm">YG</span>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <span class="si"><svg class="ic xs"><use href="#i-git-branch"/></svg>agent-ui</span>
+    <span class="si"><svg class="ic xs"><use href="#i-check-circle"/></svg>0 个问题</span>
+    <span class="grow"></span>
+    <span class="si" style="color:var(--accent)"><span class="spinner" style="width:8px;height:8px;border-width:1.5px"></span>正在写入 RunTimeline</span>
+    <span class="si">阅读列 860px · 上下文 42%</span>
+    <span class="si ok"><svg class="ic xs"><use href="#i-check"/></svg>已保存</span>
+  </footer>
+</div>
+<script src="sprite.js"></script>
+</body>
+</html>

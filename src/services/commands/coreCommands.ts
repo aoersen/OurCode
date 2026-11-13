@@ -27,7 +27,6 @@ async function openFolderFlow(): Promise<void> {
   const ui = useUIStore.getState()
   ui.setRootPath(path)
   ui.setActiveSidebarTab('files')
-  if (!ui.isSidebarVisible) ui.toggleSidebar()
 }
 
 /** Export the active session in the given format. */
@@ -89,7 +88,6 @@ export function registerCoreCommands(): void {
   registerCommand({ id: 'replace', title: t('commands.replace'), category: t('commands.catEdit'), shortcut: 'Ctrl+H', run: () => runEditorCommand('editor.action.startFindReplaceAction') })
 
   // ── View ──
-  registerCommand({ id: 'toggleSidebar', title: t('commands.toggleSidebar'), category: t('commands.catView'), shortcut: 'Ctrl+B', run: () => useUIStore.getState().toggleSidebar() })
   registerCommand({ id: 'toggleTerminal', title: t('commands.toggleTerminal'), category: t('commands.catView'), shortcut: 'Ctrl+J', run: () => useUIStore.getState().toggleTerminal() })
   registerCommand({ id: 'toggleChat', title: t('commands.toggleChat'), category: t('commands.catView'), shortcut: 'Ctrl+L', run: () => useUIStore.getState().toggleChat() })
   registerCommand({ id: 'toggleProblems', title: t('commands.toggleProblems'), category: t('commands.catView'), shortcut: 'Ctrl+Shift+M', run: () => useProblemsStore.getState().toggle() })
@@ -119,8 +117,13 @@ export function registerCoreCommands(): void {
     id: 'newChatSession', title: t('commands.newChatSession'), category: t('commands.catChat'), shortcut: 'Ctrl+Shift+N',
     run: () => {
       const configId = useConfigStore.getState().activeConfigGroupId
-      if (configId) useChatStore.getState().createSession(configId)
-      else useUIStore.getState().openSettings()
+      if (configId) {
+        useChatStore.getState().createSession(configId)
+        // 新会话的落点是欢迎对话页（对话区）；面板被收起时先调出来。
+        if (!useUIStore.getState().isChatVisible) useUIStore.getState().toggleChat()
+      } else {
+        useUIStore.getState().openSettings()
+      }
     },
   })
   registerCommand({

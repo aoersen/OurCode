@@ -26,8 +26,20 @@ function applyThemeColor(color: string) {
   root.style.setProperty('--accent-purple', color)
 }
 
-/** 设置面板的 tab。与 SettingsModal 里的 tab 列表保持一致。 */
-export type SettingsTab = 'api' | 'appearance' | 'editor' | 'shortcuts' | 'features'
+/** 设置面板的 tab。与 SettingsLayout 的 SettingsTabKey / SettingsModal 里的
+ *  tab 列表保持一致。工具类 tab（agent/usage/skills/mcp/claw）承载原先左侧
+ *  活动栏的面板；代码管理 / 文件变更跟随项目，在进入项目后的侧栏手风琴里。 */
+export type SettingsTab =
+  | 'api'
+  | 'appearance'
+  | 'editor'
+  | 'shortcuts'
+  | 'features'
+  | 'agent'
+  | 'usage'
+  | 'skills'
+  | 'mcp'
+  | 'claw'
 
 /** 打开设置时的定位目标（channel 只对「功能」tab 里的 Claw 区有意义）。 */
 export interface SettingsTarget {
@@ -35,22 +47,28 @@ export interface SettingsTarget {
   clawChannel?: ClawChannelId
 }
 
-/** Sidebar pages, keyed by the activity-bar icon. Owned as one type so the
- *  store, the bar and the panel switch cannot drift apart. */
-export type SidebarTab =
-  | 'files'
-  | 'git'
-  | 'changes'
-  | 'agent'
-  | 'usage'
-  | 'skills'
-  | 'mcp'
-  | 'office'
-  | 'claw'
+/** Left sidebar pages. The activity bar is gone: the sidebar always shows the
+ *  project list, and the former tool panels moved into Settings. `office` only
+ *  matters in the office window (it is the full-window 一人公司 view). */
+export type SidebarTab = 'files' | 'office'
+
+/** Project-internal sidebar sections (accordion). They belong to the open
+ *  project — exactly one is expanded at a time. */
+export type ProjectSection = 'files' | 'git' | 'changes'
+
+const PROJECT_SECTION_KEY = modeKey('projectSection')
+
+function loadProjectSection(): ProjectSection {
+  try {
+    const saved = localStorage.getItem(PROJECT_SECTION_KEY)
+    if (saved === 'files' || saved === 'git' || saved === 'changes') return saved
+  } catch { /* localStorage unavailable — default below */ }
+  return 'files'
+}
 
 interface UIState {
-  // Sidebar
-  isSidebarVisible: boolean
+  // Sidebar — always visible (no collapse/hide affordance): the left rail is
+  // the project list. `sidebarWidth` is still resizable.
   sidebarWidth: number
   activeSidebarTab: SidebarTab
   rootPath: string | null
@@ -112,6 +130,10 @@ interface UIState {
   // Project navigation (sidebar: list ↔ file-tree)
   projectListView: 'list' | 'tree'
   activeProjectPath: string | null
+  /** Which project-internal section (文件 / 代码管理 / 文件变更) is expanded.
+   *  Persisted so re-opening a project lands on the last used section. */
+  projectSection: ProjectSection
+  setProjectSection: (section: ProjectSection) => void
   enterProject: (path: string) => void
   backToProjectList: () => void
   /** User-pinned order of the project list (null = default add-order). Set by
@@ -149,7 +171,6 @@ interface UIState {
   removeOfficeTask: (taskId: string) => void
 
   // Actions
-  toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
   setActiveSidebarTab: (tab: SidebarTab) => void
   setRootPath: (path: string | null) => void
@@ -234,10 +255,8 @@ export interface AppNotification {
 let _nextNotificationId = 1
 
 export const useUIStore = create<UIState>((set, get) => ({
-  // Sidebar — starts hidden: on first launch no folder is open, so showing the
-  // explorer panel would render a large empty area with nothing to fill it
-  // (matches VS Code behavior when no folder/workspace is opened).
-  isSidebarVisible: false,
+  // Sidebar — the left rail is the project list and is always visible (no
+  // collapse affordance). Only the width is user-controlled.
   sidebarWidth: 330,
   activeSidebarTab: 'files',
   rootPath: null,
@@ -297,6 +316,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   // Project navigation
   projectListView: 'list',
   activeProjectPath: null,
+  projectSection: loadProjectSection(),
   projectOrder: (() => { try { return JSON.parse(localStorage.getItem(modeKey('projectOrder')) || 'null') } catch { return null } })(),
 
   // Context Menu
@@ -312,9 +332,12 @@ export const useUIStore = create<UIState>((set, get) => ({
   removedOfficeTasks: (() => { try { return JSON.parse(localStorage.getItem(modeKey('removedOfficeTasks')) || '[]') } catch { return [] } })(),
 
   // Actions
-  toggleSidebar: () => set((s) => ({ isSidebarVisible: !s.isSidebarVisible })),
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
   setActiveSidebarTab: (tab) => set({ activeSidebarTab: tab }),
+  setProjectSection: (section) => {
+    try { localStorage.setItem(PROJECT_SECTION_KEY, section) } catch { /* ignore */ }
+    set({ projectSection: section })
+  },
   setRootPath: (path) => {
     set({ rootPath: path })
     if (path) {
@@ -453,7 +476,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   openQuickOpen: () => set({ isQuickOpenOpen: true }),
   closeQuickOpen: () => set({ isQuickOpenOpen: false }),
 
-  openMcpCenter: () => set({ isSidebarVisible: true, activeSidebarTab: 'mcp' }),
+  openMcpCenter: () => set({ isSettingsOpen: true, settingsTarget: { tab: 'mcp' } }),
 
   openSkillRegistry: () => set({ isSkillRegistryOpen: true }),
   closeSkillRegistry: () => set({ isSkillRegistryOpen: false }),

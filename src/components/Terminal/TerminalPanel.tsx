@@ -14,9 +14,6 @@ interface TerminalTab {
   title: string
   isReady: boolean
   isActive: boolean
-  splitDirection: 'none' | 'horizontal'
-  splitTabId: string | null
-  splitRatio: number
 }
 
 /** Sessions the assistant started (`agent-*` ids, see services/terminalRuns).
@@ -71,6 +68,25 @@ const TERM_THEME_LIGHT = {
   brightWhite: '#24292f',
 }
 
+const CloseIcon = ({ size = 10 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+    <path d="M2 2l6 6M8 2l-6 6" />
+  </svg>
+)
+
+const TerminalGlyph = () => (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M5 7l5 5-5 5" />
+    <path d="M13 17h6" />
+  </svg>
+)
+
+const PlusIcon = ({ size = 12 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+)
+
 interface TerminalPanelProps {
   rootPath?: string | null
 }
@@ -87,7 +103,6 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [splitDragActive, setSplitDragActive] = useState(false)
   const terminalsRef = useRef<Map<string, {
     term: Terminal
     fit: FitAddon
@@ -95,34 +110,42 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     cleanup: (() => void)[]
     disposed: boolean
   }>>(new Map())
+  const hostsRef = useRef<Map<string, HTMLDivElement>>(new Map())
   const initTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
   const seenAgentRunsRef = useRef<Set<string>>(new Set())
   const dismissedAgentRunsRef = useRef<Set<string>>(new Set())
+  const pendingFocusRef = useRef<string | null>(null)
   const activeDragRef = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
 
   // Debounced fit + rAF coalescing for drag resizes. mousemove fires at 60–120 Hz
-  // while dragging the panel height or split ratio; without coalescing every move
-  // schedules its own 10 ms fit() (which is never cancelled) — a drag stacks
-  // dozens of concurrent xterm layout passes + IPC resizes. Now height / ratio
-  // updates are merged into one store write per animation frame, and all fits
-  // collapse into a single debounced pass once dragging pauses.
+  // while dragging the panel height; without coalescing every move schedules its
+  // own fit() (which is never cancelled) — a drag stacks dozens of concurrent
+  // xterm layout passes + IPC resizes. Height updates are merged into one store
+  // write per animation frame, and all fits collapse into a single debounced
+  // pass once dragging pauses.
   const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const heightRafRef = useRef<number | null>(null)
   const pendingHeightRef = useRef(0)
-  const splitRafRef = useRef<number | null>(null)
-  const pendingRatioRef = useRef(0)
+
+  /** Fit only panes that are actually laid out — fitting a `display:none` pane
+   *  yields a 0×0 measurement and resizes its pty to a single column. */
+  const fitVisible = useCallback(() => {
+    terminalsRef.current.forEach((entry) => {
+      if (entry.disposed) return
+      const el = entry.container
+      if (el.clientWidth <= 0 || el.clientHeight <= 0) return
+      try { entry.fit.fit() } catch { /* terminal disposed */ }
+    })
+  }, [])
 
   const scheduleFit = useCallback(() => {
     if (fitTimerRef.current) clearTimeout(fitTimerRef.current)
     fitTimerRef.current = setTimeout(() => {
       fitTimerRef.current = null
-      terminalsRef.current.forEach((entry) => {
-        if (!entry.disposed) {
-          try { entry.fit.fit() } catch { /* terminal disposed */ }
-        }
-      })
+      fitVisible()
     }, 30)
-  }, [])
+  }, [fitVisible])
 
   // Drag to resize (vertical - panel height)
   const dragStartY = useRef(0)
@@ -133,6 +156,8 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     dragStartY.current = e.clientY
     dragStartHeight.current = terminalHeight
     pendingHeightRef.current = terminalHeight
+    document.body.style.cursor = 'ns-resize'
+    document.body.style.userSelect = 'none'
 
     const handleDragMove = (ev: MouseEvent) => {
       const delta = dragStartY.current - ev.clientY
@@ -153,6 +178,8 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
       }
       setTerminalHeight(pendingHeightRef.current)
       scheduleFit()
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
       document.removeEventListener('mousemove', handleDragMove)
       document.removeEventListener('mouseup', handleDragEnd)
       activeDragRef.current = null
@@ -163,20 +190,35 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     document.addEventListener('mouseup', handleDragEnd)
   }, [terminalHeight, setTerminalHeight, scheduleFit])
 
+  const focusTerminal = useCallback((tabId: string) => {
+    const entry = terminalsRef.current.get(tabId)
+    if (entry && !entry.disposed) {
+      try { entry.term.focus() } catch { /* disposed */ }
+      return
+    }
+    // The xterm instance may still be initializing (100 ms debounce); remember
+    // the request and honour it once the pty is attached.
+    pendingFocusRef.current = tabId
+  }, [])
+
+  const selectTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId)
+    focusTerminal(tabId)
+  }, [focusTerminal])
+
   const createTab = useCallback(() => {
     const tabId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    pendingFocusRef.current = tabId
     setTabs((prev) => [...prev, {
       id: tabId,
       title: t('terminal.tabTitle', { count: prev.length + 1 }),
       isReady: false,
       isActive: true,
-      splitDirection: 'none',
-      splitTabId: null,
-      splitRatio: 0.5,
     }])
     setActiveTabId(tabId)
+    focusTerminal(tabId)
     return tabId
-  }, [t])
+  }, [focusTerminal, t])
 
   /** A tab per process the assistant started in this pty layer */
   const openAgentTab = useCallback((run: AgentTerminalRun) => {
@@ -188,144 +230,49 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
         title: moduleT('terminal.agentTabTitle', { command }),
         isReady: false,
         isActive: prev.length === 0,
-        splitDirection: 'none',
-        splitTabId: null,
-        splitRatio: 0.5,
       }]
     })
     setActiveTabId((current) => (current === null ? run.id : current))
   }, [])
 
+  const hidePanel = useCallback(() => {
+    useUIStore.setState({ isTerminalVisible: false })
+  }, [])
+
   const disposeTerminal = useCallback((tabId: string) => {
     const entry = terminalsRef.current.get(tabId)
-    if (entry) {
-      entry.disposed = true
-      entry.cleanup.forEach((fn) => fn())
-      window.electronAPI.termDispose(tabId)
-      entry.term.dispose()
-      entry.container.remove()
-      terminalsRef.current.delete(tabId)
-    }
+    if (!entry) return
+    entry.disposed = true
+    entry.cleanup.forEach((fn) => fn())
+    window.electronAPI.termDispose(tabId)
+    entry.term.dispose()
+    // The pane host is React-owned: React removes it when the tab leaves state.
+    // Removing it here as well would yank the node out from under reconciliation.
+    terminalsRef.current.delete(tabId)
   }, [])
 
   const closeTab = useCallback((tabId: string) => {
+    const tab = tabs.find((x) => x.id === tabId)
+    if (!tab) return
     // Closing an agent tab only detaches the view — the process keeps running in
     // the main process for the assistant to read. Remember it was dismissed so
     // the sync effect below doesn't hand it back on the next store change.
     if (isAgentSessionId(tabId)) dismissedAgentRunsRef.current.add(tabId)
-    const tab = tabs.find((t) => t.id === tabId)
-    // If this tab is part of a split pair, unsplit instead of closing
-    if (tab && tab.splitDirection !== 'none' && tab.splitTabId) {
-      const otherId = tab.splitTabId
-      disposeTerminal(otherId)
-      setTabs((prev) => {
-        const next = prev
-          .filter((t) => t.id !== otherId)
-          .map((t) =>
-            t.id === tabId
-              ? { ...t, splitDirection: 'none' as const, splitTabId: null, splitRatio: 0.5 }
-              : t
-          )
-        if (activeTabId === otherId) {
-          setActiveTabId(tabId)
-        }
-        return next
-      })
-      return
-    }
 
     disposeTerminal(tabId)
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== tabId)
-      if (activeTabId === tabId && next.length > 0) {
-        setActiveTabId(next[next.length - 1].id)
-      } else if (next.length === 0) {
-        setActiveTabId(null)
-        useUIStore.getState().toggleTerminal()
-      }
-      return next
-    })
-  }, [activeTabId, tabs, disposeTerminal])
 
-  // Split the active terminal into left/right panes
-  const splitTerminal = useCallback(() => {
-    if (!activeTabId) return
-    const currentTab = tabs.find((t) => t.id === activeTabId)
-    if (!currentTab || currentTab.splitDirection !== 'none') return
+    const remaining = tabs.filter((x) => x.id !== tabId)
+    setTabs(remaining)
 
-    const newTabId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    const newTitle = t('terminal.tabTitle', { count: tabs.length + 1 })
-
-    setTabs((prev) => [
-      ...prev.map((t) =>
-        t.id === activeTabId
-          ? { ...t, splitDirection: 'horizontal' as const, splitTabId: newTabId, splitRatio: 0.5 }
-          : t
-      ),
-      {
-        id: newTabId,
-        title: newTitle,
-        isReady: false,
-        isActive: true,
-        splitDirection: 'horizontal' as const,
-        splitTabId: activeTabId,
-        splitRatio: 0.5,
-      },
-    ])
-    setActiveTabId(newTabId)
-  }, [activeTabId, tabs, t])
-
-  // Split ratio drag handler (horizontal)
-  const handleSplitDragStart = useCallback((primaryTabId: string, e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setSplitDragActive(true)
-
-    const container = (e.target as HTMLElement).parentElement
-    if (!container) return
-    const rect = container.getBoundingClientRect()
-    const primaryTab = tabs.find((t) => t.id === primaryTabId)
-    if (!primaryTab) return
-    const startRatio = primaryTab.splitRatio
-    pendingRatioRef.current = startRatio
-
-    const handleDragMove = (ev: MouseEvent) => {
-      const delta = ev.clientX - (rect.left + rect.width * startRatio)
-      pendingRatioRef.current = Math.max(0.2, Math.min(0.8, startRatio + delta / rect.width))
-      if (splitRafRef.current === null) {
-        splitRafRef.current = requestAnimationFrame(() => {
-          splitRafRef.current = null
-          setTabs((prev) =>
-            prev.map((t) => (t.id === primaryTabId ? { ...t, splitRatio: pendingRatioRef.current } : t))
-          )
-          scheduleFit()
-        })
-      }
+    if (activeTabId === tabId) {
+      setActiveTabId(remaining.length > 0 ? remaining[remaining.length - 1].id : null)
     }
-
-    const handleDragEnd = () => {
-      if (splitRafRef.current !== null) {
-        cancelAnimationFrame(splitRafRef.current)
-        splitRafRef.current = null
-      }
-      setTabs((prev) =>
-        prev.map((t) => (t.id === primaryTabId ? { ...t, splitRatio: pendingRatioRef.current } : t))
-      )
-      scheduleFit()
-      setSplitDragActive(false)
-      document.removeEventListener('mousemove', handleDragMove)
-      document.removeEventListener('mouseup', handleDragEnd)
-      activeDragRef.current = null
-    }
-
-    activeDragRef.current = { move: handleDragMove, up: handleDragEnd }
-    document.addEventListener('mousemove', handleDragMove)
-    document.addEventListener('mouseup', handleDragEnd)
-  }, [tabs, scheduleFit])
+    if (remaining.length === 0) hidePanel()
+  }, [tabs, activeTabId, disposeTerminal, hidePanel])
 
   // Start renaming a tab
   const startRename = useCallback((tabId: string) => {
-    const tab = tabs.find((t) => t.id === tabId)
+    const tab = tabs.find((x) => x.id === tabId)
     if (!tab) return
     setRenamingTabId(tabId)
     setRenameValue(tab.title)
@@ -334,7 +281,7 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
   const commitRename = useCallback(() => {
     if (!renamingTabId) return
     setTabs((prev) =>
-      prev.map((t) => (t.id === renamingTabId ? { ...t, title: renameValue || t.title } : t))
+      prev.map((x) => (x.id === renamingTabId ? { ...x, title: renameValue || x.title } : x))
     )
     setRenamingTabId(null)
   }, [renamingTabId, renameValue])
@@ -410,7 +357,10 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
       initTimeoutsRef.current.delete(initTimeout)
       const entry = terminalsRef.current.get(tabId)
       if (!entry || entry.disposed) return
-      fitAddon.fit()
+      const host = entry.container // may have been re-attached since init
+      if (host.clientWidth > 0 && host.clientHeight > 0) {
+        try { fitAddon.fit() } catch { /* disposed */ }
+      }
       if (isAgent) {
         // Attach to a process the assistant started: replay what it has already
         // produced, then let the live stream through.
@@ -424,13 +374,21 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
             (attached?.output ?? '') + heldOutput +
             (attached && !attached.running ? '\r\n' + moduleT('terminal.processExited') : '')
           )
-          setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, isReady: true } : t)))
+          setTabs((prev) => prev.map((x) => (x.id === tabId ? { ...x, isReady: true } : x)))
+          if (pendingFocusRef.current === tabId) {
+            pendingFocusRef.current = null
+            try { term.focus() } catch { /* disposed */ }
+          }
         })
         return
       }
       window.electronAPI.termCreate(tabId, rootPath || undefined).then(() => {
         if (!entry.disposed) {
-          setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, isReady: true } : t))
+          setTabs((prev) => prev.map((x) => (x.id === tabId ? { ...x, isReady: true } : x)))
+          if (pendingFocusRef.current === tabId) {
+            pendingFocusRef.current = null
+            try { term.focus() } catch { /* disposed */ }
+          }
         }
       })
     }, 100)
@@ -492,43 +450,52 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     terminalsRef.current.set(tabId, { term, fit: fitAddon, container, cleanup, disposed: false })
   }, [rootPath])
 
-  // Fit active terminal (and its split partner) when switching tabs or resizing
+  /** Attach a React pane host to its xterm instance. Panes keep a stable key per
+   *  tab, but if a host is ever remounted (StrictMode remount, future layout
+   *  change) the live `.xterm` element has to move with it — otherwise the
+   *  terminal stays inside the detached node and the pane renders blank. */
+  const attachPane = useCallback((tabId: string, el: HTMLDivElement | null) => {
+    if (!el) return
+    hostsRef.current.set(tabId, el)
+    const entry = terminalsRef.current.get(tabId)
+    if (!entry) {
+      // A hidden host measures 0×0 and xterm would cache a zero character size,
+      // so defer opening it until the pane is actually laid out. The visibility
+      // effect below retries as soon as the tab is shown.
+      if (el.clientWidth > 0 && el.clientHeight > 0) initTerminal(tabId, el)
+      return
+    }
+    if (entry.container !== el) {
+      if (entry.term.element) el.appendChild(entry.term.element)
+      entry.container = el
+      scheduleFit()
+    }
+  }, [initTerminal, scheduleFit])
+
+  /** Open the terminal that became visible after being created in the background. */
+  const ensureVisibleTerminals = useCallback(() => {
+    if (activeTabId && !terminalsRef.current.has(activeTabId)) {
+      const host = hostsRef.current.get(activeTabId)
+      if (host && host.clientWidth > 0 && host.clientHeight > 0) initTerminal(activeTabId, host)
+    }
+    fitVisible()
+  }, [activeTabId, initTerminal, fitVisible])
+
+  // Fit the visible terminal after a tab switch / height change.
   useEffect(() => {
     if (!activeTabId || !isTerminalVisible) return
-    const fitEntry = (id: string) => {
-      const entry = terminalsRef.current.get(id)
-      if (entry) setTimeout(() => { try { entry.fit.fit() } catch { /* */ } }, 50)
-    }
-    fitEntry(activeTabId)
-    // Also fit the split partner
-    const activeTab = tabs.find((t) => t.id === activeTabId)
-    if (activeTab && activeTab.splitTabId) {
-      fitEntry(activeTab.splitTabId)
-      // If this is the secondary pane, also fit the primary
-      if (activeTab.splitDirection !== 'none') {
-        const primaryTab = tabs.find((t) => t.id === activeTab.splitTabId)
-        if (primaryTab) fitEntry(primaryTab.id)
-      }
-    }
-  }, [activeTabId, terminalHeight, isTerminalVisible, tabs])
+    const timer = setTimeout(ensureVisibleTerminals, 50)
+    return () => clearTimeout(timer)
+  }, [activeTabId, terminalHeight, isTerminalVisible, tabs, ensureVisibleTerminals])
 
-  // Window resize handler
+  // The stage also changes width when the sidebar / chat panels are dragged.
   useEffect(() => {
-    const handleResize = () => {
-      if (!activeTabId || !isTerminalVisible) return
-      const fitEntry = (id: string) => {
-        const entry = terminalsRef.current.get(id)
-        if (entry) setTimeout(() => { try { entry.fit.fit() } catch { /* */ } }, 10)
-      }
-      fitEntry(activeTabId)
-      const activeTab = tabs.find((t) => t.id === activeTabId)
-      if (activeTab && activeTab.splitTabId) {
-        fitEntry(activeTab.splitTabId)
-      }
-    }
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [activeTabId, isTerminalVisible, tabs])
+    const el = stageRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => scheduleFit())
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [scheduleFit])
 
   // Cleanup all on unmount
   useEffect(() => {
@@ -538,17 +505,18 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
     const terminals = terminalsRef.current
     return () => {
       // Clear pending init timeouts
-      initTimeouts.forEach((t) => clearTimeout(t))
+      initTimeouts.forEach((timeoutId) => clearTimeout(timeoutId))
       initTimeouts.clear()
       // Clear pending fit debounce + drag rAF coalescing timers
       if (fitTimerRef.current) clearTimeout(fitTimerRef.current)
       if (heightRafRef.current) cancelAnimationFrame(heightRafRef.current)
-      if (splitRafRef.current) cancelAnimationFrame(splitRafRef.current)
       // Remove any active drag listeners
       if (activeDragRef.current) {
         document.removeEventListener('mousemove', activeDragRef.current.move)
         document.removeEventListener('mouseup', activeDragRef.current.up)
         activeDragRef.current = null
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
       }
       // Dispose all terminals
       terminals.forEach((entry, id) => {
@@ -563,158 +531,107 @@ export default function TerminalPanel({ rootPath }: TerminalPanelProps) {
 
   if (!isTerminalVisible) return null
 
-  // Helper: determine if a tab should be visible
-  const isTabVisible = (tab: TerminalTab): boolean => {
-    if (tab.id === activeTabId) return true
-    // If active tab's split partner, also visible
-    const activeTab = tabs.find((t) => t.id === activeTabId)
-    if (activeTab && activeTab.splitTabId === tab.id) return true
-    // If this tab's split partner is active, also visible
-    if (tab.splitDirection !== 'none' && tab.splitTabId === activeTabId) return true
-    return false
-  }
-
-  // Get the primary (left) pane for a split pair — the one created first (lower index in tabs array)
-  const getPrimaryPane = (tabId: string): TerminalTab | null => {
-    const tab = tabs.find((t) => t.id === tabId)
-    if (!tab || tab.splitDirection === 'none') return null
-    const other = tabs.find((t) => t.id === tab.splitTabId)
-    if (!other) return null
-    return tabs.indexOf(tab) < tabs.indexOf(other) ? tab : other
-  }
+  const iconButton = 'w-6 h-6 flex items-center justify-center rounded-md text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors shrink-0'
 
   return (
     <div className="h-full flex flex-col">
-      {/* Drag handle */}
+      {/* Drag handle (resize panel height) */}
       <div
-        className="h-1.5 cursor-ns-resize hover:bg-nova-accent/40 transition-colors flex-shrink-0"
+        className="group relative h-2 cursor-ns-resize flex-shrink-0"
         onMouseDown={handleDragStart}
-      />
+        title={t('terminal.resizeHint')}
+      >
+        <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-1 w-10 rounded-full bg-nova-text-muted/25 group-hover:bg-nova-accent/50 transition-colors" />
+      </div>
 
       {/* Tab bar */}
-      <div className="flex items-center h-7 bg-transparent flex-shrink-0 overflow-x-auto">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={`flex items-center gap-1 px-3 h-full text-[11px] cursor-pointer border-r border-nova-border shrink-0 ${
-              tab.id === activeTabId
-                ? 'bg-nova-tab-active text-nova-text-primary'
-                : 'bg-transparent text-nova-text-muted hover:bg-nova-hover'
-            }`}
-            onClick={() => setActiveTabId(tab.id)}
-            onDoubleClick={() => startRename(tab.id)}
+      <div className="flex items-center gap-1 h-9 px-2 shrink-0 border-b border-nova-border/70">
+        <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-x-auto terminal-tabbar-scroll" role="tablist">
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTabId
+            return (
+              <div
+                key={tab.id}
+                role="tab"
+                aria-selected={isActive}
+                className={`group flex items-center gap-1.5 h-[26px] pl-2 pr-1 rounded-full border text-[11px] cursor-pointer shrink-0 select-none transition-colors ${
+                  isActive
+                    ? 'bg-nova-surface text-nova-text-primary border-nova-border shadow-sm'
+                    : 'border-transparent text-nova-text-muted hover:text-nova-text-secondary hover:bg-nova-hover'
+                }`}
+                onClick={() => selectTab(tab.id)}
+                onDoubleClick={() => startRename(tab.id)}
+                title={tab.title}
+              >
+                <span className="shrink-0 opacity-60"><TerminalGlyph /></span>
+                {renamingTabId === tab.id ? (
+                  <input
+                    className="bg-nova-input-bg text-nova-text-primary text-[11px] px-1 py-0 outline-none border border-nova-accent rounded w-[90px]"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename()
+                      if (e.key === 'Escape') setRenamingTabId(null)
+                    }}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <span className="truncate max-w-[120px]">{tab.title}</span>
+                )}
+                <button
+                  className="w-4 h-4 flex items-center justify-center rounded-full text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-border/60 transition-colors"
+                  onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
+                  title={t('terminal.closeTab')}
+                  aria-label={t('terminal.closeTab')}
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+            )
+          })}
+          <button
+            className={`${iconButton} ml-0.5`}
+            onClick={() => createTab()}
+            title={t('terminal.new')}
+            aria-label={t('terminal.new')}
           >
-            {renamingTabId === tab.id ? (
-              <input
-                className="bg-nova-input-bg text-nova-text-primary text-[11px] px-1 py-0 outline-none border border-nova-accent rounded w-[80px]"
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitRename()
-                  if (e.key === 'Escape') setRenamingTabId(null)
-                }}
-                autoFocus
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <span className="truncate max-w-[100px]">{tab.title}</span>
-            )}
+            <PlusIcon size={13} />
+          </button>
+        </div>
+
+        {/* Bar actions: close panel */}
+        {activeTabId && (
+          <div className="flex items-center gap-0.5 shrink-0 pl-1">
             <button
-              className="ml-1 text-nova-text-muted hover:text-nova-text-primary text-[10px]"
-              onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
-              title={tab.splitDirection !== 'none' ? t('terminal.unsplit') : t('common.close')}
+              className={iconButton}
+              onClick={hidePanel}
+              title={t('terminal.closePanel')}
+              aria-label={t('terminal.closePanel')}
             >
-              ×
+              <CloseIcon size={12} />
             </button>
           </div>
-        ))}
-        <button
-          className="px-2 h-full text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover text-sm shrink-0"
-          onClick={createTab}
-          title={t('terminal.new')}
-        >
-          +
-        </button>
-        {/* Split button - only show when active tab is not already split */}
-        {activeTabId && tabs.find((t) => t.id === activeTabId)?.splitDirection === 'none' && (
-          <button
-            className="px-2 h-full text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover text-xs shrink-0"
-            onClick={splitTerminal}
-            title={t('terminal.split')}
-          >
-            ⧉
-          </button>
         )}
       </div>
 
-      {/* Terminal containers */}
-      <div className="flex-1 relative overflow-hidden">
-        {tabs.map((tab) => {
-          const visible = isTabVisible(tab)
-          if (!visible) return null
-
-          // Check if this tab is part of a split pair
-          if (tab.splitDirection !== 'none' && tab.splitTabId) {
-            const primary = getPrimaryPane(tab.id)
-            // Only render the split layout once (from the primary pane's perspective)
-            if (primary && tab.id === primary.id) {
-              const secondary = tabs.find((t) => t.id === tab.splitTabId)
-              if (!secondary) return null
-              const ratio = primary.splitRatio
-
-              return (
-                <div
-                  key={`split-${primary.id}`}
-                  className="absolute inset-0 flex"
-                  style={{ display: primary.id === activeTabId || secondary.id === activeTabId ? 'flex' : 'none' }}
-                >
-                  {/* Left pane */}
-                  <div
-                    ref={(el) => {
-                      if (el && !terminalsRef.current.has(primary.id)) {
-                        initTerminal(primary.id, el)
-                      }
-                    }}
-                    className="h-full"
-                    style={{ width: `${ratio * 100}%` }}
-                  />
-                  {/* Resizer */}
-                  <div
-                    className={`terminal-split-resizer ${splitDragActive ? 'active' : ''}`}
-                    onMouseDown={(e) => handleSplitDragStart(primary.id, e)}
-                  />
-                  {/* Right pane */}
-                  <div
-                    ref={(el) => {
-                      if (el && !terminalsRef.current.has(secondary.id)) {
-                        initTerminal(secondary.id, el)
-                      }
-                    }}
-                    className="h-full"
-                    style={{ width: `${(1 - ratio) * 100}%` }}
-                  />
-                </div>
-              )
-            }
-            // Secondary pane is rendered as part of primary's layout, skip it
-            if (primary && tab.id !== primary.id) return null
-          }
-
-          // Non-split tab
-          return (
-            <div
-              key={tab.id}
-              ref={(el) => {
-                if (el && !terminalsRef.current.has(tab.id)) {
-                  initTerminal(tab.id, el)
-                }
-              }}
-              className="absolute inset-0 px-1 pb-1"
-              style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
-            />
-          )
-        })}
+      {/* Pane stage. Every tab keeps one host element for its whole life; only
+          the active one is displayed, so switching tabs never orphans xterm
+          inside a detached node (which rendered the pane blank). */}
+      <div ref={stageRef} className="relative flex-1 min-h-0 mx-1.5 mb-1.5 mt-1">
+        {tabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={`terminal-pane absolute inset-0 overflow-hidden rounded-lg border transition-colors ${
+              tab.id === activeTabId ? 'border-nova-accent/40' : 'border-nova-border/60'
+            }`}
+            style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
+          >
+            {/* xterm lives in its own host: React never reconciles the host's children. */}
+            <div ref={(el) => attachPane(tab.id, el)} className="absolute inset-0" />
+          </div>
+        ))}
       </div>
     </div>
   )

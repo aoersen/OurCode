@@ -80,6 +80,34 @@ async function clickTopArrow(locator: Locator) {
   }).toPass({ timeout: 30000 })
 }
 
+/** Open a folder through the real menu dialog and enter it from the project
+ *  list — 文件变更 now lives in the project-internal sidebar accordion, so the
+ *  test has to be "inside" the reviewed project. */
+async function enterProject(app: Awaited<ReturnType<typeof electron.launch>>, win: Page, dir: string) {
+  await app.evaluate(({ dialog }, folder) => {
+    ;(dialog as any).showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+  }, dir)
+  await expect(async () => {
+    await win.keyboard.press('Control+o')
+    await win.waitForTimeout(700)
+    const backBtn = win.locator('button:has-text("项目列表")').first()
+    if (await backBtn.isVisible().catch(() => false)) {
+      await backBtn.click()
+      await win.waitForTimeout(400)
+    }
+    // Match on the full path (a literal `filter({ hasText })`, not the CSS-ish
+    // `:has-text` — Windows separators are escape characters there) because the
+    // temp folder is literally called "project", a name other cards could share.
+    await expect(projectCard(win, dir)).toBeVisible({ timeout: 4000 })
+  }).toPass({ timeout: 30000 })
+  await projectCard(win, dir).dblclick()
+  await expect(win.locator('[data-project-section="files"]')).toBeVisible({ timeout: 10000 })
+}
+
+function projectCard(win: Page, dir: string): Locator {
+  return win.locator('div.group').filter({ hasText: dir }).first()
+}
+
 test('差异视图逐块接受/拒绝：写回文件、重算差异', async () => {
   test.setTimeout(180000)
   const userData = mkdtempSync(join(tmpdir(), 'diff-review-ud-'))
@@ -92,7 +120,8 @@ test('差异视图逐块接受/拒绝：写回文件、重算差异', async () =
   const { app, win } = await launchSandbox(userData)
   const disk = () => readFileSync(target, 'utf8')
   try {
-    await win.getByText('开始新对话').first().click()
+    // Fresh userData lands on the welcome conversation page (新建会话 surface);
+    // its composer carries the same .chat-input-box hook the suite keys on.
     await expect(win.locator('.chat-input-box')).toBeVisible({ timeout: 10000 })
 
     // Seed what an agent run would have left behind: a checkpoint holding the
@@ -136,8 +165,10 @@ test('差异视图逐块接受/拒绝：写回文件、重算差异', async () =
     await win.reload()
     await win.waitForTimeout(2500)
 
-    // 文件变更历史 → 查看变更 → the checkpoint diff opens in the editor area.
-    await win.locator('[aria-label="文件变更历史"]').click()
+    // 文件变更跟随项目：进入项目 → 侧栏手风琴展开「文件变更」→ 查看变更 →
+    // 编辑器区域打开 checkpoint diff
+    await enterProject(app, win, join(userData, 'project'))
+    await win.locator('[data-project-section="changes"]').click()
     const row = win.locator('.file-row', { hasText: 'reviewed.txt' }).first()
     await expect(row).toBeVisible({ timeout: 10000 })
     await row.hover()
@@ -164,8 +195,12 @@ test('差异视图逐块接受/拒绝：写回文件、重算差异', async () =
     expect(disk()).toBe(beforeAccept)
 
     // ── the same rejection with the file open: live model + clean buffer ──
-    await row.click() // openFile — also closes the diff overlay
+    // The panel stays in the sidebar (no settings dialog to re-open): the diff
+    // opens in the editor area next to it.
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.click() // openFile — the file also opens in the editor
     await expect(win.locator('.monaco-editor').first()).toBeVisible()
+    await expect(row).toBeVisible({ timeout: 10000 })
     await row.hover()
     await row.locator('button[title="查看差异"]').click()
     // The checkpoint snapshot is untouched, so the diff is re-derived from it —

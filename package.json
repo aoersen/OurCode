@@ -28,6 +28,8 @@
     "lint": "eslint src electron --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke:browser-input": "electron scripts/browser-input-smoke.mjs",
+    "smoke:browser-act": "esbuild electron/services/browser-session.ts --bundle --platform=node --format=esm --external:electron --outfile=scripts/.browser-session.bundle.mjs && electron scripts/browser-act-smoke.mjs",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "node node_modules/@playwright/test/cli.js test"
   },

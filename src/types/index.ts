@@ -143,7 +143,7 @@ export interface ElectronAPI {
   browserState: () => Promise<import('@shared/types').BrowserSessionState>
   browserConsole: (clear?: boolean) => Promise<{ entries: import('@shared/types').BrowserConsoleEntry[]; text: string }>
   browserPageText: (maxChars?: number) => Promise<{ ok: boolean; error?: string; title?: string; url?: string; text?: string }>
-  browserScreenshot: () => Promise<{ ok: boolean; error?: string; url?: string; dataUrl?: string; mimeType?: string }>
+  browserScreenshot: () => Promise<import('@shared/types').BrowserScreenshotResult>
   browserSnapshot: (maxNodes?: number) => Promise<import('@shared/types').BrowserSnapshotResult>
   browserAct: (action: import('@shared/types').BrowserAction, opts?: import('@shared/types').BrowserActOptions) =>
     Promise<import('@shared/types').BrowserActResult & { state: import('@shared/types').BrowserSessionState }>

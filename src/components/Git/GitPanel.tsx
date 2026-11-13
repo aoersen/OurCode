@@ -405,7 +405,12 @@ export default function GitPanel() {
     [showNotification],
   )
 
-  const getRootPath = useCallback(() => useUIStore.getState().rootPath, [])
+  // Subscribe to the workspace root instead of reading it inside callbacks:
+  // the panel now stays mounted across project switches (sidebar accordion),
+  // so a root change must re-run refreshStatus — reading getState() only would
+  // leave the previous project's branch/status on screen.
+  const workspaceRoot = useUIStore((s) => s.rootPath)
+  const getRootPath = useCallback(() => workspaceRoot, [workspaceRoot])
 
   const resolveFilePath = useCallback(
     (file: string): string => {

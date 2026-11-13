@@ -6,6 +6,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useI18n } from '@/i18n/useI18n'
 import BrandBadge from './BrandBadge'
+import { IS_OFFICE } from '@/utils/windowMode'
 
 interface MenuItem {
   label: string
@@ -18,6 +19,8 @@ interface MenuItem {
 interface MenuGroup {
   label: string
   items: MenuItem[]
+  /** 隐藏该菜单：不渲染，也不参与键盘左右切换。保留定义便于按需恢复。 */
+  hidden?: boolean
 }
 
 /** Trigger a Monaco command on the focused editor (e.g. F12 goto definition). */
@@ -48,7 +51,6 @@ export default function TitleBar() {
   // All actions (stable refs) — a whole-store subscription would re-render the
   // title bar on every uiStore change (notifications, drag-resize, ...).
   const openSettings = useUIStore((s) => s.openSettings)
-  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const toggleTerminal = useUIStore((s) => s.toggleTerminal)
   const toggleChat = useUIStore((s) => s.toggleChat)
   const openCommandPalette = useUIStore((s) => s.openCommandPalette)
@@ -56,6 +58,10 @@ export default function TitleBar() {
   const isMaximized = useUIStore((s) => s.isMaximized)
   const rootPath = useUIStore((s) => s.rootPath)
   const isChatVisible = useUIStore((s) => s.isChatVisible)
+  // 办公室窗口：侧栏在 'office' 时整窗展示办公室视图；从办公室文件树打开文件
+  // 会切到 'files' 进入工作区，左上角需要保留一个「返回一人公司」入口。
+  const activeSidebarTab = useUIStore((s) => s.activeSidebarTab)
+  const officeEntryVisible = !IS_OFFICE || activeSidebarTab !== 'office'
   const activeConfigGroupId = useConfigStore((s) => s.activeConfigGroupId)
   // The command center shows the CURRENT project (the active session's bound
   // project) — opening/entering another folder in the file tree only browses
@@ -146,9 +152,6 @@ export default function TitleBar() {
           if (path) {
             useUIStore.getState().setRootPath(path)
             useUIStore.getState().setActiveSidebarTab('files')
-            if (!useUIStore.getState().isSidebarVisible) {
-              useUIStore.getState().toggleSidebar()
-            }
           }
         }},
         { separator: true, label: '' },
@@ -164,6 +167,7 @@ export default function TitleBar() {
     },
     {
       label: t('menu.edit'),
+      hidden: true,
       items: [
         { label: t('menu.edit.undo'), shortcut: 'Ctrl+Z', action: () => document.execCommand('undo') },
         { label: t('menu.edit.redo'), shortcut: 'Ctrl+Y', action: () => document.execCommand('redo') },
@@ -186,6 +190,7 @@ export default function TitleBar() {
     },
     {
       label: t('menu.selection'),
+      hidden: true,
       items: [
         { label: t('menu.selection.selectAll'), shortcut: 'Ctrl+A', action: () => document.execCommand('selectAll') },
         { label: t('menu.selection.expand'), shortcut: 'Shift+Alt+→', action: () => runEditorCommand('editor.action.smartSelect.expand') },
@@ -194,16 +199,17 @@ export default function TitleBar() {
     },
     {
       label: t('menu.view'),
+      hidden: true,
       items: [
         { label: t('menu.edit.commandPalette'), shortcut: 'Ctrl+Shift+P', action: openCommandPalette },
         { separator: true, label: '' },
-        { label: t('menu.view.toggleSidebar'), shortcut: 'Ctrl+B', action: toggleSidebar },
         { label: t('menu.view.toggleTerminal'), shortcut: 'Ctrl+J', action: toggleTerminal },
         { label: t('menu.view.toggleChat'), shortcut: 'Ctrl+L', action: toggleChat },
       ],
     },
     {
       label: t('menu.go'),
+      hidden: true,
       items: [
         { label: t('menu.go.gotoFile'), shortcut: 'Ctrl+P', action: () => useUIStore.getState().openQuickOpen() },
         { separator: true, label: '' },
@@ -216,6 +222,7 @@ export default function TitleBar() {
     },
     {
       label: t('menu.run'),
+      hidden: true,
       items: [
         { label: t('menu.run.debug'), shortcut: 'F5', disabled: true },
         { label: t('menu.run.noDebug'), shortcut: 'Ctrl+F5', disabled: true },
@@ -226,11 +233,14 @@ export default function TitleBar() {
     },
     {
       label: t('menu.agent'),
+      hidden: true,
       items: [
         { label: t('menu.agent.newChat'), action: () => {
           const configStore = useConfigStore.getState()
           if (configStore.activeConfigGroupId) {
             useChatStore.getState().createSession(configStore.activeConfigGroupId)
+            // 新会话落在欢迎对话页 —— 对话面板收起时先调出来。
+            if (!useUIStore.getState().isChatVisible) useUIStore.getState().toggleChat()
           } else {
             openSettings()
           }
@@ -320,6 +330,10 @@ export default function TitleBar() {
     },
   ]
 
+  // 只渲染未隐藏的菜单；键盘左右切换也必须按可见集合走，
+  // 否则会跳到看不见的菜单上导致“按了没反应”。
+  const visibleMenus = menus.filter((m) => !m.hidden)
+
   const handleMenuClick = (menuLabel: string) => {
     if (activeMenu === menuLabel) {
       setActiveMenu(null)
@@ -345,16 +359,16 @@ export default function TitleBar() {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault()
       const dir = e.key === 'ArrowRight' ? 1 : -1
-      const idx = menus.findIndex((m) => m.label === activeMenu)
+      const idx = visibleMenus.findIndex((m) => m.label === activeMenu)
       if (idx >= 0) {
-        const next = (idx + dir + menus.length) % menus.length
-        setActiveMenu(menus[next].label)
+        const next = (idx + dir + visibleMenus.length) % visibleMenus.length
+        setActiveMenu(visibleMenus[next].label)
         setMenuItemIndex(0)
       }
       return
     }
     if (!activeMenu) return
-    const menu = menus.find((m) => m.label === activeMenu)
+    const menu = visibleMenus.find((m) => m.label === activeMenu)
     if (!menu) return
     const items = menu.items
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -390,7 +404,7 @@ export default function TitleBar() {
         aria-label={t('layout.menubar')}
         onKeyDown={handleMenuKeyDown}
       >
-        {menus.map((menu) => (
+        {visibleMenus.map((menu) => (
           <div key={menu.label} className="relative">
             <button
               role="menuitem"
@@ -469,7 +483,7 @@ export default function TitleBar() {
           window drag handle; only the pill itself stays clickable (no-drag). */}
       <div className="flex-1 flex justify-center min-w-0 px-4">
         <button
-          onClick={() => (displayPath ? useUIStore.getState().toggleSidebar() : openCommandPalette())}
+          onClick={() => openCommandPalette()}
           className="hidden md:flex items-center gap-2 px-3 h-7 rounded-full text-xs transition-colors min-w-0 max-w-[420px] no-drag"
           style={{
             background: 'color-mix(in srgb, var(--card, #ffffff) 55%, transparent)',
@@ -497,6 +511,43 @@ export default function TitleBar() {
 
       {/* Right controls */}
       <div className="flex items-center gap-1 pr-2 no-drag">
+        {/* 一人公司 + 设置：统一收到右侧，紧邻窗口控制按钮。
+            主窗口点击打开独立办公室窗口；办公室窗口在工作区时点击返回办公室
+            视图（已在办公室视图里就不再重复显示）。 */}
+        <div className="flex items-center gap-0.5">
+          {officeEntryVisible && (
+            <button
+              onClick={() => {
+                if (IS_OFFICE) useUIStore.getState().setActiveSidebarTab('office')
+                else window.electronAPI.openOfficeWindow()
+              }}
+              aria-label={IS_OFFICE ? t('activityBar.backToOffice') : t('activityBar.office')}
+              title={IS_OFFICE ? t('activityBar.backToOffice') : t('activityBar.office')}
+              className="p-1.5 rounded-full text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 21V8l6-4 6 4v13" />
+                <path d="M16 21V5l4 3v13" />
+                <path d="M2 21h20" />
+                <path d="M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01" />
+              </svg>
+            </button>
+          )}
+          <button
+            onClick={() => openSettings()}
+            aria-label={t('activityBar.settings')}
+            title={t('activityBar.settings')}
+            className="p-1.5 rounded-full text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="w-px h-4 bg-nova-border mx-1" aria-hidden="true" />
+
         {/* Window controls */}
         <button
           onClick={handleMinimize}

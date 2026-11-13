@@ -88,24 +88,27 @@ test('new file is editable after URI fix', async () => {
   }
 })
 
-test('activity bar tooltips match the project panel names', async () => {
+test('tool panels live in Settings; top-left keeps office + settings entries', async () => {
   const { app, userData } = await launchFreshApp()
   try {
     const win = await mainWindow(app)
     await win.waitForTimeout(2000)
 
-    const fileIcon = win.locator('button[title="任务面板"], button[title="Task Panel"]').first()
-    await expect(fileIcon).toBeVisible({ timeout: 5000 })
-    const gitIcon = win.locator('button[title="代码管理"]').first()
-    await expect(gitIcon).toBeVisible({ timeout: 3000 })
-    const historyIcon = win.locator('button[title="文件变更历史"]').first()
-    await expect(historyIcon).toBeVisible({ timeout: 3000 })
-    // The activity bar no longer has an extensions button — spot-check a few
-    // current entries instead.
-    const usageIcon = win.locator('button[title="使用统计"]').first()
-    await expect(usageIcon).toBeVisible({ timeout: 3000 })
+    // 左侧活动栏已移除：工具入口收进设置（工具分组），左上角保留「一人公司 + 设置」。
     const settingsIcon = win.locator('button[title="设置"]').first()
-    await expect(settingsIcon).toBeVisible({ timeout: 3000 })
+    await expect(settingsIcon).toBeVisible({ timeout: 5000 })
+    const officeIcon = win.locator('button[title="一人公司"]').first()
+    await expect(officeIcon).toBeVisible({ timeout: 3000 })
+    // 项目列表在默认布局里常驻，不再需要活动栏图标去打开
+    await expect(win.locator('h2:has-text("项目列表")').first()).toBeVisible({ timeout: 5000 })
+
+    await settingsIcon.click()
+    for (const label of ['Agent 任务', '使用统计', '技能', 'MCP 服务器', '渠道接入']) {
+      await expect(win.locator('button[role="tab"]', { hasText: label }).first()).toBeVisible({ timeout: 5000 })
+    }
+    // 代码管理 / 文件变更跟随项目，不再出现在设置里
+    await expect(win.locator('button[role="tab"]', { hasText: '代码管理' })).toHaveCount(0)
+    await expect(win.locator('button[role="tab"]', { hasText: '文件变更' })).toHaveCount(0)
   } finally {
     await app.close().catch(() => {})
     await rm(userData, { recursive: true, force: true }).catch(() => {})
@@ -126,11 +129,21 @@ test('git panel has no duplicated title and buttons wrap', async () => {
       await expect(win.locator('#file-tree-root').first()).toBeVisible({ timeout: 10000 })
       await win.waitForTimeout(800)
 
-      // Open the git sidebar via the activity bar
-      await win.locator('button[title="代码管理"]').first().click()
+      // 代码管理跟随项目：进入项目后由侧栏手风琴承载（默认展开「文件」）
+      const sidebar = win.locator('[data-sidebar-panel="files"]')
+      for (const [id, label] of [['files', '文件'], ['git', '代码管理'], ['changes', '文件变更']] as const) {
+        const section = sidebar.locator(`[data-project-section="${id}"]`)
+        await expect(section).toBeVisible({ timeout: 5000 })
+        await expect(section).toContainText(label)
+      }
+      const gitSection = sidebar.locator('[data-project-section="git"]')
+      await gitSection.click()
       await win.waitForTimeout(800)
+      await expect(gitSection).toHaveAttribute('aria-expanded', 'true')
+      // 同一时间只有一个分区展开
+      await expect(sidebar.locator('[data-project-section][aria-expanded="true"]')).toHaveCount(1)
 
-      // The sidebar header should read 代码管理 exactly once, and 源代码管理 must not be duplicated
+      // The expanded header should read 代码管理, and 源代码管理 must not appear
       const sourceControlCount = await win.evaluate(() =>
         Array.from(document.querySelectorAll('*')).filter((e) => e.childElementCount === 0 && e.textContent?.trim() === '源代码管理').length,
       )
@@ -139,14 +152,15 @@ test('git panel has no duplicated title and buttons wrap', async () => {
       expect(headerText).toBe(true)
 
       // Buttons row: commit/push/log/lifeguard must be visible (not clipped)
-      // (labels are text-only since the Stitch redesign replaced text glyphs with SVGs)
-      await expect(win.locator('button', { hasText: '提交' }).first()).toBeVisible({ timeout: 3000 })
-      await expect(win.locator('button', { hasText: '推送' }).first()).toBeVisible({ timeout: 3000 })
-      await expect(win.locator('button', { hasText: '日志' }).first()).toBeVisible({ timeout: 3000 })
-      await expect(win.locator('button', { hasText: '提交前检查' }).first()).toBeVisible({ timeout: 3000 })
+      // (labels are text-only since the Stitch redesign replaced text glyphs with SVGs).
+      // Scope to the sidebar — the panel lives in the project accordion.
+      await expect(sidebar.locator('button', { hasText: '提交' }).first()).toBeVisible({ timeout: 3000 })
+      await expect(sidebar.locator('button', { hasText: '推送' }).first()).toBeVisible({ timeout: 3000 })
+      await expect(sidebar.locator('button', { hasText: '日志' }).first()).toBeVisible({ timeout: 3000 })
+      await expect(sidebar.locator('button', { hasText: '提交前检查' }).first()).toBeVisible({ timeout: 3000 })
 
       // Open the log — entries should render
-      await win.locator('button', { hasText: '日志' }).first().click()
+      await sidebar.locator('button', { hasText: '日志' }).first().click()
       await expect(win.locator('text=最近提交').first()).toBeVisible({ timeout: 3000 })
       await expect(win.locator('text=initial').first()).toBeVisible({ timeout: 3000 })
     } finally {

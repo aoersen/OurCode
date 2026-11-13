@@ -1,10 +1,9 @@
 /**
  * The single "continue where you left off" row.
  *
- * This is the ONLY place in the welcome canvas where project + session context
- * appears: the sidebar already lists every project and session, so putting a
- * second list here would just be the same data three times. Everything above
- * the fold that is duplicated gets removed, not restyled.
+ * NOT MOUNTED on the welcome page anymore: the row duplicated what the sidebar
+ * already lists (every project and conversation), so it was removed from the
+ * layout. Kept for reuse if a "continue" entry is ever wanted again.
  */
 import { useI18n } from '@/i18n/useI18n'
 import type { ResumeTarget } from './useWelcomeData'

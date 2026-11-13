@@ -230,6 +230,8 @@ export const DEFAULT_PREFERENCES = {
   clawConfigGroupId: '',
   /** Claw 会话使用的模型（留空 = 组的默认模型）。 */
   clawModelId: '',
+  /** Agent 执行浏览器自动化时自动显示内置浏览器窗口（默认开，不抢焦点）。 */
+  browserAutoShow: true,
   /** 电脑操控（Computer Use）总开关。默认关：关闭时既不启动 helper，也不把
    *  computer_* 工具暴露给模型。 */
   computerUseEnabled: false,

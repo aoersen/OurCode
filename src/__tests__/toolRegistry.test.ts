@@ -120,8 +120,13 @@ describe('ToolRegistry', () => {
     expect(byName('browser_screenshot')!.requiresApproval).toBeFalsy()
     expect(byName('browser_act')!.requiresApproval).toBe(true)
     expect(byName('browser_act')!.parameters.properties.action.enum).toEqual([
-      'click', 'type', 'press', 'scroll', 'wait',
+      'click', 'type', 'press', 'scroll', 'hover', 'drag', 'wait',
     ])
+    // 坐标/拖拽/滚轮参数必须出现在 schema 里，否则模型无法发起真实鼠标操作
+    const browserAct = byName('browser_act')!.parameters.properties
+    for (const key of ['x', 'y', 'to_x', 'to_y', 'button', 'click_count', 'delta_x', 'delta_y', 'direction', 'strategy']) {
+      expect(browserAct[key], key).toBeTruthy()
+    }
   })
 
   it('registers PR tools split by read vs write', () => {

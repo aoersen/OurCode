@@ -49,7 +49,7 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`
 }
 
-export default function UsagePanel() {
+export default function UsagePanel({ embedded = false }: { embedded?: boolean }) {
   const t = useI18n()
   const summary = useUsageStore((s) => s.summary)
   const rangeDays = useUsageStore((s) => s.rangeDays)
@@ -94,6 +94,8 @@ export default function UsagePanel() {
       detail: `请执行技能「${name}」${description ? `（${description}）` : ''}：`,
     }))
     const ui = useUIStore.getState()
+    // 面板现在在设置弹层里：填好对话输入框后要回到对话面板。
+    if (ui.isSettingsOpen) ui.closeSettings()
     if (!ui.isChatVisible) ui.toggleChat()
   }, [])
 
@@ -109,8 +111,10 @@ export default function UsagePanel() {
         {/* Header (Stitch: title + refresh/clear, sliding-white-pill range control) */}
         <div className="flex flex-col gap-2.5 shrink-0">
           <div className="flex items-center justify-between px-1">
-            <h2 className="text-[15px] font-semibold text-nova-text-primary">{t('usage.panelTitle')}</h2>
-            <div className="flex gap-1">
+            {!embedded && (
+              <h2 className="text-[15px] font-semibold text-nova-text-primary">{t('usage.panelTitle')}</h2>
+            )}
+            <div className="flex gap-1 ml-auto">
               <button
                 onClick={() => load()}
                 disabled={loading}

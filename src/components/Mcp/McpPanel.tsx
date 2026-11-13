@@ -74,7 +74,7 @@ const STATE_BADGES: Record<McpServerState, string> = {
   stopped: 'bg-gray-500/15 text-gray-400 border-gray-500/30',
 }
 
-export default function McpPanel() {
+export default function McpPanel({ embedded = false }: { embedded?: boolean }) {
   // The current project follows the ACTIVE SESSION (same rule as SettingsModal)
   const currentProjectPath = useChatStore((s) => s.sessions.find((x) => x.id === s.activeSessionId)?.projectPath ?? null)
   const t = useI18n()
@@ -270,25 +270,27 @@ export default function McpPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      {/* Panel header — same pattern as SkillPanel (own header: title + refresh) */}
+      {/* Header — 设置页里（embedded）标题由设置页头承担，这里只留刷新按钮 */}
       <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 36 }}>
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-nova-text-muted flex items-center shrink-0">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-            </svg>
-          </span>
-          <span
-            className="font-bold uppercase tracking-[0.08em] truncate"
-            style={{ fontSize: 11, color: 'var(--text-secondary)', letterSpacing: '0.08em' }}
-          >
-            {t('mcpCenter.title')}
-          </span>
-        </div>
+        {!embedded && (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-nova-text-muted flex items-center shrink-0">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              </svg>
+            </span>
+            <span
+              className="font-bold uppercase tracking-[0.08em] truncate"
+              style={{ fontSize: 11, color: 'var(--text-secondary)', letterSpacing: '0.08em' }}
+            >
+              {t('mcpCenter.title')}
+            </span>
+          </div>
+        )}
         <button
           onClick={refreshAll}
           disabled={loading}
-          className="w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors disabled:opacity-50"
+          className="ml-auto w-6 h-6 flex items-center justify-center rounded text-nova-text-muted hover:text-nova-text-primary hover:bg-nova-hover transition-colors disabled:opacity-50"
           title={t('mcpCenter.refresh')}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

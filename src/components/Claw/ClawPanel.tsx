@@ -12,7 +12,7 @@ import ClawChannelCard from './ClawChannelCard'
  * 网关状态行。完整的凭据编辑与策略编辑在设置页（ClawSettingsSection），
  * 这里只放「看一眼就知道能不能用」的信息与最常用的开关。
  */
-export default function ClawPanel() {
+export default function ClawPanel({ embedded = false }: { embedded?: boolean }) {
   const t = useI18n()
   const hub = useClawStore((s) => s.hub)
   const configs = useClawStore((s) => s.configs)
@@ -27,25 +27,27 @@ export default function ClawPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      {/* 面板头 */}
-      <div className="px-3 pt-3 pb-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {t('claw.title')}
-          </h2>
-          <span
-            className="px-2 py-0.5 text-[11px] font-semibold rounded-full"
-            style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
-          >
-            {t('claw.hubSummary', { enabled: enabledCount, total: CLAW_CHANNELS.length })}
-          </span>
+      {/* 面板头 —— 设置页里（embedded）标题与汇总由设置页头/概览卡片承担 */}
+      {!embedded && (
+        <div className="px-3 pt-3 pb-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+              {t('claw.title')}
+            </h2>
+            <span
+              className="px-2 py-0.5 text-[11px] font-semibold rounded-full"
+              style={{ background: 'var(--bg-selected)', color: 'var(--accent-text)' }}
+            >
+              {t('claw.hubSummary', { enabled: enabledCount, total: CLAW_CHANNELS.length })}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
+            {t('claw.subtitle')}
+          </p>
         </div>
-        <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--text-muted)' }}>
-          {t('claw.subtitle')}
-        </p>
-      </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto px-3 pb-3">
+      <div className={`flex-1 overflow-y-auto px-3 pb-3 ${embedded ? 'pt-2' : ''}`}>
         {/* 概览指标 */}
         <div
           className="rounded-xl px-3 py-2.5 mb-3"

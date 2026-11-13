@@ -570,6 +570,9 @@ export interface UserPreferences {
   clawConfigGroupId?: string
   /** Claw 会话使用的模型 id（留空 = 组的默认模型）。 */
   clawModelId?: string
+  /** Agent 执行浏览器导航/操作时自动显示内置浏览器窗口（独立窗口，
+   *  showInactive 不抢焦点）。默认开；关闭后仍可从设置手动显示。 */
+  browserAutoShow?: boolean
   /** 电脑操控总开关（关闭时不暴露 computer_* 工具、不启动 helper）。 */
   computerUseEnabled?: boolean
   /** 追加敏感应用黑名单（内置黑名单始终生效）。 */
@@ -892,18 +895,47 @@ export interface BrowserSessionState {
   lastError?: string
 }
 
-export type BrowserAction = 'click' | 'type' | 'press' | 'scroll' | 'wait'
+export type BrowserAction = 'click' | 'type' | 'press' | 'scroll' | 'hover' | 'drag' | 'wait'
+
+export type BrowserMouseButton = 'left' | 'right' | 'middle'
+
+/** auto = real CDP input, fall back to synthetic DOM events; real = CDP only;
+ *  dom = synthetic DOM events only. */
+export type BrowserActStrategy = 'auto' | 'real' | 'dom'
 
 /** Arguments for one in-page interaction. `selector` is a CSS selector; an
  *  empty one means "the focused element" (press) or is rejected (click/type).
  *  `ref` (from browser_snapshot) takes precedence: it addresses the isolated
- *  world node by backend id, so it survives React re-renders and shadow DOM. */
+ *  world node by backend id, so it survives React re-renders and shadow DOM.
+ *
+ *  `x` / `y` are CSS pixels in the page viewport (the same space as
+ *  getBoundingClientRect), for canvas/custom widgets with no addressable node.
+ *  A ref/selector wins when both are supplied. */
 export interface BrowserActOptions {
   selector?: string
   ref?: string
   text?: string
   key?: string
   ms?: number
+  /** Pointer target, CSS pixels relative to the viewport. */
+  x?: number
+  y?: number
+  /** Drag end point, CSS pixels relative to the viewport. */
+  toX?: number
+  toY?: number
+  button?: BrowserMouseButton
+  /** 1 = click, 2 = double click, 3 = triple click. */
+  clickCount?: number
+  /** Wheel deltas in CSS pixels (action=scroll). */
+  deltaX?: number
+  deltaY?: number
+  direction?: 'up' | 'down' | 'left' | 'right'
+  strategy?: BrowserActStrategy
+}
+
+export interface BrowserPoint {
+  x: number
+  y: number
 }
 
 export interface BrowserActResult {
@@ -911,6 +943,29 @@ export interface BrowserActResult {
   error?: string
   /** What the page looked like after the action (title + url), when known. */
   detail?: string
+  /** How the action was delivered: real CDP input or synthetic DOM fallback. */
+  strategy?: 'cdp' | 'dom'
+  /** Viewport point used by a mouse/wheel action. */
+  point?: BrowserPoint
+}
+
+/** Viewport geometry of the last screenshot. Coordinates are CSS pixels in
+ *  this viewport; image pixels may be larger on HiDPI (divide by the ratio). */
+export interface BrowserViewport {
+  width: number
+  height: number
+  devicePixelRatio: number
+}
+
+export interface BrowserScreenshotResult {
+  ok: boolean
+  error?: string
+  url?: string
+  dataUrl?: string
+  mimeType?: string
+  viewport?: BrowserViewport
+  /** PNG size in image pixels (compare with viewport to map coordinates). */
+  image?: { width: number; height: number }
 }
 
 /** One compact accessibility node, as handed to the model by browser_snapshot. */

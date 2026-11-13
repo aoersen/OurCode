@@ -107,17 +107,17 @@ test('commits only the staged set — no implicit add -A', async () => {
   try {
     await openProject(win, app, repo)
 
-    const gitIcon = win.locator('button[title="代码管理"]').first()
-    await expect(gitIcon).toBeVisible({ timeout: 8000 })
-    await gitIcon.click()
-
-    // The panel must show staged.txt under 已暂存 and keep.txt under 未跟踪 —
-    // i.e. porcelain parsing still works after the conflict-aware rewrite.
+    // 代码管理跟随项目：进入项目后在侧栏手风琴里展开
+    const sidebar = win.locator('[data-sidebar-panel="files"]')
+    await sidebar.locator('[data-project-section="git"]').click()
     await expect(win.locator('text=已暂存')).toBeVisible({ timeout: 8000 })
     await expect(win.locator('text=未跟踪')).toBeVisible({ timeout: 4000 })
 
-    await win.locator('textarea').first().fill('feat: e2e staged only')
-    await win.locator('button', { hasText: '提交' }).first().click()
+    // Scope clicking to the git panel itself: the sidebar also holds the file
+    // tree section (kept mounted but hidden) and the chat composer is a button
+    // farm of its own.
+    await win.locator('#git-commit-message').fill('feat: e2e staged only')
+    await sidebar.locator('button', { hasText: '提交' }).first().click()
 
     await expect(async () => {
       const subject = git(repo, ['log', '-1', '--format=%s'])

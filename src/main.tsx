@@ -38,11 +38,10 @@ async function bootstrap(): Promise<void> {
   window.addEventListener('beforeunload', () => { flushBudgetWrites() })
 
   // 一人公司独立窗口：落地即为 3D 办公室视图。办公室窗口不带右侧聊天面板
-  // （isChatVisible 恒为 false），侧栏保持可见且停留在 office 页。
+  // （isChatVisible 恒为 false），侧栏（工作区时显示项目列表）常驻。
   if (IS_OFFICE) {
     useUIStore.setState({
       activeSidebarTab: 'office',
-      isSidebarVisible: true,
       isChatVisible: false,
     })
   }

@@ -78,3 +78,55 @@ export function WarningIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   )
 }
+
+export function ChevronDownIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className={`${BASE} ${className}`} aria-hidden>
+      <path d="M4 6.5L8 10.5l4-4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function SearchIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className={`${BASE} ${className}`} aria-hidden>
+      <circle cx="7" cy="7" r="4.3" />
+      <path d="M10.2 10.2L13.5 13.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export function CheckIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className={`${BASE} ${className}`} aria-hidden>
+      <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function PlusIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" className={`${BASE} ${className}`} aria-hidden>
+      <path d="M8 3.5v9M3.5 8h9" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export function TrashIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className={`${BASE} ${className}`} aria-hidden>
+      <path d="M2.8 4.2h10.4M6.2 4.2V2.9h3.6v1.3M4.2 4.2l.6 8.2c.03.5.45.9.95.9h4.5c.5 0 .92-.4.95-.9l.6-8.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6.7 6.8v4M9.3 6.8v4" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export function InfoIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className={`${BASE} ${className}`} aria-hidden>
+      <circle cx="8" cy="8" r="5.6" />
+      <path d="M8 7.4v3.2" strokeLinecap="round" />
+      <circle cx="8" cy="5.4" r="0.65" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}

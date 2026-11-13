@@ -13,9 +13,10 @@ import { dismissOnboarding, launchApp } from './helpers'
 // 而不只是"看得见"。
 
 const FILE_MENU = '文件'
+const TERMINAL_MENU = '终端'
 const HELP_MENU = '帮助'
 const NEW_FILE = '新建文件'
-const UNDO = '撤销'
+const NEW_TERMINAL = '新建终端'
 
 async function openMenu(win: Page, label: string): Promise<void> {
   await win.locator('[role="menubar"] button', { hasText: label }).first().click()
@@ -92,8 +93,8 @@ test.describe('title bar dropdown layering', () => {
 
       // Hovering a neighbouring menu swaps the panel in place.
       await openMenu(win, FILE_MENU)
-      await win.locator('[role="menubar"] button').nth(1).hover()
-      await expect(win.locator('[data-titlebar-menu]')).toContainText(UNDO)
+      await win.locator('[role="menubar"] button', { hasText: TERMINAL_MENU }).first().hover()
+      await expect(win.locator('[data-titlebar-menu]')).toContainText(NEW_TERMINAL)
     } finally {
       await app.close().catch(() => {})
       void userData

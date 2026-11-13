@@ -377,8 +377,9 @@ export function createToolRegistry(): Tool[] {
     {
       name: 'browser_screenshot',
       description:
-        'Screenshot the current page and attach the image to this result, so you can see layout/visual state. ' +
-        'Needs a vision-capable model; the result says if the image could not be delivered.',
+        'Screenshot the current page and attach the image, so you can see layout/visual state. ' +
+        'The result also reports the CSS-pixel viewport and PNG size; browser_act coordinates use the viewport ' +
+        'space (scale image pixels by viewport/image if they differ). Needs a vision-capable model.',
       parameters: {
         type: 'object',
         properties: {},
@@ -395,7 +396,8 @@ export function createToolRegistry(): Tool[] {
       name: 'browser_snapshot',
       description:
         'Read the page as a compact accessibility tree with per-node refs (role / name / value / [ref=eN]). ' +
-        'This is the reliable way to address elements: refs survive re-renders and reach shadow DOM / iframes. ' +
+        'This is the reliable way to address elements: refs survive re-renders and reach shadow DOM. ' +
+        'The AX tree covers the top frame only — for iframe content use browser_screenshot + x/y coordinates. ' +
         'Refs are valid only for THIS snapshot; re-snapshot after navigation or a big change.',
       parameters: {
         type: 'object',
@@ -414,17 +416,30 @@ export function createToolRegistry(): Tool[] {
     {
       name: 'browser_act',
       description:
-        'Interact with the page: click / type / press / scroll / wait. Prefer `ref` from browser_snapshot ' +
-        '(addresses the node directly); `selector` is the fallback for plain pages. `type` sets the value through ' +
-        'the native setter so React/Vue controlled inputs update. Approval is required because clicking can change remote state.',
+        'Interact with the page using real browser input events (trusted pointer/mouse/keyboard/wheel): click / type / press / ' +
+        'hover / scroll / drag / wait. Prefer `ref` from browser_snapshot (addresses the node directly); `selector` is the ' +
+        'fallback. For canvas/custom widgets with no addressable node, pass viewport CSS-pixel `x`/`y` (the screenshot result ' +
+        'reports the viewport). `type` focuses and replaces the field value; `press` accepts chords like "Enter" or ' +
+        '"Control+a"; `scroll` accepts delta_x/delta_y or direction; `drag` needs a start (ref or x/y) and to_x/to_y. ' +
+        'Approval is required because clicking can change remote state.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['click', 'type', 'press', 'scroll', 'wait'], description: 'What to do' },
-          ref: { type: 'string', description: 'Element ref from browser_snapshot (preferred for click/type)' },
+          action: { type: 'string', enum: ['click', 'type', 'press', 'scroll', 'hover', 'drag', 'wait'], description: 'What to do' },
+          ref: { type: 'string', description: 'Element ref from browser_snapshot (preferred for click/type/hover)' },
           selector: { type: 'string', description: 'CSS selector (fallback; empty for press means the focused element)' },
-          text: { type: 'string', description: 'Text to type (action=type)' },
-          key: { type: 'string', description: 'Key name (action=press), e.g. Enter' },
+          x: { type: 'number', description: 'Viewport CSS-pixel X (canvas/custom widgets; ignored when ref/selector is given)' },
+          y: { type: 'number', description: 'Viewport CSS-pixel Y (canvas/custom widgets; ignored when ref/selector is given)' },
+          to_x: { type: 'number', description: 'Drag end X in viewport CSS pixels (action=drag)' },
+          to_y: { type: 'number', description: 'Drag end Y in viewport CSS pixels (action=drag)' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (click/drag, default left)' },
+          click_count: { type: 'number', description: '1=click, 2=double-click, 3=triple-click (default 1)' },
+          delta_x: { type: 'number', description: 'Wheel delta X in CSS pixels (action=scroll)' },
+          delta_y: { type: 'number', description: 'Wheel delta Y in CSS pixels (action=scroll)' },
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Scroll direction when no delta is given (default down)' },
+          strategy: { type: 'string', enum: ['auto', 'real', 'dom'], description: 'auto = real input with DOM fallback (default); real = CDP only; dom = synthetic events only' },
+          text: { type: 'string', description: 'Text to type (action=type) — replaces the current value' },
+          key: { type: 'string', description: 'Key or chord (action=press), e.g. Enter, Tab, Control+a' },
           ms: { type: 'number', description: 'Delay in ms (action=wait, max 10000)' },
         },
         required: ['action'],
@@ -438,6 +453,16 @@ export function createToolRegistry(): Tool[] {
           text: args.text,
           key: args.key,
           ms: args.ms,
+          x: args.x,
+          y: args.y,
+          toX: args.to_x ?? args.toX,
+          toY: args.to_y ?? args.toY,
+          button: args.button,
+          clickCount: args.click_count ?? args.clickCount,
+          deltaX: args.delta_x ?? args.deltaX,
+          deltaY: args.delta_y ?? args.deltaY,
+          direction: args.direction,
+          strategy: args.strategy,
         })
       },
       requiresApproval: true,
@@ -806,7 +831,8 @@ export function createToolRegistry(): Tool[] {
         'scope=last restores the most recent change in this session; file/path restores a specific path; ' +
         'checkpoint restores a specific checkpoint id; task restores an entire one-person-company task ' +
         '(director/user only); baseline rolls the whole project back to its initial-state snapshot. ' +
-        'Set dryRun=true to preview without writing.',
+        'Set dryRun=true to preview without writing. Which files a session changed is reported by ' +
+        'list_file_changes.',
       parameters: {
         type: 'object',
         properties: {
@@ -1085,7 +1111,9 @@ export function createToolRegistry(): Tool[] {
       description:
         'Read the most recent messages of another chat session (by id or title). ' +
         'Use it to pick up where another conversation left off, or to check a decision ' +
-        'made there. Returns a bounded transcript (oldest of the tail first). ' +
+        'made there. Returns a bounded transcript (oldest of the tail first) — tool-call ' +
+        'arguments are not included, so use list_file_changes to see which files the ' +
+        'session wrote/edited/deleted. ' +
         'List candidates with list_agents or find them with search_sessions.',
       parameters: {
         type: 'object',
@@ -1136,6 +1164,74 @@ export function createToolRegistry(): Tool[] {
         return hits
           .map((h) => `- 「${h.title}」(${h.sessionId})\n  [${h.role}] ${h.snippet}`)
           .join('\n\n')
+      },
+    },
+    {
+      name: 'list_file_changes',
+      description:
+        'List the files a session created, modified or deleted through its write tools ' +
+        '(write_file / edit_file / multi_edit_file / delete_file / create_directory), in ' +
+        'chronological order, marked A (created/written), M (modified) or D (deleted), plus ' +
+        'whether the change was reverted. Default scope is the CURRENT session; pass ' +
+        'targetSessionId (or targetTitle) to inspect another session — this still works when ' +
+        'its transcript was compacted away — or allSessions=true for recent changes across ' +
+        'sessions (newest first). Read-only; use restore_changes to undo one of these changes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          targetSessionId: { type: 'string', description: '目标会话 ID（来自 list_agents / search_sessions，支持唯一前缀）' },
+          targetTitle: { type: 'string', description: '或按标题匹配目标会话（targetSessionId 优先）' },
+          allSessions: { type: 'boolean', description: 'true = 列出所有会话的文件变更（按会话时间倒序，默认 10 个会话）' },
+          maxSessions: { type: 'number', description: 'allSessions 时最多返回的会话数（默认 10，最大 20）' },
+        },
+        required: [],
+      },
+      execute: async (args, context) => {
+        const { useChatStore } = await import('@/stores/chatStore')
+        const { findSessionByIdOrTitle } = await import('@/services/sessionKnowledge')
+        const { groupFileChangesBySession, formatFileChangeReport } = await import('@/services/fileChangeHistory')
+        const { sessions } = useChatStore.getState()
+
+        let groups
+        if (args.allSessions === true) {
+          const maxSessions = Math.min(Math.max(Number(args.maxSessions) || 10, 1), 20)
+          groups = groupFileChangesBySession(sessions, { excludeClaw: true, excludeArchived: true })
+            .slice(0, maxSessions)
+          if (groups.length === 0) return '所有会话都没有文件变更记录。'
+        } else {
+          const wantsTarget = Boolean(args.targetSessionId || args.targetTitle)
+          const target = wantsTarget
+            ? findSessionByIdOrTitle(
+                sessions,
+                String(args.targetSessionId || '').trim(),
+                String(args.targetTitle || '').trim(),
+              )
+            : sessions.find((s) => s.id === context?.sessionId)
+          if (!target) {
+            return wantsTarget
+              ? 'Error: 找不到目标会话。请先调用 list_agents 查看会话列表，或调用 search_sessions 按内容查找。'
+              : 'Error: 当前没有激活会话，无法确定要查询的变更历史。'
+          }
+          groups = groupFileChangesBySession([target])
+          if (groups.length === 0) {
+            return `会话「${target.title}」没有文件变更记录（没有通过 write_file / edit_file / multi_edit_file / delete_file / create_directory 改动过文件）。`
+          }
+        }
+
+        // Revert state lives in the main-process checkpoint DB — one IPC per
+        // reported session (already capped above), failures fall back to "no
+        // revert records" instead of failing the whole tool call.
+        const revertedBySession: Record<string, string[]> = {}
+        await Promise.all(groups.map(async (group) => {
+          try {
+            const list = await window.electronAPI.checkpointListReverted(group.sessionId)
+            revertedBySession[group.sessionId] = Array.isArray(list) ? list : []
+          } catch {
+            revertedBySession[group.sessionId] = []
+          }
+        }))
+
+        return formatFileChangeReport(groups, revertedBySession)
       },
     },
 

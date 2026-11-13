@@ -660,6 +660,21 @@ export class ToolExecutor {
       }
       case 'read_url':
         return `Read URL: ${args.url}`
+      case 'browser_act': {
+        const target = args.ref
+          ? `ref ${args.ref}`
+          : args.selector
+            ? `selector ${args.selector}`
+            : args.x !== undefined
+              ? `坐标 (${args.x}, ${args.y})`
+              : '当前焦点'
+        const bits = [`浏览器操作: ${args.action || '?'}`, target]
+        if (args.text !== undefined) bits.push(`输入 ${String(args.text).length} 字符`)
+        if (args.key !== undefined) bits.push(`按键 ${String(args.key)}`)
+        if (args.to_x !== undefined || args.toX !== undefined) bits.push(`拖到 (${args.to_x ?? args.toX}, ${args.to_y ?? args.toY})`)
+        if (args.direction !== undefined) bits.push(`方向 ${String(args.direction)}`)
+        return bits.join(' · ')
+      }
       case 'manage_todo':
         return `Update todo list (${Array.isArray(args.todos) ? args.todos.length : 0} items)`
       case 'submit_plan':

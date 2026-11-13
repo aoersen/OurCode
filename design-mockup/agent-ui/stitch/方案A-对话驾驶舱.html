@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OurCode - 对话驾驶舱</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "primary-fixed-dim": "#adc6ff",
+            "on-error": "#ffffff",
+            "on-primary-fixed": "#001a41",
+            "inverse-on-surface": "#eaf1ff",
+            "surface": "#f8f9ff",
+            "tertiary-fixed": "#dbe3f2",
+            "on-tertiary": "#ffffff",
+            "background": "#f8f9ff",
+            "surface-dim": "#cbdbf5",
+            "secondary-container": "#dbdff0",
+            "secondary-fixed-dim": "#c2c6d7",
+            "on-primary-container": "#c3d4ff",
+            "outline-variant": "#c2c6d5",
+            "surface-tint": "#095bbf",
+            "on-error-container": "#93000a",
+            "on-secondary": "#ffffff",
+            "on-surface": "#0b1c30",
+            "inverse-surface": "#213145",
+            "secondary": "#595e6d",
+            "surface-variant": "#d3e4fe",
+            "on-primary-fixed-variant": "#004494",
+            "on-primary": "#ffffff",
+            "outline": "#727784",
+            "on-secondary-container": "#5e6271",
+            "on-surface-variant": "#424753",
+            "tertiary": "#3c4550",
+            "on-tertiary-container": "#ccd5e3",
+            "on-secondary-fixed": "#161b28",
+            "surface-container-low": "#eff4ff",
+            "surface-container-highest": "#d3e4fe",
+            "inverse-primary": "#adc6ff",
+            "on-tertiary-fixed": "#141c27",
+            "surface-container-lowest": "#ffffff",
+            "surface-bright": "#f8f9ff",
+            "on-background": "#0b1c30",
+            "error-container": "#ffdad6",
+            "primary-container": "#0058bc",
+            "tertiary-fixed-dim": "#bfc7d5",
+            "surface-container-high": "#dce9ff",
+            "surface-container": "#e5eeff",
+            "error": "#ba1a1a",
+            "on-tertiary-fixed-variant": "#3f4753",
+            "tertiary-container": "#545c68",
+            "secondary-fixed": "#dee2f3",
+            "primary-fixed": "#d8e2ff",
+            "primary": "#00418f",
+            "on-secondary-fixed-variant": "#424654"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "space-xs": "0.25rem",
+            "space-sm": "0.5rem",
+            "space-lg": "1rem",
+            "margin-mobile": "0.5rem",
+            "margin": "1rem",
+            "space-md": "0.75rem",
+            "gutter": "0.5rem",
+            "space-xl": "1.5rem",
+            "gutter-compact": "0.375rem"
+          },
+          "fontFamily": {
+            "code-md": ["JetBrains Mono"],
+            "title-sm": ["Plus Jakarta Sans"],
+            "code-sm": ["JetBrains Mono"],
+            "headline-sm": ["Plus Jakarta Sans"],
+            "title-md": ["Plus Jakarta Sans"],
+            "body-md": ["Plus Jakarta Sans"],
+            "headline-md": ["Plus Jakarta Sans"],
+            "headline-lg": ["Plus Jakarta Sans"],
+            "label-md": ["Plus Jakarta Sans"],
+            "body-sm": ["Plus Jakarta Sans"],
+            "body-lg": ["Plus Jakarta Sans"],
+            "label-sm": ["JetBrains Mono"]
+          },
+          "fontSize": {
+            "code-md": ["13px", { "lineHeight": "20px", "letterSpacing": "-0.005em", "fontWeight": "400" }],
+            "title-sm": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "600" }],
+            "code-sm": ["11px", { "lineHeight": "16px", "letterSpacing": "0em", "fontWeight": "500" }],
+            "headline-sm": ["18px", { "lineHeight": "26px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "title-md": ["15px", { "lineHeight": "22px", "letterSpacing": "-0.005em", "fontWeight": "600" }],
+            "body-md": ["13px", { "lineHeight": "20px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "headline-md": ["22px", { "lineHeight": "30px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+            "headline-lg": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.01em", "fontWeight": "500" }],
+            "body-sm": ["12px", { "lineHeight": "18px", "letterSpacing": "0.01em", "fontWeight": "400" }],
+            "body-lg": ["15px", { "lineHeight": "24px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "label-sm": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+          }
+        }
+      }
+    };
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      font-size: 18px;
+      line-height: 1;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    /* Custom lightweight scrollbars */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(15, 23, 42, 0.12);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(15, 23, 42, 0.22);
+    }
+  </style>
+</head>
+<body class="bg-[#f6f7fb] text-on-surface antialiased font-body-md h-screen w-screen overflow-hidden flex flex-col select-none">
+<!-- ==================== 1. 顶部标题栏 (TopNavBar: 48px) ==================== -->
+<header class="h-12 w-full bg-surface-container-lowest/90 backdrop-blur-md z-30 flex items-center justify-between px-4 border-b border-outline-variant/30 shadow-sm flex-shrink-0">
+<!-- 左侧 Brand & Repo -->
+<div class="flex items-center space-x-3">
+<div class="flex items-center space-x-2">
+<div class="w-6 h-6 rounded-lg bg-primary-container flex items-center justify-center text-on-primary shadow-sm">
+<span class="material-symbols-outlined !text-[15px]" data-icon="terminal">terminal</span>
+</div>
+<span class="text-title-md font-title-md font-bold tracking-tight text-on-surface">OurCode</span>
+</div>
+<div class="h-4 w-px bg-outline-variant/50"></div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 rounded-md bg-surface-container hover:bg-surface-container-high transition-colors cursor-pointer text-on-surface-variant font-code-sm text-code-sm">
+<span class="material-symbols-outlined !text-[14px]" data-icon="folder_open">folder_open</span>
+<span class="text-on-surface font-medium">ourcode-ide</span>
+<span class="text-outline">/</span>
+<span class="text-primary font-semibold flex items-center">
+<span class="material-symbols-outlined !text-[13px] mr-0.5" data-icon="commit">commit</span>main*
+        </span>
+</div>
+</div>
+<!-- 中间全局命令搜索框 -->
+<div class="flex-1 max-w-[460px] mx-4">
+<div class="relative flex items-center w-full">
+<span class="material-symbols-outlined absolute left-2.5 text-outline !text-[16px]" data-icon="search">search</span>
+<input class="w-full h-8 pl-8 pr-12 rounded-lg bg-surface-container-low border border-outline-variant/40 font-body-sm text-body-sm text-on-surface placeholder:text-outline focus:outline-none focus:border-primary-container cursor-pointer transition-all shadow-none hover:bg-surface-container" placeholder="⌘K 搜索或输入命令…" readonly="" type="text"/>
+<div class="absolute right-2 px-1.5 py-0.5 rounded bg-surface-container-highest/80 border border-outline-variant/30 text-outline text-[10px] font-code-sm">
+          ⌘K
+        </div>
+</div>
+</div>
+<!-- 右侧模型选择器、状态及个人信息 -->
+<div class="flex items-center space-x-2.5">
+<!-- 智能体状态与模型选择 -->
+<div class="flex items-center bg-surface-container-low border border-outline-variant/40 rounded-lg p-0.5 pl-2.5 text-body-sm font-body-sm">
+<span class="inline-block w-2 h-2 rounded-full bg-primary-container animate-pulse mr-2"></span>
+<span class="text-primary font-semibold text-code-sm mr-2">● 执行中</span>
+<div class="h-3.5 w-px bg-outline-variant/40 mr-1.5"></div>
+<button class="flex items-center space-x-1 py-1 px-2 rounded-md hover:bg-surface-container transition-colors text-on-surface font-title-sm text-title-sm">
+<span>Claude Sonnet 4.5</span>
+<span class="material-symbols-outlined !text-[14px] text-outline" data-icon="expand_more">expand_more</span>
+</button>
+</div>
+<!-- 操作图标按钮 -->
+<div class="flex items-center space-x-1">
+<button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors text-body-md" title="终端">
+<span class="material-symbols-outlined !text-[17px]" data-icon="terminal">terminal</span>
+</button>
+<button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors text-body-md relative" title="通知">
+<span class="material-symbols-outlined !text-[17px]" data-icon="notifications">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#dc2626] rounded-full"></span>
+</button>
+<button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors text-body-md" title="设置">
+<span class="material-symbols-outlined !text-[17px]" data-icon="settings">settings</span>
+</button>
+</div>
+<div class="h-4 w-px bg-outline-variant/50"></div>
+<!-- 用户头像 -->
+<div class="flex items-center pl-1 cursor-pointer">
+<div class="w-7 h-7 rounded-full bg-surface-container-highest border border-outline-variant/60 flex items-center justify-center text-primary font-bold text-[12px] shadow-sm">
+          OC
+        </div>
+</div>
+</div>
+</header>
+<!-- ==================== 主工作区三栏卡片容器 ==================== -->
+<main class="flex-1 p-2 flex gap-2 overflow-hidden h-[calc(100vh-48px-28px)]">
+<!-- ==================== 2. 左侧会话栏 (SideNavBar: 260px) ==================== -->
+<aside class="w-[260px] flex-shrink-0 bg-surface-container-lowest/95 backdrop-blur-md rounded-2xl border border-black/[0.08] shadow-[0_4px_20px_-2px_rgba(15,23,42,0.04)] flex flex-col justify-between overflow-hidden">
+<!-- 头部区域 -->
+<div class="p-3 pb-2 space-y-2.5">
+<!-- 品牌徽标 -->
+<div class="flex items-center justify-between px-1">
+<div class="flex items-center space-x-2">
+<div class="w-5 h-5 rounded bg-surface-container-high flex items-center justify-center text-primary">
+<span class="material-symbols-outlined !text-[15px]" data-icon="precision_manufacturing">precision_manufacturing</span>
+</div>
+<div>
+<div class="text-title-sm font-title-sm font-bold text-on-surface leading-tight">OurCode 智能舱</div>
+<div class="text-[10px] font-code-sm text-outline">v2.4.0 核心引擎就绪</div>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline cursor-pointer hover:text-on-surface !text-[16px]" data-icon="tune" title="配置与密钥">tune</span>
+</div>
+<!-- + 新建对话 全宽蓝色按钮 -->
+<button class="w-full h-9 bg-primary-container hover:bg-[#00479a] active:bg-[#003777] text-on-primary rounded-lg font-title-sm text-title-sm font-semibold flex items-center justify-center space-x-1.5 transition-all shadow-sm">
+<span class="material-symbols-outlined !text-[18px]" data-icon="add">add</span>
+<span>新建对话</span>
+</button>
+<!-- 搜索框 -->
+<div class="relative">
+<span class="material-symbols-outlined absolute left-2.5 top-2 text-outline !text-[15px]" data-icon="search">search</span>
+<input class="w-full h-8 pl-8 pr-2.5 rounded-lg bg-surface-container-low border border-outline-variant/30 text-body-sm font-body-sm placeholder:text-outline text-on-surface focus:outline-none focus:border-primary-container" placeholder="搜索会话与文件…" type="text"/>
+</div>
+</div>
+<!-- 会话滚动列表 -->
+<div class="flex-1 overflow-y-auto px-2 space-y-3 pb-2">
+<!-- 今天分组 -->
+<div>
+<div class="px-2 py-1 text-[11px] font-code-sm font-semibold text-outline uppercase tracking-wider">今天</div>
+<div class="space-y-1 mt-0.5">
+<!-- 当前选中项 -->
+<div class="relative rounded-xl bg-[#e8f0ff] p-2.5 border border-[#0058bc]/20 cursor-pointer shadow-[0_1px_3px_0_rgba(0,88,188,0.06)] group">
+<!-- 左侧蓝色高亮竖条 -->
+<div class="absolute left-0 top-2 bottom-2 w-1 bg-primary-container rounded-r-full"></div>
+<div class="pl-1.5">
+<div class="flex items-center justify-between mb-1">
+<div class="flex items-center space-x-1.5 truncate">
+<span class="material-symbols-outlined text-primary-container !text-[14px]" data-icon="chat">chat</span>
+<span class="font-title-sm text-title-sm font-bold text-on-surface truncate">修复 Composer 抖动</span>
+</div>
+<span class="font-code-sm text-[10px] text-primary-container font-semibold ml-1">10:42</span>
+</div>
+<p class="text-[12px] font-body-sm text-on-surface-variant line-clamp-2 leading-relaxed">
+                  已定位输入框在流式渲染时的重度偏移，通过锁定 ResizeObserver 阈值…
+                </p>
+<div class="flex items-center space-x-1.5 mt-2">
+<span class="px-1.5 py-0.2 rounded bg-surface-container-lowest text-[10px] font-code-sm text-primary font-medium border border-primary/20">ChatInput.tsx</span>
+<span class="px-1.5 py-0.2 rounded bg-[#f0fdf4] text-[10px] font-code-sm text-[#16a34a] font-medium border border-[#16a34a]/20">测试中</span>
+</div>
+</div>
+</div>
+<!-- 其他会话项 1 -->
+<div class="rounded-xl p-2.5 hover:bg-surface-container/60 cursor-pointer transition-colors group">
+<div class="flex items-center justify-between mb-1">
+<div class="flex items-center space-x-1.5 truncate">
+<span class="material-symbols-outlined text-outline group-hover:text-on-surface !text-[14px]" data-icon="history">history</span>
+<span class="font-body-md text-body-md font-medium text-on-surface truncate">OAuth2 回调单测</span>
+</div>
+<span class="font-code-sm text-[10px] text-outline">09:15</span>
+</div>
+<p class="text-[12px] font-body-sm text-outline truncate">
+                补齐 PKCE 校验流程中的 3 处边界异常注入…
+              </p>
+</div>
+</div>
+</div>
+<!-- 昨天分组 -->
+<div>
+<div class="px-2 py-1 text-[11px] font-code-sm font-semibold text-outline uppercase tracking-wider">昨天</div>
+<div class="space-y-1 mt-0.5">
+<!-- 历史会话项 2 -->
+<div class="rounded-xl p-2.5 hover:bg-surface-container/60 cursor-pointer transition-colors group">
+<div class="flex items-center justify-between mb-1">
+<div class="flex items-center space-x-1.5 truncate">
+<span class="material-symbols-outlined text-outline group-hover:text-on-surface !text-[14px]" data-icon="history">history</span>
+<span class="font-body-md text-body-md font-medium text-on-surface truncate">重构 WebSocket 退避算法</span>
+</div>
+<span class="font-code-sm text-[10px] text-outline">昨天</span>
+</div>
+<p class="text-[12px] font-body-sm text-outline truncate">
+                调整指数退避抖动上限，避免服务端突发雪崩
+              </p>
+</div>
+<!-- 历史会话项 3 -->
+<div class="rounded-xl p-2.5 hover:bg-surface-container/60 cursor-pointer transition-colors group">
+<div class="flex items-center justify-between mb-1">
+<div class="flex items-center space-x-1.5 truncate">
+<span class="material-symbols-outlined text-outline group-hover:text-on-surface !text-[14px]" data-icon="history">history</span>
+<span class="font-body-md text-body-md font-medium text-on-surface truncate">Docker 容器热重载优化</span>
+</div>
+<span class="font-code-sm text-[10px] text-outline">昨天</span>
+</div>
+<p class="text-[12px] font-body-sm text-outline truncate">
+                优化 bind mount 索引与 node_modules 缓存层
+              </p>
+</div>
+</div>
+</div>
+</div>
+<!-- 底部固定栏目与 Git 状态 -->
+<div class="p-2 border-t border-outline-variant/30 bg-surface-container-low/50 space-y-1">
+<div class="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-surface-container transition-colors cursor-pointer text-on-surface-variant font-code-sm text-code-sm">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-primary !text-[15px]" data-icon="commit">commit</span>
+<span class="text-on-surface font-medium">Git 状态 (main)</span>
+</div>
+<span class="px-1.5 py-0.2 rounded bg-surface-container-highest text-[10px] text-primary font-bold">2 变更</span>
+</div>
+<div class="flex items-center justify-between px-2.5 py-1 rounded-lg hover:bg-surface-container transition-colors cursor-pointer text-outline font-body-sm text-body-sm">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined !text-[15px]" data-icon="tune">tune</span>
+<span>配置与密钥</span>
+</div>
+<span class="text-[10px] font-code-sm">⌘,</span>
+</div>
+</div>
+</aside>
+<!-- ==================== 3. 中央对话主流 (Center Cockpit: 约 720px 居中) ==================== -->
+<section class="flex-1 flex flex-col items-center justify-between overflow-hidden relative">
+<!-- 滚动对话主体 (定宽 720px) -->
+<div class="w-full max-w-[720px] flex-1 overflow-y-auto px-1 py-2 space-y-4 pr-1.5">
+<!-- 1) 用户消息气泡 -->
+<div class="flex justify-end">
+<div class="max-w-[85%] bg-[#e8f0ff] border border-[#0058bc]/15 rounded-2xl rounded-tr-sm p-3.5 shadow-sm">
+<div class="flex items-center space-x-1.5 mb-1 text-[11px] font-code-sm text-primary font-semibold">
+<span class="material-symbols-outlined !text-[13px]" data-icon="person">person</span>
+<span>你 · 10:41</span>
+</div>
+<p class="text-body-md font-body-md text-on-surface leading-relaxed">
+              修复底部输入框在流式输出时上抖 10px 的问题，不要改动外部 Flex 布局
+            </p>
+</div>
+</div>
+<!-- 2) AI 回复白色卡片容器 -->
+<div class="bg-surface-container-lowest rounded-2xl border border-black/[0.08] shadow-[0_4px_20px_-2px_rgba(15,23,42,0.04)] p-4 space-y-3.5">
+<!-- 智能体头部 -->
+<div class="flex items-center justify-between border-b border-outline-variant/20 pb-3">
+<div class="flex items-center space-x-2.5">
+<div class="w-7 h-7 rounded-lg bg-primary-container text-on-primary flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined !text-[16px]" data-icon="precision_manufacturing">precision_manufacturing</span>
+</div>
+<div>
+<div class="flex items-center space-x-2">
+<span class="font-title-sm text-title-sm font-bold text-on-surface">OurCode Assistant</span>
+<span class="px-2 py-0.5 rounded-full bg-surface-container text-outline font-code-sm text-[11px] border border-outline-variant/30">
+                    Claude 3.5 Sonnet · 刚刚
+                  </span>
+</div>
+</div>
+</div>
+<div class="flex items-center space-x-1">
+<button class="w-7 h-7 rounded hover:bg-surface-container text-outline hover:text-on-surface flex items-center justify-center transition-colors" title="复制回答">
+<span class="material-symbols-outlined !text-[16px]" data-icon="content_copy">content_copy</span>
+</button>
+<button class="w-7 h-7 rounded hover:bg-surface-container text-outline hover:text-on-surface flex items-center justify-center transition-colors" title="重新生成">
+<span class="material-symbols-outlined !text-[16px]" data-icon="refresh">refresh</span>
+</button>
+</div>
+</div>
+<!-- 可折叠: 深度推理状态栏 -->
+<div class="rounded-xl bg-surface-container-low border border-outline-variant/30 p-2.5 cursor-pointer hover:bg-surface-container transition-colors">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-2 text-on-surface-variant">
+<span class="material-symbols-outlined text-primary !text-[16px]" data-icon="psychology">psychology</span>
+<span class="font-title-sm text-title-sm font-semibold text-on-surface">深度推理 (9s)</span>
+<span class="text-outline text-body-sm">·</span>
+<span class="text-body-sm text-outline font-body-sm">分析 DOM 重排与 ResizeObserver 竞争</span>
+</div>
+<span class="material-symbols-outlined text-outline !text-[16px]" data-icon="expand_more">expand_more</span>
+</div>
+</div>
+<!-- 详细文字分析排版 -->
+<div class="text-body-md font-body-md text-on-surface space-y-2 leading-relaxed">
+<p>
+              已精确定位问题根源：在流式输出 token 持续追加时，<code class="px-1.5 py-0.5 rounded bg-surface-container text-primary font-code-sm text-code-sm border border-outline-variant/30">ChatInput.tsx</code> 绑定的尺寸监听器与父容器的自动滚动存在 <strong class="font-semibold text-on-surface">1 帧微任务时序竞争</strong>。
+            </p>
+<p class="text-on-surface-variant">
+              外部 Flex 保持完全不变。我们仅在内部对 <code class="px-1.5 py-0.5 rounded bg-surface-container text-primary font-code-sm text-code-sm border border-outline-variant/30">ResizeObserver</code> 注入了 8px 的阈值防抖截断器，并给弹性输入卡片补足了 <code class="px-1.5 py-0.5 rounded bg-surface-container font-code-sm text-code-sm">contain: paint layout</code> 渲染上下文隔绝层。
+            </p>
+</div>
+<!-- 工具调用时间线卡片 RUN 04 -->
+<div class="rounded-xl border border-outline-variant/40 bg-surface-container-lowest overflow-hidden shadow-sm">
+<div class="bg-surface-container-low px-3 py-2 border-b border-outline-variant/30 flex items-center justify-between">
+<div class="flex items-center space-x-2">
+<span class="px-1.5 py-0.5 rounded bg-primary-container text-on-primary font-code-sm text-[11px] font-bold">RUN 04</span>
+<span class="font-code-sm text-code-sm text-outline">18 步 · 40s · 9.6k tokens</span>
+</div>
+<div class="flex items-center space-x-1.5 text-code-sm font-code-sm">
+<span class="text-primary font-semibold">执行完成 3/4</span>
+<span class="inline-block w-2 h-2 rounded-full bg-primary-container animate-ping"></span>
+</div>
+</div>
+<!-- 执行步明细 -->
+<div class="p-2 space-y-1.5 font-code-sm text-code-sm">
+<!-- Step 1 -->
+<div class="flex items-center justify-between px-2 py-1 rounded hover:bg-surface-container-low transition-colors">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-[#16a34a] !text-[15px]" data-icon="check_circle">check_circle</span>
+<span class="text-on-surface font-semibold">read_file</span>
+<span class="text-outline">src/components/ChatInput.tsx</span>
+</div>
+<span class="text-outline text-[11px]">12ms</span>
+</div>
+<!-- Step 2 -->
+<div class="flex items-center justify-between px-2 py-1 rounded hover:bg-surface-container-low transition-colors">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-[#16a34a] !text-[15px]" data-icon="check_circle">check_circle</span>
+<span class="text-on-surface font-semibold">grep</span>
+<span class="text-outline">"ResizeObserver"</span>
+</div>
+<span class="text-outline text-[11px]">8ms</span>
+</div>
+<!-- Step 3: 当前高亮变更 -->
+<div class="flex items-center justify-between px-2 py-1.5 rounded-lg bg-[#e8f0ff]/70 border border-[#0058bc]/20">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-[#16a34a] !text-[15px]" data-icon="check_circle">check_circle</span>
+<span class="text-primary font-bold">edit_file</span>
+<span class="text-on-surface font-medium">src/components/ChatInput.tsx</span>
+<span class="px-1.5 py-0.2 rounded bg-[#f0fdf4] text-[#16a34a] font-bold text-[10px]">+142</span>
+<span class="px-1.5 py-0.2 rounded bg-[#fef2f2] text-[#dc2626] font-bold text-[10px]">-0</span>
+</div>
+<span class="text-primary font-semibold text-[11px]">120ms</span>
+</div>
+<!-- Step 4: 正在执行 -->
+<div class="flex items-center justify-between px-2 py-1 rounded bg-surface-container/40">
+<div class="flex items-center space-x-2">
+<span class="inline-block w-2.5 h-2.5 rounded-full bg-primary-container animate-pulse mx-0.5"></span>
+<span class="text-primary font-semibold">run_command</span>
+<span class="text-on-surface font-mono">pnpm typecheck</span>
+</div>
+<span class="text-primary font-bold text-[11px]">running...</span>
+</div>
+</div>
+</div>
+<!-- 绿色汇总徽标 -->
+<div class="flex items-center space-x-2 px-3 py-2 rounded-xl bg-[#f0fdf4] border border-[#16a34a]/25 text-[#16a34a]">
+<span class="material-symbols-outlined !text-[16px]" data-icon="check_circle">check_circle</span>
+<span class="font-body-md text-body-md font-semibold">✓ 已改 2 个文件，跑了 1 条命令</span>
+</div>
+<!-- 安全沙箱拦截审批卡 -->
+<div class="rounded-xl border border-[#d97706]/40 bg-[#fffbeb]/50 p-3.5 space-y-3">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-2">
+<span class="material-symbols-outlined text-[#d97706] !text-[18px]" data-icon="warning">warning</span>
+<span class="font-title-sm text-title-sm font-bold text-[#b45309]">需要确认 · run_command</span>
+</div>
+<span class="px-2 py-0.5 rounded-full bg-[#fef3c7] text-[#92400e] font-code-sm text-[11px] font-semibold border border-[#d97706]/30">
+                安全沙箱拦截
+              </span>
+</div>
+<!-- 执行命令展示框 -->
+<div class="bg-[#0f1420] text-[#e2e8f0] p-2.5 rounded-lg font-code-sm text-code-sm flex items-center justify-between shadow-inner">
+<div class="flex items-center space-x-2 truncate">
+<span class="text-[#16a34a] font-bold">➜</span>
+<span class="text-surface-tint">ourcode-ide</span>
+<span class="text-[#e2e8f0] font-mono truncate">$ pnpm test:unit --filter composer</span>
+</div>
+<span class="text-outline text-[11px]">bash</span>
+</div>
+<p class="text-body-sm font-body-sm text-[#92400e]">
+              该命令将执行单元测试并可能生成临时快照，是否允许智能体在工作区沙盒中运行？
+            </p>
+<!-- 操作按钮组 -->
+<div class="flex items-center justify-end space-x-2 pt-1">
+<button class="px-3 py-1.5 rounded-lg bg-white border border-black/10 text-on-surface-variant hover:bg-surface-container font-title-sm text-title-sm font-medium transition-colors">
+                拒绝
+              </button>
+<button class="px-3 py-1.5 rounded-lg bg-white border border-[#0058bc]/30 text-primary hover:bg-[#e8f0ff] font-title-sm text-title-sm font-medium transition-colors">
+                本次会话允许
+              </button>
+<button class="px-3.5 py-1.5 rounded-lg bg-primary-container hover:bg-[#00479a] text-on-primary font-title-sm text-title-sm font-semibold transition-colors shadow-sm flex items-center space-x-1">
+<span>允许一次</span>
+<span class="material-symbols-outlined !text-[14px]" data-icon="arrow_forward">arrow_forward</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- 3) 底部输入框胶囊 (Composer: 紧贴中栏定宽) -->
+<div class="w-full max-w-[720px] pb-1 pt-1">
+<div class="bg-surface-container-lowest rounded-xl border border-black/[0.12] p-2.5 shadow-[0_8px_24px_-4px_rgba(15,23,42,0.06)] focus-within:border-primary-container focus-within:ring-2 focus-within:ring-primary-container/20 transition-all">
+<!-- 文本录入域 -->
+<textarea class="w-full bg-transparent border-0 p-1 resize-none text-body-md font-body-md text-on-surface placeholder:text-outline focus:ring-0 focus:outline-none leading-relaxed" placeholder="继续追问，或 @ 引用文件…" rows="2"></textarea>
+<!-- 附件操作与模式提交栏 -->
+<div class="flex items-center justify-between pt-1 border-t border-outline-variant/20 mt-1">
+<!-- 左下附件与引用快捷入口 -->
+<div class="flex items-center space-x-1 text-outline">
+<button class="p-1 rounded-md hover:bg-surface-container hover:text-on-surface transition-colors flex items-center" title="引用代码/文件">
+<span class="material-symbols-outlined !text-[17px]" data-icon="alternate_email">alternate_email</span>
+</button>
+<button class="p-1 rounded-md hover:bg-surface-container hover:text-on-surface transition-colors flex items-center" title="添加附件或截图">
+<span class="material-symbols-outlined !text-[17px]" data-icon="attach_file">attach_file</span>
+</button>
+<button class="p-1 rounded-md hover:bg-surface-container hover:text-on-surface transition-colors flex items-center" title="MCP 工具调用">
+<span class="material-symbols-outlined !text-[17px]" data-icon="extension">extension</span>
+</button>
+<span class="text-outline/40">|</span>
+<span class="text-[11px] font-code-sm text-outline pl-1">按 ⏎ 发送 · ⇧⏎ 换行</span>
+</div>
+<!-- 右下模式下拉与发送圆钮 -->
+<div class="flex items-center space-x-2">
+<button class="flex items-center space-x-1 px-2 py-1 rounded-md bg-surface-container-low hover:bg-surface-container border border-outline-variant/40 text-on-surface font-title-sm text-title-sm transition-colors">
+<span class="material-symbols-outlined !text-[14px] text-primary" data-icon="smart_toy">smart_toy</span>
+<span>自动执行</span>
+<span class="material-symbols-outlined !text-[13px] text-outline" data-icon="expand_more">expand_more</span>
+</button>
+<button class="flex items-center space-x-1 px-2 py-1 rounded-md bg-surface-container-low hover:bg-surface-container border border-outline-variant/40 text-on-surface font-title-sm text-title-sm transition-colors">
+<span>Claude 3.7 Sonnet</span>
+<span class="material-symbols-outlined !text-[13px] text-outline" data-icon="expand_more">expand_more</span>
+</button>
+<button class="w-8 h-8 rounded-full bg-primary-container hover:bg-[#00479a] active:bg-[#003777] text-on-primary flex items-center justify-center transition-all shadow-sm">
+<span class="material-symbols-outlined !text-[17px]" data-icon="arrow_upward">arrow_upward</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- ==================== 4. 右侧实时工作区 (Right Dock: 360px) ==================== -->
+<aside class="w-[360px] flex-shrink-0 bg-surface-container-lowest/95 backdrop-blur-md rounded-2xl border border-black/[0.08] shadow-[0_4px_20px_-2px_rgba(15,23,42,0.04)] flex flex-col justify-between overflow-hidden">
+<!-- 顶部标签栏与窗口微动作 -->
+<div class="p-3 border-b border-outline-variant/30 flex items-center justify-between">
+<div class="flex items-center space-x-1 bg-surface-container-low p-0.5 rounded-lg border border-outline-variant/30">
+<button class="px-2.5 py-1 rounded-md bg-surface-container-lowest text-primary font-bold text-title-sm font-title-sm shadow-sm flex items-center space-x-1">
+<span>变更</span>
+<span class="w-4 h-4 rounded-full bg-[#0058bc]/10 text-primary text-[10px] flex items-center justify-center font-bold">2</span>
+</button>
+<button class="px-2.5 py-1 rounded-md text-outline hover:text-on-surface font-title-sm text-title-sm transition-colors">
+            终端
+          </button>
+<button class="px-2.5 py-1 rounded-md text-outline hover:text-on-surface font-title-sm text-title-sm transition-colors">
+            预览
+          </button>
+</div>
+<div class="flex items-center space-x-1 text-outline">
+<button class="w-7 h-7 rounded hover:bg-surface-container hover:text-on-surface flex items-center justify-center transition-colors" title="刷新状态">
+<span class="material-symbols-outlined !text-[16px]" data-icon="refresh">refresh</span>
+</button>
+<button class="w-7 h-7 rounded hover:bg-surface-container hover:text-on-surface flex items-center justify-center transition-colors" title="全屏展开面板">
+<span class="material-symbols-outlined !text-[16px]" data-icon="open_in_full">open_in_full</span>
+</button>
+</div>
+</div>
+<!-- 文件变更列表与比对区 -->
+<div class="flex-1 overflow-y-auto p-3 space-y-3">
+<!-- 面板副标题 -->
+<div class="flex items-center justify-between text-[11px] font-code-sm font-bold text-outline uppercase tracking-wider">
+<span>STAGED CHANGES (2)</span>
+<span class="text-primary cursor-pointer hover:underline">全部恢复</span>
+</div>
+<!-- 文件项 1: ChatInput.tsx (高亮活动中) -->
+<div class="rounded-xl border border-primary/20 bg-[#e8f0ff]/40 p-2 space-y-1.5">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-1.5 truncate">
+<span class="material-symbols-outlined text-primary !text-[16px]" data-icon="edit_note">edit_note</span>
+<span class="font-code-sm text-code-sm font-bold text-on-surface truncate">ChatInput.tsx</span>
+</div>
+<div class="flex items-center space-x-1 text-code-sm font-code-sm">
+<span class="text-[#16a34a] font-bold">+24</span>
+<span class="text-[#dc2626] font-bold">-6</span>
+</div>
+</div>
+<!-- 绿红比例指示条 -->
+<div class="w-full h-1 bg-surface-container rounded-full overflow-hidden flex">
+<div class="bg-[#16a34a] h-full" style="width: 80%"></div>
+<div class="bg-[#dc2626] h-full" style="width: 20%"></div>
+</div>
+</div>
+<!-- 文件项 2: useAutoResizeTextarea.ts -->
+<div class="rounded-xl border border-outline-variant/30 hover:bg-surface-container/50 p-2 space-y-1.5 transition-colors cursor-pointer">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-1.5 truncate">
+<span class="material-symbols-outlined text-outline !text-[16px]" data-icon="description">description</span>
+<span class="font-code-sm text-code-sm font-medium text-on-surface truncate">useAutoResizeTextarea.ts</span>
+</div>
+<div class="flex items-center space-x-1 text-code-sm font-code-sm">
+<span class="text-[#16a34a] font-semibold">+11</span>
+<span class="text-[#dc2626] font-semibold">-2</span>
+</div>
+</div>
+<!-- 绿红比例指示条 -->
+<div class="w-full h-1 bg-surface-container rounded-full overflow-hidden flex">
+<div class="bg-[#16a34a] h-full" style="width: 85%"></div>
+<div class="bg-[#dc2626] h-full" style="width: 15%"></div>
+</div>
+</div>
+<!-- 深色 Code Diff 审查区 (界面唯一深色块 #0f1420) -->
+<div class="rounded-xl overflow-hidden border border-white/10 bg-[#0f1420] text-[#e2e8f0] shadow-md">
+<!-- Diff 代码头 -->
+<div class="bg-[#151c2c] px-3 py-1.5 border-b border-white/10 flex items-center justify-between text-code-sm font-code-sm">
+<div class="flex items-center space-x-1.5 text-outline-variant">
+<span class="material-symbols-outlined !text-[13px]" data-icon="difference">difference</span>
+<span class="text-[#e2e8f0] font-semibold">src/components/ChatInput.tsx</span>
+</div>
+<span class="text-[10px] text-outline font-mono">@@ -42,6 +42,9 @@</span>
+</div>
+<!-- 行号与 Diff 差异代码视图 -->
+<div class="p-2 font-code-sm text-code-sm space-y-0.5 overflow-x-auto leading-5 select-text">
+<!-- 上下文行 -->
+<div class="flex text-outline">
+<span class="w-7 text-right pr-2 select-none opacity-50">40</span>
+<span class="text-[#94a3b8]">  const textareaRef = useRef(null);</span>
+</div>
+<div class="flex text-outline">
+<span class="w-7 text-right pr-2 select-none opacity-50">41</span>
+<span class="text-[#94a3b8]">  const [isStreaming, setStream] = useState(false);</span>
+</div>
+<!-- 删除行 (红底减号) -->
+<div class="flex bg-[#dc2626]/20 text-[#fca5a5] rounded-sm">
+<span class="w-7 text-right pr-2 select-none text-[#dc2626] font-bold">-</span>
+<span>-  observer.observe(targetNode);</span>
+</div>
+<!-- 新增行 (绿底加号) -->
+<div class="flex bg-[#16a34a]/20 text-[#86efac] rounded-sm">
+<span class="w-7 text-right pr-2 select-none text-[#16a34a] font-bold">+</span>
+<span>+  // 锁定微小重绘，防止流式输出 10px 抖动</span>
+</div>
+<div class="flex bg-[#16a34a]/20 text-[#86efac] rounded-sm">
+<span class="w-7 text-right pr-2 select-none text-[#16a34a] font-bold">+</span>
+<span>+  if (Math.abs(diffHeight) &gt; 8) {</span>
+</div>
+<div class="flex bg-[#16a34a]/20 text-[#86efac] rounded-sm">
+<span class="w-7 text-right pr-2 select-none text-[#16a34a] font-bold">+</span>
+<span>+    syncScrollPosition(targetNode);</span>
+</div>
+<div class="flex bg-[#16a34a]/20 text-[#86efac] rounded-sm">
+<span class="w-7 text-right pr-2 select-none text-[#16a34a] font-bold">+</span>
+<span>+  }</span>
+</div>
+<!-- 上下文行 -->
+<div class="flex text-outline">
+<span class="w-7 text-right pr-2 select-none opacity-50">46</span>
+<span class="text-[#94a3b8]">  return () =&gt; observer.disconnect();</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 底部操作按钮 -->
+<div class="p-3 border-t border-outline-variant/30 bg-surface-container-low/50">
+<button class="w-full h-8 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-outline-variant/40 text-on-surface font-title-sm text-title-sm font-semibold flex items-center justify-center space-x-1.5 transition-colors">
+<span>查看完整 Diff</span>
+<span class="material-symbols-outlined !text-[14px] text-outline" data-icon="open_in_new">open_in_new</span>
+</button>
+</div>
+</aside>
+</main>
+<!-- ==================== 5. 底部状态栏 (28px) ==================== -->
+<footer class="h-7 w-full bg-surface-container-lowest border-t border-outline-variant/30 px-3 flex items-center justify-between text-code-sm font-code-sm text-outline z-20 flex-shrink-0 select-none">
+<!-- 左侧状态项 -->
+<div class="flex items-center space-x-3">
+<div class="flex items-center space-x-1 text-on-surface font-medium hover:text-primary cursor-pointer">
+<span class="material-symbols-outlined !text-[13px] text-primary" data-icon="commit">commit</span>
+<span>main*</span>
+<span class="text-[#16a34a] font-bold ml-1">↑1</span>
+<span class="text-outline">↓0</span>
+</div>
+<div class="h-3 w-px bg-outline-variant/40"></div>
+<div class="flex items-center space-x-1.5">
+<span class="text-[#16a34a] font-bold">✓0</span>
+<span class="text-[#dc2626] font-bold">✗0</span>
+</div>
+<div class="h-3 w-px bg-outline-variant/40"></div>
+<span>UTF-8</span>
+<span>TypeScript 5.4</span>
+</div>
+<!-- 右侧遥测指标与 AGENT 动态 -->
+<div class="flex items-center space-x-3">
+<span>18 步</span>
+<span>·</span>
+<span>9.6k tokens</span>
+<span>·</span>
+<span>1.4s</span>
+<span>·</span>
+<div class="flex items-center space-x-1.5 text-primary font-bold">
+<span class="inline-block w-1.5 h-1.5 rounded-full bg-primary-container animate-pulse"></span>
+<span>AGENT 执行中</span>
+</div>
+</div>
+</footer>
+</body></html>

@@ -103,6 +103,7 @@
   --bg-activity: rgba(255, 255, 255, 0.5);
   --bg-tabs: rgba(255, 255, 255, 0.6);
   --bg-tab-active: #ffffff;
+  --terminal-bg: #ffffff;
   --bg-statusbar: rgba(255, 255, 255, 0.55);
   --bg-selected: rgba(0, 88, 188, 0.12);
   --text-active: #0f172a;
@@ -195,6 +196,7 @@
   --bg-activity: #151a26;
   --bg-tabs: #151a26;
   --bg-tab-active: #10151f;
+  --terminal-bg: #18181b;
   --bg-statusbar: #151a26;
   --bg-selected: rgba(77, 148, 255, 0.16);
   --text-active: #ffffff;
@@ -680,6 +682,29 @@ textarea[data-ai-input] {
   padding: 4px;
 }
 
+/* Integrated terminal pane: xterm paints its own themed background, so the pane
+   surface uses the exact same color for the padding ring. The viewport is made
+   transparent so the deprecated #000 default in @xterm/xterm/css/xterm.css can
+   never show through as a black frame. */
+.terminal-pane {
+  background: var(--terminal-bg, #ffffff);
+}
+.terminal-pane .xterm {
+  height: 100%;
+  padding: 6px 8px;
+}
+.terminal-pane .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* Tab strip scrolls horizontally without a visible scrollbar */
+.terminal-tabbar-scroll {
+  scrollbar-width: none;
+}
+.terminal-tabbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .xterm-viewport::-webkit-scrollbar {
   width: 6px;
 }
@@ -959,19 +984,6 @@ textarea[data-ai-input] {
 }
 .resizer:hover::after, .resizer.active::after {
   opacity: 1;
-}
-
-/* Terminal split resizer (horizontal left-right) */
-.terminal-split-resizer {
-  width: 3px;
-  cursor: col-resize;
-  background: transparent;
-  transition: background 0.2s;
-  flex-shrink: 0;
-}
-.terminal-split-resizer:hover,
-.terminal-split-resizer.active {
-  background: var(--primary-color-30);
 }
 
 /* Logo pulse animation (electric-blue accent) */

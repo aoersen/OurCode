@@ -71,8 +71,32 @@ test('图片附件：选择 → 缩略图 → 移除 → 发送并落库', async
 
   const { app, win } = await launchSandbox(userData)
   try {
-    // Fresh userData → the welcome screen stands in for the composer.
-    await win.getByText('开始新对话').first().click()
+    // 图片附件属于真实对话的 ChatInput；新建的空会话落在欢迎对话页（没有附件
+    // 控件），所以先种一条已发过消息的会话，让聊天面板成为活动界面。
+    await win.evaluate(async (group) => {
+      const api = (window as any).electronAPI
+      await api.saveSession({
+        id: 'image-attach-session',
+        title: '图片附件',
+        configGroupId: group.id,
+        model: 'gpt-4o',
+        modelParams: {},
+        messages: [{
+          id: 'image-attach-seed-msg',
+          role: 'user',
+          content: '先开一个会话',
+          sortOrder: 0,
+          contextFiles: [],
+          tokenCount: 0,
+          createdAt: Date.now(),
+        }],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      localStorage.setItem('lastActiveSessionId', 'image-attach-session')
+    }, SEED_GROUP)
+    await win.reload()
+    await win.waitForTimeout(2500)
     await expect(win.locator('.chat-input-box')).toBeVisible({ timeout: 10000 })
 
     const imageInput = win.locator('input[type=file][accept*="image"]').first()

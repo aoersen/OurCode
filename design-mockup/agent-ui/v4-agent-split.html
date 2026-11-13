@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V4 · 协作分屏 — OurCode Agent UI</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  /* ---------- V4: Agent Split Studio ---------- */
+  .iconrail {
+    width: 56px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 9px 0;
+  }
+  .ir-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    color: var(--text-3);
+    position: relative;
+  }
+  .ir-btn .ic { width: 17px; height: 17px; }
+  .ir-btn.on { background: rgba(0, 88, 188, 0.09); color: var(--accent); }
+  .ir-btn.on::before { content: ''; position: absolute; left: -10px; top: 9px; bottom: 9px; width: 2.5px; border-radius: 0 2px 2px 0; background: var(--accent); }
+  .ir-sep { width: 22px; height: 1px; background: var(--border); margin: 4px 0; }
+  .iconrail .avatar { margin-top: auto; }
+
+  /* conversation */
+  .conv { width: 500px; flex: none; display: flex; flex-direction: column; overflow: hidden; }
+  .conv-head { flex: none; height: 54px; padding: 0 13px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .conv-head .avatar { width: 27px; height: 27px; }
+  .ch-title { display: flex; align-items: center; gap: 6px; }
+  .ch-title b { font-size: 12.5px; letter-spacing: -0.1px; }
+  .ch-sub { font-size: 9px; color: var(--text-4); margin-top: 1px; display: flex; align-items: center; gap: 4px; }
+  .ch-sub .mono { font-size: 8.5px; color: var(--accent); }
+  .ch-actions { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+
+  .conv-thread { flex: 1; min-height: 0; overflow: auto; padding: 12px 13px 4px; }
+  .conv-thread::-webkit-scrollbar { width: 0; }
+  .u-msg { display: flex; justify-content: flex-end; }
+  .u-bubble { max-width: 92%; padding: 8px 11px; border-radius: 12px 12px 3px 12px; background: linear-gradient(135deg, #e8f0ff, #eef4ff); border: 1px solid rgba(0, 88, 188, 0.1); color: #17335e; font-size: 11.5px; line-height: 1.55; }
+  .u-meta { text-align: right; font-size: 8.5px; color: var(--text-4); margin-top: 3px; }
+
+  .a-row { display: flex; gap: 7px; margin-top: 11px; }
+  .a-row .avatar { width: 23px; height: 23px; margin-top: 1px; }
+  .a-main { flex: 1; min-width: 0; }
+  .a-name { display: flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; }
+  .a-name .pill { height: 17px; font-size: 8.5px; padding: 0 5px; }
+  .a-text { font-size: 11.5px; line-height: 1.62; color: var(--text-2); margin-top: 3px; }
+  .a-text b { color: var(--text); }
+
+  .run-box { margin-top: 8px; padding: 8px 9px 7px; border: 1px solid rgba(0, 88, 188, 0.16); border-radius: 11px; background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(232, 240, 255, 0.45)); }
+  .run-head { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--text-2); }
+  .run-head .pill { height: 17px; font-size: 8.5px; padding: 0 5px; }
+  .run-head .t { margin-left: auto; font-family: var(--mono); font-size: 8.5px; font-weight: 500; color: var(--text-4); }
+  .steps { margin-top: 5px; }
+  .s-line { display: flex; align-items: center; gap: 5px; height: 21px; font-size: 9.5px; color: var(--text-3); }
+  .s-line .si-ic { width: 12px; height: 12px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .s-line .si-ic .ic { width: 7px; height: 7px; stroke-width: 3.2; }
+  .s-line.done .si-ic { background: var(--green); }
+  .s-line.done .si-ic .ic { color: #fff; }
+  .s-line.done { color: var(--text-2); }
+  .s-line.now .si-ic { border: 3px solid var(--accent); }
+  .s-line.now { color: var(--accent); font-weight: 600; }
+  .s-line .t { margin-left: auto; font-family: var(--mono); font-size: 8px; color: var(--text-4); font-weight: 400; }
+  .s-line code { font-family: var(--mono); font-size: 8.5px; color: var(--text-2); background: rgba(15, 23, 42, 0.045); padding: 0 3px; border-radius: 3px; font-weight: 500; }
+  .run-foot { display: flex; align-items: center; gap: 6px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--border); font-size: 8.5px; color: var(--text-4); }
+  .run-foot .add { color: var(--green-text); font-family: var(--mono); }
+  .run-foot .del { color: var(--red-text); font-family: var(--mono); }
+  .run-foot .grow { flex: 1; }
+  .run-foot .lnk { color: var(--accent); font-weight: 600; display: inline-flex; align-items: center; gap: 2px; }
+  .run-foot .lnk .ic { width: 9px; height: 9px; }
+
+  .files-row { display: flex; align-items: center; gap: 4px; margin-top: 7px; flex-wrap: wrap; }
+  .f-chip { height: 21px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.55); font-family: var(--mono); font-size: 8.5px; color: var(--text-3); }
+  .f-chip .ic { width: 9px; height: 9px; color: var(--text-4); }
+  .f-chip .d { width: 4px; height: 4px; border-radius: 50%; background: var(--amber); }
+
+  .decision { margin-top: 8px; padding: 8px 9px; border: 1px solid rgba(217, 119, 6, 0.24); border-radius: 11px; background: linear-gradient(135deg, rgba(255, 251, 235, 0.92), rgba(255, 255, 255, 0.55)); }
+  .dec-head { display: flex; align-items: center; gap: 4px; font-size: 8.5px; font-weight: 700; color: var(--amber-text); }
+  .dec-head .ic { width: 10px; height: 10px; }
+  .dec-body { font-size: 10px; color: var(--text-2); margin-top: 3px; line-height: 1.5; }
+  .dec-body code { font-family: var(--mono); font-size: 9px; background: rgba(15, 23, 42, 0.05); padding: 0 3px; border-radius: 3px; }
+  .dec-acts { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+  .dec-acts .btn { height: 21px; font-size: 8.5px; padding: 0 6px; border-radius: 5px; }
+  .dec-acts .grow { flex: 1; }
+
+  .ctx-card { margin-top: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.5); }
+  .ctx-head { display: flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 700; color: var(--text-2); }
+  .ctx-head .ic { width: 11px; height: 11px; color: var(--text-3); }
+  .ctx-head .more { margin-left: auto; font-family: var(--mono); font-size: 8px; font-weight: 500; color: var(--text-4); }
+  .ctx-chips { display: flex; align-items: center; gap: 3px; margin-top: 5px; flex-wrap: wrap; }
+  .ctx-chip { font-family: var(--mono); font-size: 8px; color: var(--text-3); background: rgba(15, 23, 42, 0.04); border-radius: 4px; padding: 1px 4px; }
+  .wait-note { display: flex; align-items: center; gap: 5px; margin-top: 7px; font-size: 8.5px; color: var(--text-4); }
+  .wait-note .dot { width: 5px; height: 5px; }
+  .next-card { margin-top: 7px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.42); }
+  .next-head { display: flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 700; color: var(--text-2); }
+  .next-head .ic { width: 11px; height: 11px; color: var(--accent); }
+  .next-head .more { margin-left: auto; font-size: 8px; font-weight: 500; color: var(--text-4); }
+  .next-line { display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 9px; color: var(--text-3); }
+  .next-line i { width: 13px; height: 13px; border-radius: 4px; background: rgba(15, 23, 42, 0.05); display: grid; place-items: center; font-style: normal; font-size: 7.5px; font-weight: 700; color: var(--text-3); flex: none; }
+  .conv-foot { flex: none; padding: 7px 11px 11px; }
+  .conv-foot .composer { border-radius: 15px; }
+  .conv-foot .composer .input { padding: 10px 12px 2px; font-size: 12px; min-height: 36px; }
+  .conv-foot .composer .cbar { padding: 4px 8px 7px; gap: 3px; }
+  .conv-foot .chip { height: 23px; font-size: 10.5px; padding: 0 7px; }
+  .conv-foot .chip .ic { width: 12px; height: 12px; }
+  .conv-foot .send-btn { width: 30px; height: 30px; }
+  .conv-foot .send-btn .ic { width: 15px; height: 15px; }
+  .conv-foot .ctx-ring { width: 20px; height: 20px; }
+  .conv-foot .hint-row { margin-top: 5px; }
+
+  /* workspace */
+  .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .tabbar { flex: none; height: 39px; display: flex; align-items: flex-end; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); background: rgba(255, 255, 255, 0.32); }
+  .tab { position: relative; height: 31px; padding: 0 9px; display: flex; align-items: center; gap: 5px; border-radius: 8px 8px 0 0; font-size: 10px; color: var(--text-3); }
+  .tab .ic { width: 12px; height: 12px; }
+  .tab .d { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  .tab.on { background: rgba(255, 255, 255, 0.85); color: var(--text); font-weight: 600; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 -1px 3px rgba(15, 23, 42, 0.03); }
+  .tab.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .tabbar .right { margin-left: auto; display: flex; align-items: center; gap: 1px; padding-bottom: 4px; }
+  .tabbar .right .icon-btn { width: 24px; height: 24px; }
+
+  .reviewbar { flex: none; height: 38px; display: flex; align-items: center; gap: 6px; padding: 0 11px; border-bottom: 1px solid var(--border); background: linear-gradient(90deg, rgba(0, 88, 188, 0.07), rgba(232, 240, 255, 0.35) 60%, rgba(255, 255, 255, 0.2)); }
+  .reviewbar .spark { width: 20px; height: 20px; border-radius: 6px; background: rgba(0, 88, 188, 0.1); color: var(--accent); display: grid; place-items: center; flex: none; }
+  .reviewbar .spark .ic { width: 12px; height: 12px; }
+  .reviewbar b { font-size: 10.5px; }
+  .reviewbar .mono { font-size: 9px; color: var(--text-3); }
+  .reviewbar .add { color: var(--green-text); }
+  .reviewbar .del { color: var(--red-text); }
+  .reviewbar .grow { flex: 1; }
+  .reviewbar .btn { height: 24px; font-size: 9.5px; padding: 0 8px; border-radius: 6px; }
+  .reviewbar .icon-btn { width: 22px; height: 22px; }
+
+  .editor { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .ed-crumb { flex: none; height: 27px; display: flex; align-items: center; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 9px; color: var(--text-4); }
+  .ed-crumb .ic { width: 10px; height: 10px; }
+  .ed-crumb b { color: var(--text-2); font-weight: 600; }
+  .ed-crumb .right { margin-left: auto; display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 8px; }
+  .ed-crumb .right .ai { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-family: var(--font); font-size: 8.5px; font-weight: 600; }
+  .ed-crumb .right .ai .dot { width: 4px; height: 4px; }
+
+  .ed-code { flex: 1; min-height: 0; padding: 6px 0 0; overflow: hidden; font-family: var(--mono); font-size: 11px; line-height: 1.62; color: #334155; background: rgba(255, 255, 255, 0.36); }
+  .cl { display: flex; align-items: baseline; padding: 0 12px; white-space: pre; }
+  .cl .gutter { width: 34px; flex: none; text-align: right; padding-right: 11px; color: #b9c3cf; font-size: 9px; }
+  .cl .sign { width: 12px; flex: none; color: #c3ccd8; }
+  .cl.add { background: rgba(22, 163, 74, 0.075); }
+  .cl.add .sign { color: var(--green-text); }
+  .cl.del { background: rgba(220, 38, 38, 0.06); }
+  .cl.del .sign { color: var(--red-text); }
+  .cl.active-line { background: rgba(0, 88, 188, 0.045); box-shadow: inset 2px 0 0 var(--accent); }
+  .cl .ai-mark { margin-left: 10px; font-family: var(--font); font-size: 8px; font-weight: 700; color: var(--accent); border: 1px solid rgba(0, 88, 188, 0.2); background: rgba(232, 240, 255, 0.7); border-radius: 3px; padding: 0 3px; line-height: 1.2; }
+  .caret-line { display: inline-block; width: 1.5px; height: 11px; background: var(--accent); vertical-align: -1px; animation: caret 1.1s steps(1) infinite; }
+
+  /* terminal */
+  .term { flex: none; height: 186px; display: flex; flex-direction: column; background: #0f1420; color: #c9d4e3; }
+  .term-head { flex: none; height: 30px; display: flex; align-items: center; gap: 2px; padding: 0 9px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+  .t-tab { height: 22px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; border-radius: 5px; font-size: 9px; color: #7f8ea3; }
+  .t-tab.on { background: rgba(255, 255, 255, 0.08); color: #e6edf6; }
+  .t-tab .n { font-family: var(--mono); font-size: 8px; color: #7f8ea3; }
+  .term-head .right { margin-left: auto; display: flex; align-items: center; gap: 6px; color: #6d7d92; font-size: 8.5px; }
+  .term-head .right .ic { width: 11px; height: 11px; }
+  .term-body { flex: 1; padding: 6px 12px; font-family: var(--mono); font-size: 9px; line-height: 1.5; color: #aab6c8; overflow: hidden; }
+  .term-body .tcmd { color: #e6edf6; }
+  .term-body .dim { color: #64748b; }
+  .term-body .ok { color: #4ade80; }
+  .term-body .num { color: #93c5fd; }
+  .term-body .warn { color: #fbbf24; }
+  .term-body .prompt { color: #4ade80; }
+
+  /* status extras */
+  .statusbar .ln { font-family: var(--mono); }
+</style>
+</head>
+<body>
+<div class="win">
+
+  <header class="titlebar">
+    <div class="tb-left">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24"><path d="M3.5 13.2c2.3 0 2.7-4.2 5-4.2s2.7 4.2 5 4.2 2.7-4.2 5-4.2 2.7 4.2 5 4.2"/></svg>
+        </span>
+        OurCode
+      </div>
+      <div class="ws">
+        <svg class="ic xs"><use href="#i-folder"/></svg>
+        ourcode-ide
+        <span class="sep">/</span>
+        <code>agent-ui</code>
+        <svg class="ic xs" style="color:var(--text-4)"><use href="#i-chevron-down"/></svg>
+      </div>
+    </div>
+    <div class="tb-center">
+      <div class="cmd">
+        <svg class="ic sm"><use href="#i-search"/></svg>
+        搜索文件、符号或命令
+        <span class="kbd">Ctrl K</span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span class="tb-status"><i class="dot live"></i>Agent 正在编辑</span>
+      <span class="pill"><svg class="ic xs"><use href="#i-git-branch"/></svg>3 个变更</span>
+      <span class="avatar sm">YG</span>
+      <div class="wbtns">
+        <button class="wbtn"><svg class="ic sm"><use href="#i-minimize"/></svg></button>
+        <button class="wbtn"><svg class="ic xs"><use href="#i-window"/></svg></button>
+        <button class="wbtn close"><svg class="ic sm"><use href="#i-x"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ===== icon rail ===== -->
+    <aside class="panel iconrail">
+      <button class="ir-btn" title="资源管理器"><svg class="ic"><use href="#i-folder"/></svg></button>
+      <button class="ir-btn" title="搜索"><svg class="ic"><use href="#i-search"/></svg></button>
+      <button class="ir-btn" title="源代码管理"><svg class="ic"><use href="#i-git-branch"/></svg></button>
+      <button class="ir-btn on" title="Agent"><svg class="ic"><use href="#i-bot"/></svg></button>
+      <button class="ir-btn" title="终端"><svg class="ic"><use href="#i-terminal"/></svg></button>
+      <div class="ir-sep"></div>
+      <button class="ir-btn" title="技能"><svg class="ic"><use href="#i-puzzle"/></svg></button>
+      <button class="ir-btn" title="设置"><svg class="ic"><use href="#i-settings"/></svg></button>
+      <span class="avatar sm">YG</span>
+    </aside>
+
+    <!-- ===== conversation ===== -->
+    <aside class="panel conv">
+      <header class="conv-head">
+        <span class="avatar agent"><svg class="ic"><use href="#i-bot"/></svg></span>
+        <div>
+          <div class="ch-title"><b>Agent</b><span class="pill accent" style="height:17px;font-size:8.5px;padding:0 5px"><span class="spinner" style="width:7px;height:7px;border-width:1.5px"></span>运行中</span></div>
+          <div class="ch-sub">重构 Agent 主画布 · <span class="mono">ourcode-ide / agent-ui</span></div>
+        </div>
+        <div class="ch-actions">
+          <button class="icon-btn sm"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+          <button class="icon-btn sm"><svg class="ic sm"><use href="#i-more"/></svg></button>
+        </div>
+      </header>
+
+      <div class="conv-thread">
+        <div class="u-msg">
+          <div>
+            <div class="u-bubble">把主画布改成会话优先，右侧只保留产物栏；编辑器降级为可唤醒的工作台。</div>
+            <div class="u-meta">14:02 · 你</div>
+          </div>
+        </div>
+
+        <div class="a-row">
+          <span class="avatar agent"><svg class="ic"><use href="#i-bot"/></svg></span>
+          <div class="a-main">
+            <div class="a-name">OurCode Agent <span class="pill plain">Claude Sonnet 4.5</span></div>
+            <div class="a-text">我先改壳，再把运行过程收进消息流。右侧是当前修改，<b>接受后才会写入</b>；你也可以直接在代码上改。</div>
+
+            <div class="run-box">
+              <div class="run-head">
+                <span class="spinner"></span>正在执行<span class="pill accent">14 / 18</span><span class="t">1m 24s</span>
+              </div>
+              <div class="steps">
+                <div class="s-line done"><span class="si-ic"><svg class="ic"><use href="#i-check"/></svg></span>读取 MainLayout / ChatPanel<span class="t">0.8s</span></div>
+                <div class="s-line done"><span class="si-ic"><svg class="ic"><use href="#i-check"/></svg></span>抽出 AgentShell 三栏骨架<span class="t">1.2s</span></div>
+                <div class="s-line done"><span class="si-ic"><svg class="ic"><use href="#i-check"/></svg></span>会话栏改为常驻左栏<span class="t">2.4s</span></div>
+                <div class="s-line now"><span class="si-ic"></span>运行 <code>npm run typecheck</code><span class="t">12.4s</span></div>
+                <div class="s-line"><span class="si-ic" style="border:1.5px solid rgba(15,23,42,.12)"></span>窄窗截图核对<span class="t">pending</span></div>
+              </div>
+              <div class="run-foot">
+                <span>已改 3 个文件</span><span class="add">+86</span><span class="del">−24</span>
+                <span class="grow"></span>
+                <span class="lnk">查看 diff<svg class="ic"><use href="#i-arrow-right"/></svg></span>
+              </div>
+            </div>
+
+            <div class="files-row">
+              <span class="f-chip"><i class="d"></i>AgentShell.tsx</span>
+              <span class="f-chip"><i class="d"></i>SessionRail.tsx</span>
+              <span class="f-chip"><i class="d"></i>BottomDock.tsx</span>
+            </div>
+
+            <div class="decision">
+              <div class="dec-head"><svg class="ic"><use href="#i-alert"/></svg>需要你确认</div>
+              <div class="dec-body">安装新增依赖 <code>@radix-ui/react-scroll-area</code>，会写入 package.json 与 lockfile。</div>
+              <div class="dec-acts">
+                <button class="btn">拒绝</button>
+                <span class="grow"></span>
+                <button class="btn">查看原因</button>
+                <button class="btn btn-primary">允许安装</button>
+              </div>
+            </div>
+
+            <div class="ctx-card">
+              <div class="ctx-head"><svg class="ic"><use href="#i-layers"/></svg>已读取上下文<span class="more">24.6k tokens · 9 个文件</span></div>
+              <div class="ctx-chips">
+                <span class="ctx-chip">MainLayout.tsx</span>
+                <span class="ctx-chip">ChatPanel.tsx</span>
+                <span class="ctx-chip">uiStore.ts</span>
+                <span class="ctx-chip">chatStore.ts</span>
+                <span class="ctx-chip">+5</span>
+              </div>
+            </div>
+
+            <div class="wait-note"><i class="dot amber"></i>等待你确认后继续 · 其余 2 个任务不受影响</div>
+
+            <div class="next-card">
+              <div class="next-head"><svg class="ic"><use href="#i-list"/></svg>接下来<span class="more">批准后自动执行</span></div>
+              <div class="next-line"><i>1</i>安装依赖并重启 typecheck</div>
+              <div class="next-line"><i>2</i>生成 1280 / 1024 截图并对比</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conv-foot">
+        <div class="composer">
+          <div class="input">继续追问，或直接改右侧代码…<span class="caret"></span></div>
+          <div class="cbar">
+            <button class="chip"><svg class="ic"><use href="#i-plus"/></svg></button>
+            <span class="chip subtle">Claude Sonnet 4.5<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+            <span class="chip subtle"><svg class="ic xs" style="color:var(--green-text)"><use href="#i-shield"/></svg>手动确认<svg class="ic xs"><use href="#i-chevron-down"/></svg></span>
+            <span class="grow"></span>
+            <span class="ctx-ring" style="--p:44"><span>44</span></span>
+            <button class="send-btn"><svg class="ic"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+        <div class="hint-row"><span class="kbd">Enter</span>发送<span class="kbd">Shift Enter</span>换行</div>
+      </div>
+    </aside>
+
+    <!-- ===== workspace ===== -->
+    <main class="panel workspace">
+      <div class="tabbar">
+        <div class="tab on"><svg class="ic"><use href="#i-file-code"/></svg>AgentShell.tsx<i class="d"></i></div>
+        <div class="tab"><svg class="ic"><use href="#i-file-code"/></svg>SessionRail.tsx<i class="d"></i></div>
+        <div class="tab"><svg class="ic"><use href="#i-file-code"/></svg>BottomDock.tsx<i class="d" style="background:var(--amber)"></i></div>
+        <div class="tab"><svg class="ic"><use href="#i-monitor"/></svg>预览</div>
+        <div class="right">
+          <button class="icon-btn"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+          <button class="icon-btn"><svg class="ic sm"><use href="#i-columns"/></svg></button>
+          <button class="icon-btn"><svg class="ic sm"><use href="#i-more"/></svg></button>
+        </div>
+      </div>
+
+      <div class="reviewbar">
+        <span class="spark"><svg class="ic"><use href="#i-sparkles"/></svg></span>
+        <b>Agent 修改了 3 个文件</b>
+        <span class="mono"><span class="add">+86</span> <span class="del">−24</span></span>
+        <span class="pill green" style="height:18px;font-size:8.5px;padding:0 5px">测试通过</span>
+        <span class="grow"></span>
+        <button class="btn">逐个审阅</button>
+        <button class="btn btn-primary"><svg class="ic"><use href="#i-check"/></svg>全部接受</button>
+        <button class="icon-btn"><svg class="ic sm"><use href="#i-x"/></svg></button>
+      </div>
+
+      <div class="editor">
+        <div class="ed-crumb">
+          <svg class="ic"><use href="#i-folder"/></svg>src<span class="dim">/</span>shell<span class="dim">/</span>agent<span class="dim">/</span><b>AgentShell.tsx</b>
+          <span class="right">
+            <span class="ai"><i class="dot blue live"></i>Agent 正在编辑</span>
+            <span>Ln 14, Col 8</span>
+            <span>TypeScript React</span>
+          </span>
+        </div>
+
+        <div class="ed-code">
+          <div class="cl"><span class="gutter">1</span><span class="sign"></span><span><span class="tok-k">import</span> { SessionRail } <span class="tok-k">from</span> <span class="tok-s">'./SessionRail'</span></span></div>
+          <div class="cl"><span class="gutter">2</span><span class="sign"></span><span><span class="tok-k">import</span> { ConversationView } <span class="tok-k">from</span> <span class="tok-s">'./ConversationView'</span></span></div>
+          <div class="cl"><span class="gutter">3</span><span class="sign"></span><span><span class="tok-k">import</span> { ArtifactPanel } <span class="tok-k">from</span> <span class="tok-s">'./ArtifactPanel'</span></span></div>
+          <div class="cl"><span class="gutter">4</span><span class="sign"></span><span></span></div>
+          <div class="cl"><span class="gutter">5</span><span class="sign"></span><span><span class="tok-c">// 对话优先的三栏壳：会话栏 · 阅读列 · 产物栏</span></span></div>
+          <div class="cl"><span class="gutter">6</span><span class="sign"></span><span><span class="tok-k">export function</span> <span class="tok-f">AgentShell</span>() {</span></div>
+          <div class="cl"><span class="gutter">7</span><span class="sign"></span><span>  <span class="tok-k">return</span> (</span></div>
+          <div class="cl"><span class="gutter">8</span><span class="sign"></span><span>    &lt;<span class="tok-t">div</span> <span class="tok-p">className</span>=<span class="tok-s">"flex h-full min-h-0 gap-2 p-2"</span>&gt;</span></div>
+          <div class="cl del"><span class="gutter">9</span><span class="sign">−</span><span>      &lt;<span class="tok-t">ChatPanel</span> <span class="tok-p">width</span>={<span class="tok-p">chatWidth</span>} /&gt;</span></div>
+          <div class="cl add"><span class="gutter">9</span><span class="sign">+</span><span>      &lt;<span class="tok-t">SessionRail</span> /&gt;</span></div>
+          <div class="cl add"><span class="gutter">10</span><span class="sign">+</span><span>      &lt;<span class="tok-t">ConversationView</span> <span class="tok-p">maxWidth</span>={<span class="tok-n">860</span>} /&gt;</span></div>
+          <div class="cl add active-line"><span class="gutter">11</span><span class="sign">+</span><span>      &lt;<span class="tok-t">ArtifactPanel</span> <span class="tok-p">defaultOpen</span>={<span class="tok-n">false</span>} /&gt;<span class="ai-mark">AI</span></span></div>
+          <div class="cl"><span class="gutter">12</span><span class="sign"></span><span>    &lt;/<span class="tok-t">div</span>&gt;</span></div>
+          <div class="cl"><span class="gutter">13</span><span class="sign"></span><span>  )</span></div>
+          <div class="cl"><span class="gutter">14</span><span class="sign"></span><span>}</span></div>
+          <div class="cl"><span class="gutter">15</span><span class="sign"></span><span></span></div>
+          <div class="cl"><span class="gutter">16</span><span class="sign"></span><span><span class="tok-k">export function</span> <span class="tok-f">useAgentLayout</span>() {</span></div>
+          <div class="cl"><span class="gutter">17</span><span class="sign"></span><span>  <span class="tok-k">const</span> <span class="tok-p">mode</span> = <span class="tok-f">useUIStore</span>((s) =&gt; s.<span class="tok-p">uiMode</span>)</span></div>
+          <div class="cl"><span class="gutter">18</span><span class="sign"></span><span>  <span class="tok-k">const</span> <span class="tok-p">reading</span> = <span class="tok-f">useUIStore</span>((s) =&gt; s.<span class="tok-p">readingWidth</span>)</span></div>
+          <div class="cl"><span class="gutter">19</span><span class="sign"></span><span>  <span class="tok-k">return</span> {</span></div>
+          <div class="cl"><span class="gutter">20</span><span class="sign"></span><span>    mode,</span></div>
+          <div class="cl active-line"><span class="gutter">21</span><span class="sign"></span><span>    reading,<span class="caret-line"></span></span></div>
+          <div class="cl"><span class="gutter">22</span><span class="sign"></span><span>    rail: mode === <span class="tok-s">'agent'</span> ? <span class="tok-n">256</span> : <span class="tok-n">0</span>,</span></div>
+          <div class="cl"><span class="gutter">23</span><span class="sign"></span><span>    artifact: mode === <span class="tok-s">'agent'</span> ? <span class="tok-n">360</span> : <span class="tok-n">0</span>,</span></div>
+          <div class="cl"><span class="gutter">24</span><span class="sign"></span><span>  }</span></div>
+          <div class="cl"><span class="gutter">25</span><span class="sign"></span><span>}</span></div>
+        </div>
+      </div>
+
+      <div class="term">
+        <div class="term-head">
+          <div class="t-tab on">终端</div>
+          <div class="t-tab">输出</div>
+          <div class="t-tab">问题 <span class="n">0</span></div>
+          <div class="right"><svg class="ic"><use href="#i-git-branch"/></svg>agent-ui <svg class="ic"><use href="#i-plus"/></svg><svg class="ic"><use href="#i-more"/></svg></div>
+        </div>
+        <div class="term-body">
+          <div><span class="prompt">$</span> <span class="tcmd">npm run typecheck</span></div>
+          <div class="dim">&gt; tsc --noEmit</div>
+          <div class="ok">✓ 0 errors in 12.4s</div>
+          <div>&nbsp;</div>
+          <div><span class="prompt">$</span> <span class="tcmd">npx vitest run src/shell</span></div>
+          <div class="ok">✓ AgentShell.test.tsx <span class="dim">(8)</span> · SessionRail.test.tsx <span class="dim">(6)</span> · Composer.test.tsx <span class="dim">(10)</span></div>
+          <div class="ok">Test Files <span class="num">3 passed</span> · Tests <span class="num">24 passed</span> <span class="dim">(2.1s)</span></div>
+          <div>&nbsp;</div>
+          <div class="dim">Agent 正在等待 typecheck 完成，下一步：窄窗截图核对…</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="si"><svg class="ic xs"><use href="#i-git-branch"/></svg>agent-ui*</span>
+    <span class="si"><svg class="ic xs"><use href="#i-check-circle"/></svg>0 个问题</span>
+    <span class="grow"></span>
+    <span class="si" style="color:var(--accent)"><span class="spinner" style="width:8px;height:8px;border-width:1.5px"></span>Agent 运行中 · 14/18</span>
+    <span class="si ln">Ln 14, Col 8</span>
+    <span class="si">UTF-8</span>
+    <span class="si">TypeScript React</span>
+    <span class="si ok"><svg class="ic xs"><use href="#i-check"/></svg>已保存</span>
+  </footer>
+</div>
+<script src="sprite.js"></script>
+</body>
+</html>

@@ -96,19 +96,26 @@ test.describe('Settings Modal', () => {
 })
 
 test.describe('Sidebar', () => {
-  test('should toggle sidebar visibility', async () => {
+  test('project list is always visible — the sidebar has no hide feature', async () => {
     const { app } = await launchApp()
 
     const window = await app.firstWindow()
     await dismissOnboarding(window)
 
-    // Press Ctrl+B to toggle sidebar
-    await window.keyboard.press('Control+b')
-    await window.waitForTimeout(300)
+    const sidebarVisible = () =>
+      window.evaluate(() => {
+        const el = document.querySelector('.resizer.absolute')?.parentElement as HTMLElement | null
+        return !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none'
+      })
 
-    // Press Ctrl+B again to show sidebar
+    // The left project list is part of the layout from the first paint…
+    await expect.poll(sidebarVisible, { timeout: 8000 }).toBe(true)
+    await expect(window.locator('h2:has-text("项目列表")').first()).toBeVisible()
+
+    // …and the old Ctrl+B collapse binding is gone (it must not hide it).
     await window.keyboard.press('Control+b')
     await window.waitForTimeout(300)
+    expect(await sidebarVisible()).toBe(true)
 
     await app.close()
   })

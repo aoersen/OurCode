@@ -59,7 +59,7 @@ const KIND_SETS: Record<Exclude<ToolKind, 'read' | 'interactive' | 'mcp'>, reado
 
 const INTERACTIVE_TOOLS = new Set([
   'ask_user_question', 'submit_plan', 'manage_todo', 'remember', 'send_message',
-  'list_agents', 'read_session', 'search_sessions',
+  'list_agents', 'read_session', 'search_sessions', 'list_file_changes',
   // 急停永远可用：不是「一次写操作」，不能被审批卡住。
   'computer_stop',
 ])

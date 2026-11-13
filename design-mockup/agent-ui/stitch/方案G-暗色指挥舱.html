@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440, initial-scale=1.0">
+  <title>OurCode - 暗色指挥舱 (方案 G)</title>
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Material Symbols Icons -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+  
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            app: '#0b0f17',
+            card: 'rgba(22, 28, 42, 0.72)',
+            cardHover: 'rgba(28, 36, 54, 0.85)',
+            termBg: '#0f1420',
+            primaryBlue: '#0058bc',
+            brightBlue: '#4d9fff',
+            textMain: '#e2e8f0',
+            textSub: '#94a3b8',
+            textMuted: '#64748b',
+            statusSuccess: '#4ade80',
+            statusWarning: '#fbbf24',
+            statusDanger: '#f87171',
+          },
+          boxShadow: {
+            glass: '0 8px 32px 0 rgba(0, 0, 0, 0.45)',
+            glassGlow: '0 0 24px -4px rgba(77, 159, 255, 0.18)',
+            innerBorder: 'inset 0 0 0 1px rgba(255, 255, 255, 0.08)',
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      background-color: #0b0f17;
+      color: #e2e8f0;
+      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    .glass-panel {
+      background: rgba(22, 28, 42, 0.72);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+      border-radius: 16px;
+    }
+    .code-box {
+      background: #0f1420;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 450, 'GRAD' 0, 'opsz' 20;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    .material-symbols-filled {
+      font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 20;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    /* 自定义微妙呼吸脉冲动画 */
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.96); }
+    }
+    .animate-live-dot {
+      animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    /* 自定义滚动条 */
+    ::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 2px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+  </style>
+</head>
+<body class="w-[1440px] h-[900px] flex flex-col bg-[#0b0f17] relative select-none">
+
+  <!-- ======================================================== -->
+  <!-- 1. 顶部标题栏 (48px) -->
+  <!-- ======================================================== -->
+  <header class="h-[48px] w-full px-4 flex items-center justify-between border-b border-white/[0.08] bg-[#0b0f17]/90 backdrop-blur-md z-30 shrink-0">
+    <!-- 左侧 Logo & 项目 -->
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-[#0058bc] to-[#4d9fff] flex items-center justify-center shadow-lg shadow-[#0058bc]/30">
+          <span class="material-symbols-outlined text-white text-[18px]">terminal</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-[15px] font-bold tracking-tight text-white">OurCode</span>
+          <span class="text-[10px] font-semibold font-mono px-1.5 py-0.5 rounded bg-[#4d9fff]/15 text-[#4d9fff] border border-[#4d9fff]/30">PRO</span>
+        </div>
+      </div>
+
+      <div class="h-4 w-[1px] bg-white/10 mx-1"></div>
+
+      <!-- 当前项目与分支切换 -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/[0.04] border border-white/[0.06] hover:bg-white/[0.08] cursor-pointer transition-colors text-xs text-[#94a3b8]">
+        <span class="material-symbols-outlined text-sm text-[#64748b]">folder_open</span>
+        <span class="font-mono text-white/90 font-medium">ourcode-ide</span>
+        <span class="text-[#64748b]">/</span>
+        <span class="material-symbols-outlined text-xs text-[#4ade80]">call_split</span>
+        <span class="font-mono text-[#4ade80] text-[11px]">feat/canvas-refactor</span>
+        <span class="material-symbols-outlined text-xs text-[#64748b] ml-0.5">unfold_more</span>
+      </div>
+    </div>
+
+    <!-- 中间：命令搜索框 (Raycast 风格) -->
+    <div class="flex items-center justify-center flex-1 max-w-[420px] mx-4">
+      <div class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[#0f1420] border border-white/[0.08] hover:border-[#4d9fff]/40 shadow-inner group cursor-pointer transition-all">
+        <span class="material-symbols-outlined text-[16px] text-[#64748b] group-hover:text-[#4d9fff] transition-colors">terminal</span>
+        <span class="text-xs text-[#64748b] group-hover:text-[#94a3b8] transition-colors font-sans">⌘K 唤醒指挥台 (全局指令、派发子 Agent、过滤日志)</span>
+        <div class="ml-auto flex items-center gap-1">
+          <kbd class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.06] text-[#94a3b8] border border-white/[0.08]">⌘K</kbd>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧：KPI 徽标组 + 用户头像 -->
+    <div class="flex items-center gap-2.5">
+      <!-- 运行中 -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#4d9fff]/10 border border-[#4d9fff]/25 text-xs text-[#4d9fff] font-medium">
+        <span class="w-2 h-2 rounded-full bg-[#4d9fff] animate-live-dot shadow-[0_0_8px_#4d9fff]"></span>
+        <span>3 运行中</span>
+      </div>
+
+      <!-- 排队中 -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#fbbf24]/10 border border-[#fbbf24]/20 text-xs text-[#fbbf24] font-medium">
+        <span class="material-symbols-outlined text-[13px]">pause</span>
+        <span>1 排队</span>
+      </div>
+
+      <!-- 待审批 -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#f87171]/15 border border-[#f87171]/30 text-xs text-[#f87171] font-semibold shadow-[0_0_12px_rgba(248,113,113,0.15)]">
+        <span class="material-symbols-outlined text-[14px]">shield</span>
+        <span>2 待审批</span>
+      </div>
+
+      <!-- 今日完成 -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#4ade80]/10 border border-[#4ade80]/20 text-xs text-[#4ade80] font-medium">
+        <span class="material-symbols-outlined text-[14px]">check</span>
+        <span>5 今日完成</span>
+      </div>
+
+      <div class="h-4 w-[1px] bg-white/10 mx-1"></div>
+
+      <!-- 快捷动作与用户头像 -->
+      <button class="p-1.5 rounded-lg text-[#94a3b8] hover:text-white hover:bg-white/[0.06] transition-colors relative" title="系统通知">
+        <span class="material-symbols-outlined text-[18px]">notifications</span>
+        <span class="absolute top-1 right-1 w-2 h-2 bg-[#f87171] rounded-full ring-2 ring-[#0b0f17]"></span>
+      </button>
+
+      <button class="flex items-center gap-2 pl-1 pr-1.5 py-0.5 rounded-full hover:bg-white/[0.05] transition-colors">
+        <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-[#0058bc] via-[#3b82f6] to-[#60a5fa] border border-white/20 flex items-center justify-center text-[11px] font-bold text-white shadow-sm">
+          YG
+        </div>
+      </button>
+    </div>
+  </header>
+
+  <!-- ======================================================== -->
+  <!-- 主体工作区 (侧边栏 72px + 2x2 主网格 + 审批面板 340px) -->
+  <!-- ======================================================== -->
+  <div class="flex-1 flex overflow-hidden p-2 gap-2 relative">
+
+    <!-- 2. 左侧导航轨 (72px 窄轨) -->
+    <aside class="w-[72px] h-full glass-panel flex flex-col items-center py-3 justify-between z-20 shrink-0">
+      <!-- 顶部主导航 -->
+      <div class="w-full flex flex-col items-center gap-2.5">
+        <!-- 任务 (当前高亮项: 亮蓝色胶囊背景) -->
+        <button class="relative w-12 h-12 rounded-xl bg-[#0058bc] text-white flex flex-col items-center justify-center shadow-lg shadow-[#0058bc]/40 group transition-all" title="当前任务矩阵">
+          <span class="material-symbols-outlined text-[22px]">splitscreen</span>
+          <span class="text-[9px] font-medium tracking-tight mt-0.5">任务</span>
+          <span class="absolute -left-1 top-3 bottom-3 w-1 bg-[#4d9fff] rounded-r-full shadow-[0_0_8px_#4d9fff]"></span>
+        </button>
+
+        <!-- Agents -->
+        <button class="w-12 h-12 rounded-xl text-[#94a3b8] hover:text-white hover:bg-white/[0.06] flex flex-col items-center justify-center transition-all group" title="智能体集群">
+          <span class="material-symbols-outlined text-[22px] group-hover:scale-105 transition-transform">smart_toy</span>
+          <span class="text-[9px] font-medium tracking-tight mt-0.5">Agents</span>
+        </button>
+
+        <!-- 审批 (带红点 Badge) -->
+        <button class="relative w-12 h-12 rounded-xl text-[#94a3b8] hover:text-white hover:bg-white/[0.06] flex flex-col items-center justify-center transition-all group" title="待审批流水">
+          <span class="material-symbols-outlined text-[22px] group-hover:scale-105 transition-transform text-[#f87171]">gavel</span>
+          <span class="text-[9px] font-medium tracking-tight mt-0.5">审批</span>
+          <span class="absolute top-1.5 right-2 w-4 h-4 rounded-full bg-[#f87171] text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-[#0b0f17]">2</span>
+        </button>
+
+        <!-- 产物 -->
+        <button class="w-12 h-12 rounded-xl text-[#94a3b8] hover:text-white hover:bg-white/[0.06] flex flex-col items-center justify-center transition-all group" title="构建产物与补丁">
+          <span class="material-symbols-outlined text-[22px] group-hover:scale-105 transition-transform">inventory_2</span>
+          <span class="text-[9px] font-medium tracking-tight mt-0.5">产物</span>
+        </button>
+
+        <!-- 终端 / 沙盒 -->
+        <button class="w-12 h-12 rounded-xl text-[#94a3b8] hover:text-white hover:bg-white/[0.06] flex flex-col items-center justify-center transition-all group" title="终端与隔离沙盒">
+          <span class="material-symbols-outlined text-[22px] group-hover:scale-105 transition-transform">terminal</span>
+          <span class="text-[9px] font-medium tracking-tight mt-0.5">终端</span>
+        </button>
+      </div>
+
+      <!-- 底部辅助导航 (设置 / 状态) -->
+      <div class="w-full flex flex-col items-center gap-2 pt-2 border-t border-white/[0.08]">
+        <button class="w-10 h-10 rounded-xl text-[#64748b] hover:text-white hover:bg-white/[0.06] flex items-center justify-center transition-colors" title="集群拓扑图">
+          <span class="material-symbols-outlined text-[20px]">hub</span>
+        </button>
+        <button class="w-10 h-10 rounded-xl text-[#64748b] hover:text-white hover:bg-white/[0.06] flex items-center justify-center transition-colors" title="系统设置">
+          <span class="material-symbols-outlined text-[20px]">settings</span>
+        </button>
+        <!-- 沙盒状态小指示 -->
+        <div class="w-2.5 h-2.5 rounded-full bg-[#4ade80] shadow-[0_0_8px_#4ade80]" title="Docker 沙盒集群健康: 正常"></div>
+      </div>
+    </aside>
+
+    <!-- 3. 主区 Agent 角色卡网格 (2×2 栅格) -->
+    <main class="flex-1 flex flex-col gap-2 min-w-0 z-10">
+      
+      <!-- 区域顶部小控制条 (状态过滤与快速操作) -->
+      <div class="h-8 px-3 flex items-center justify-between text-xs text-[#94a3b8]">
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-[12px] tracking-wider uppercase text-white/90">SWARM COCKPIT MATRIX</span>
+          <span class="text-[#64748b]">·</span>
+          <span class="text-xs text-[#94a3b8]">当前编排组：<strong class="text-white font-medium">Sprint-34 交互重构突击编队</strong></span>
+        </div>
+        <div class="flex items-center gap-3">
+          <button class="flex items-center gap-1 px-2 py-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-[#94a3b8] hover:text-white transition-colors border border-white/[0.06]">
+            <span class="material-symbols-outlined text-[14px]">tune</span>
+            <span>过滤拓扑</span>
+          </button>
+          <button class="flex items-center gap-1 px-2 py-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-[#94a3b8] hover:text-white transition-colors border border-white/[0.06]">
+            <span class="material-symbols-outlined text-[14px]">refresh</span>
+            <span>实时同步</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 2x2 网格容器 (面板间 8px 间距，深色玻璃卡片) -->
+      <div class="flex-1 grid grid-cols-2 grid-rows-2 gap-2 min-h-0">
+
+        <!-- ======================================================== -->
+        <!-- 卡片 1: 前端工程师 (运行中 42%) -->
+        <!-- ======================================================== -->
+        <section class="glass-panel p-4 flex flex-col justify-between hover:border-[#4d9fff]/40 hover:shadow-glassGlow transition-all relative overflow-hidden group">
+          <!-- 顶部背景光晕微光 -->
+          <div class="absolute -top-12 -right-12 w-36 h-36 bg-[#0058bc]/20 rounded-full blur-2xl pointer-events-none"></div>
+
+          <div>
+            <!-- 头部：几何徽标 + 角色名 + 状态徽章 -->
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <!-- 几何图形角色头像徽标 (代码角括号菱形) -->
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#0058bc]/40 to-[#4d9fff]/20 border border-[#4d9fff]/40 flex items-center justify-center text-[#4d9fff] shadow-inner">
+                  <span class="material-symbols-outlined text-[20px]">code_blocks</span>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h3 class="font-bold text-[14px] text-white tracking-tight">前端工程师</h3>
+                    <span class="text-[11px] font-mono px-1.5 py-0.2 rounded bg-white/[0.06] text-[#94a3b8]">Claude 3.7 Sonnet</span>
+                  </div>
+                  <p class="text-xs text-[#94a3b8] mt-0.5 flex items-center gap-1">
+                    <span>负责：UI组件与响应式布局</span>
+                    <span class="text-[#64748b]">·</span>
+                    <span class="font-mono text-[#64748b]">PID: 40921</span>
+                  </p>
+                </div>
+              </div>
+
+              <!-- 状态徽章 (运行中 42%) -->
+              <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#4d9fff]/15 border border-[#4d9fff]/30 text-xs text-[#4d9fff] font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-[#4d9fff] animate-live-dot"></span>
+                <span class="font-mono font-semibold">运行中 42%</span>
+              </div>
+            </div>
+
+            <!-- 任务标题 -->
+            <div class="mb-3">
+              <div class="text-[11px] font-semibold tracking-wider text-[#64748b] uppercase mb-1">CURRENT DIRECTIVE</div>
+              <h4 class="text-[13px] font-semibold text-white flex items-center gap-1.5">
+                <span class="text-[#4d9fff]">⏵</span>
+                <span>修复 Composer 输入框流式抖动与滚动同步</span>
+              </h4>
+            </div>
+
+            <!-- 进度条 -->
+            <div class="mb-3">
+              <div class="flex justify-between text-[11px] font-mono text-[#94a3b8] mb-1">
+                <span>AST 节点扫描 (阶段 3/5)</span>
+                <span class="text-[#4d9fff] font-bold">42%</span>
+              </div>
+              <div class="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                <div class="h-full bg-gradient-to-r from-[#0058bc] to-[#4d9fff] rounded-full transition-all duration-300" style="width: 42%;"></div>
+              </div>
+            </div>
+
+            <!-- 当前动作 (等宽小字代码块) -->
+            <div class="code-box rounded-lg p-2.5 mb-2">
+              <div class="flex items-center justify-between text-[11px] text-[#64748b] mb-1 font-mono">
+                <span class="flex items-center gap-1 text-[#94a3b8]">
+                  <span class="material-symbols-outlined text-[13px] text-[#4d9fff]">edit_note</span>
+                  <span>正在原子写入 AST 补丁</span>
+                </span>
+                <span class="text-[10px]">120ms 前</span>
+              </div>
+              <div class="font-mono text-xs text-[#e2e8f0] flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+                <span class="text-[#4d9fff] font-bold">action:</span>
+                <span class="text-[#fbbf24]">edit_file</span>
+                <span class="text-[#94a3b8]">src/components/composer/ChatInput.tsx</span>
+                <span class="text-[#4ade80] font-bold">+24</span>
+                <span class="text-[#f87171] font-bold">-6</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片底部：监控小指标 + 操作按钮组 -->
+          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
+            <div class="flex items-center gap-3 font-mono text-[11px] text-[#64748b]">
+              <span class="flex items-center gap-1"><span class="material-symbols-outlined text-[13px]">schedule</span> 12m 45s</span>
+              <span>·</span>
+              <span class="text-[#94a3b8]">沙盒 #sb-01</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="px-2.5 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition-colors border border-white/[0.08] flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">visibility</span>
+                <span>查看</span>
+              </button>
+              <button class="px-2.5 py-1 rounded-md bg-[#0058bc] hover:bg-[#0058bc]/80 text-xs font-medium text-white transition-colors shadow-sm shadow-[#0058bc]/30 flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">send</span>
+                <span>指令</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================================================== -->
+        <!-- 卡片 2: 测试工程师 (排队中) -->
+        <!-- ======================================================== -->
+        <section class="glass-panel p-4 flex flex-col justify-between hover:border-white/20 transition-all relative overflow-hidden group">
+          <div>
+            <!-- 头部 -->
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <!-- 几何图形角色头像徽标 (雷达校验六边形) -->
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#fbbf24]/20 to-transparent border border-[#fbbf24]/30 flex items-center justify-center text-[#fbbf24]">
+                  <span class="material-symbols-outlined text-[20px]">fact_check</span>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h3 class="font-bold text-[14px] text-white tracking-tight">测试工程师</h3>
+                    <span class="text-[11px] font-mono px-1.5 py-0.2 rounded bg-white/[0.06] text-[#94a3b8]">DeepSeek-R1</span>
+                  </div>
+                  <p class="text-xs text-[#94a3b8] mt-0.5 flex items-center gap-1">
+                    <span>负责：回归断言与端到端沙盒仿真</span>
+                    <span class="text-[#64748b]">·</span>
+                    <span class="font-mono text-[#64748b]">PID: 40924</span>
+                  </p>
+                </div>
+              </div>
+
+              <!-- 状态徽章 (排队中) -->
+              <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#fbbf24]/10 border border-[#fbbf24]/25 text-xs text-[#fbbf24] font-medium">
+                <span class="material-symbols-outlined text-[13px]">hourglass_top</span>
+                <span class="font-mono font-semibold">排队中 (等待交付)</span>
+              </div>
+            </div>
+
+            <!-- 任务标题 -->
+            <div class="mb-3">
+              <div class="text-[11px] font-semibold tracking-wider text-[#64748b] uppercase mb-1">PENDING DIRECTIVE</div>
+              <h4 class="text-[13px] font-semibold text-white/90 flex items-center gap-1.5">
+                <span class="text-[#fbbf24]">⏸</span>
+                <span>补全 OAuth2 回归断言与 Playwright 端到端</span>
+              </h4>
+            </div>
+
+            <!-- 依赖等待提示条 -->
+            <div class="mb-3">
+              <div class="flex justify-between text-[11px] font-mono text-[#94a3b8] mb-1">
+                <span>依赖前置: 前端工程师提交补丁</span>
+                <span class="text-[#fbbf24] font-medium">90% 就绪</span>
+              </div>
+              <div class="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                <div class="h-full bg-[#fbbf24]/60 rounded-full" style="width: 90%;"></div>
+              </div>
+            </div>
+
+            <!-- 当前状态小字 -->
+            <div class="code-box rounded-lg p-2.5 mb-2">
+              <div class="flex items-center justify-between text-[11px] text-[#64748b] mb-1 font-mono">
+                <span class="flex items-center gap-1 text-[#fbbf24]">
+                  <span class="material-symbols-outlined text-[13px]">lock_clock</span>
+                  <span>等待前置 AST 变更合流沙盒</span>
+                </span>
+                <span class="text-[10px]">就绪率: 90%</span>
+              </div>
+              <div class="font-mono text-xs text-[#94a3b8] flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+                <span class="text-[#64748b]">blocked_by:</span>
+                <span class="text-[#e2e8f0]">frontend-agent: chore/composer-jitter</span>
+                <span class="text-[#64748b]">→ 等待释放</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片底部 -->
+          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
+            <div class="flex items-center gap-3 font-mono text-[11px] text-[#64748b]">
+              <span>预分配：沙盒 #sb-02</span>
+              <span>·</span>
+              <span class="text-[#94a3b8]">环境就绪</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="px-2.5 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition-colors border border-white/[0.08] flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">settings_ethernet</span>
+                <span>配置环境</span>
+              </button>
+              <button class="px-2.5 py-1 rounded-md bg-white/[0.06] hover:bg-[#0058bc] text-xs font-medium text-white transition-colors border border-white/[0.08] flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">bolt</span>
+                <span>立即插队</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================================================== -->
+        <!-- 卡片 3: 文档工程师 (已完成 100%) -->
+        <!-- ======================================================== -->
+        <section class="glass-panel p-4 flex flex-col justify-between hover:border-[#4ade80]/30 transition-all relative overflow-hidden group">
+          <div>
+            <!-- 头部 -->
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <!-- 几何图形角色头像徽标 (书籍多边形) -->
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#4ade80]/20 to-transparent border border-[#4ade80]/30 flex items-center justify-center text-[#4ade80]">
+                  <span class="material-symbols-outlined text-[20px]">auto_stories</span>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h3 class="font-bold text-[14px] text-white tracking-tight">文档工程师</h3>
+                    <span class="text-[11px] font-mono px-1.5 py-0.2 rounded bg-white/[0.06] text-[#94a3b8]">GPT-4o</span>
+                  </div>
+                  <p class="text-xs text-[#94a3b8] mt-0.5 flex items-center gap-1">
+                    <span>负责：CHANGELOG、API 说明与架构图</span>
+                    <span class="text-[#64748b]">·</span>
+                    <span class="font-mono text-[#64748b]">PID: 40919</span>
+                  </p>
+                </div>
+              </div>
+
+              <!-- 状态徽章 (已完成) -->
+              <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#4ade80]/15 border border-[#4ade80]/30 text-xs text-[#4ade80] font-medium">
+                <span class="material-symbols-outlined text-[13px]">check_circle</span>
+                <span class="font-mono font-semibold">已完成 100%</span>
+              </div>
+            </div>
+
+            <!-- 任务标题 -->
+            <div class="mb-3">
+              <div class="text-[11px] font-semibold tracking-wider text-[#64748b] uppercase mb-1">COMPLETED DIRECTIVE</div>
+              <h4 class="text-[13px] font-semibold text-white/90 flex items-center gap-1.5">
+                <span class="text-[#4ade80]">✓</span>
+                <span>重构 README 与 v2.4 开发者 Agent 架构图</span>
+              </h4>
+            </div>
+
+            <!-- 进度条 (全满) -->
+            <div class="mb-3">
+              <div class="flex justify-between text-[11px] font-mono text-[#94a3b8] mb-1">
+                <span>产物验证与格式审查</span>
+                <span class="text-[#4ade80] font-bold">4/4 步完成</span>
+              </div>
+              <div class="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                <div class="h-full bg-[#4ade80] rounded-full" style="width: 100%;"></div>
+              </div>
+            </div>
+
+            <!-- 产物动作小字 -->
+            <div class="code-box rounded-lg p-2.5 mb-2">
+              <div class="flex items-center justify-between text-[11px] text-[#64748b] mb-1 font-mono">
+                <span class="flex items-center gap-1 text-[#4ade80]">
+                  <span class="material-symbols-outlined text-[13px]">task_alt</span>
+                  <span>产物已入库并生成静态预览</span>
+                </span>
+                <span class="text-[10px]">耗时 4m 10s</span>
+              </div>
+              <div class="font-mono text-xs text-[#94a3b8] flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+                <span class="text-[#64748b]">artifact:</span>
+                <span class="text-[#e2e8f0]">docs/architecture-v2.svg</span>
+                <span class="text-[#64748b]">(142 KB)</span>
+                <span class="text-[#4ade80]">· Git LFS 就绪</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片底部 -->
+          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
+            <div class="flex items-center gap-2 font-mono text-[11px] text-[#64748b]">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#4ade80]"></span>
+              <span class="text-[#94a3b8]">已归档至 Git 分支</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="px-2.5 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition-colors border border-white/[0.08] flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">preview</span>
+                <span>预览产物</span>
+              </button>
+              <button class="px-2.5 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-[#94a3b8] hover:text-white transition-colors border border-white/[0.08] flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">replay</span>
+                <span>重新运行</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================================================== -->
+        <!-- 卡片 4: 数据工程师 (运行中 67%) -->
+        <!-- ======================================================== -->
+        <section class="glass-panel p-4 flex flex-col justify-between hover:border-[#4d9fff]/40 hover:shadow-glassGlow transition-all relative overflow-hidden group">
+          <div class="absolute -top-12 -right-12 w-36 h-36 bg-[#0058bc]/15 rounded-full blur-2xl pointer-events-none"></div>
+
+          <div>
+            <!-- 头部 -->
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <!-- 几何图形角色头像徽标 (折线数据图表) -->
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#0058bc]/30 to-[#4d9fff]/10 border border-[#4d9fff]/30 flex items-center justify-center text-[#4d9fff]">
+                  <span class="material-symbols-outlined text-[20px]">query_stats</span>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h3 class="font-bold text-[14px] text-white tracking-tight">数据工程师</h3>
+                    <span class="text-[11px] font-mono px-1.5 py-0.2 rounded bg-white/[0.06] text-[#94a3b8]">Claude 3.5 Sonnet</span>
+                  </div>
+                  <p class="text-xs text-[#94a3b8] mt-0.5 flex items-center gap-1">
+                    <span>负责：全链路延迟跟踪与性能报表</span>
+                    <span class="text-[#64748b]">·</span>
+                    <span class="font-mono text-[#64748b]">PID: 40930</span>
+                  </p>
+                </div>
+              </div>
+
+              <!-- 状态徽章 (运行中 67%) -->
+              <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#4d9fff]/15 border border-[#4d9fff]/30 text-xs text-[#4d9fff] font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-[#4d9fff] animate-live-dot"></span>
+                <span class="font-mono font-semibold">运行中 67%</span>
+              </div>
+            </div>
+
+            <!-- 任务标题 -->
+            <div class="mb-3">
+              <div class="text-[11px] font-semibold tracking-wider text-[#64748b] uppercase mb-1">ACTIVE DIRECTIVE</div>
+              <h4 class="text-[13px] font-semibold text-white flex items-center gap-1.5">
+                <span class="text-[#4d9fff]">⏵</span>
+                <span>周报看板自动化渲染与跨链路延迟监控打点</span>
+              </h4>
+            </div>
+
+            <!-- 进度条 -->
+            <div class="mb-3">
+              <div class="flex justify-between text-[11px] font-mono text-[#94a3b8] mb-1">
+                <span>ClickHouse 聚合查询流水 (步骤 4/6)</span>
+                <span class="text-[#4d9fff] font-bold">67%</span>
+              </div>
+              <div class="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                <div class="h-full bg-gradient-to-r from-[#0058bc] to-[#4d9fff] rounded-full transition-all duration-300" style="width: 67%;"></div>
+              </div>
+            </div>
+
+            <!-- 当前动作 (等宽小字代码块) -->
+            <div class="code-box rounded-lg p-2.5 mb-2">
+              <div class="flex items-center justify-between text-[11px] text-[#64748b] mb-1 font-mono">
+                <span class="flex items-center gap-1 text-[#4d9fff]">
+                  <span class="material-symbols-outlined text-[13px] text-[#4d9fff]">database</span>
+                  <span>执行 SQL 流水与报表卡片挂载</span>
+                </span>
+                <span class="text-[10px]">0.8s 前</span>
+              </div>
+              <div class="font-mono text-xs text-[#e2e8f0] flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+                <span class="text-[#4d9fff] font-bold">query:</span>
+                <span class="text-[#fbbf24]">SELECT avg(duration_ms)</span>
+                <span class="text-[#94a3b8]">FROM telemetry_traces WHERE span='dom_render'</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片底部 -->
+          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
+            <div class="flex items-center gap-3 font-mono text-[11px] text-[#64748b]">
+              <span class="text-[#4ade80]">● 99.98% 正常</span>
+              <span>·</span>
+              <span class="text-[#94a3b8]">3,420 TPS</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="px-2.5 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition-colors border border-white/[0.08] flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">analytics</span>
+                <span>查看大屏</span>
+              </button>
+              <button class="px-2.5 py-1 rounded-md bg-[#0058bc] hover:bg-[#0058bc]/80 text-xs font-medium text-white transition-colors shadow-sm shadow-[#0058bc]/30 flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">send</span>
+                <span>指令</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- ======================================================== -->
+    <!-- 4. 右侧审批收件箱 (340px 深色玻璃面板) -->
+    <!-- ======================================================== -->
+    <aside class="w-[340px] h-full glass-panel p-3.5 flex flex-col justify-between z-20 shrink-0">
+      
+      <!-- 上半区：待审批列表 -->
+      <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+        
+        <!-- 头部：标题与拍板数 -->
+        <div class="flex items-center justify-between pb-3 border-b border-white/[0.08] mb-3">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-[#f87171] shadow-[0_0_8px_#f87171] animate-pulse"></span>
+            <h2 class="font-bold text-[13px] tracking-wider uppercase text-white flex items-center gap-1.5">
+              <span>待你拍板</span>
+              <span class="w-5 h-5 rounded-full bg-[#f87171]/20 text-[#f87171] border border-[#f87171]/40 text-[11px] font-mono font-bold flex items-center justify-center">2</span>
+            </h2>
+          </div>
+          <button class="text-xs text-[#94a3b8] hover:text-[#4d9fff] transition-colors flex items-center gap-0.5 font-medium">
+            <span>全部放行</span>
+            <span class="material-symbols-outlined text-sm">bolt</span>
+          </button>
+        </div>
+
+        <!-- 审批卡片容器 (可轻微滚动) -->
+        <div class="flex-1 overflow-y-auto pr-1 flex flex-col gap-3 min-h-0">
+
+          <!-- 审批卡 1: run_command 单元测试 -->
+          <div class="rounded-xl bg-[#0f1420]/80 border border-white/[0.08] p-3 hover:border-white/15 transition-all">
+            <!-- 来源 Agent 与动作类型 -->
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-1.5 text-xs">
+                <span class="w-2 h-2 rounded-full bg-[#4d9fff]"></span>
+                <span class="font-bold text-white text-[12px]">前端工程师</span>
+                <span class="text-[#64748b]">·</span>
+                <span class="text-[#94a3b8] text-[11px]">高敏感命令拦截</span>
+              </div>
+              <span class="text-[10px] font-mono text-[#64748b]">1m 前</span>
+            </div>
+
+            <!-- 说明小字 -->
+            <p class="text-xs text-[#94a3b8] mb-2 leading-relaxed">
+              请求在主机沙盒执行单元测试，可能产生内存缓存与临时快照：
+            </p>
+
+            <!-- 深色命令代码块 -->
+            <div class="code-box rounded-lg p-2.5 mb-2.5 text-xs text-[#e2e8f0]">
+              <div class="flex items-center justify-between text-[10px] text-[#64748b] mb-1">
+                <span>run_command</span>
+                <span class="font-mono">bash / sandbox</span>
+              </div>
+              <div class="font-mono text-[#4ade80] font-medium break-all">
+                $ pnpm test:unit --filter composer
+              </div>
+            </div>
+
+            <!-- 操作按钮三件套 (亮蓝主按钮) -->
+            <div class="grid grid-cols-3 gap-1.5 pt-1">
+              <button class="py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-[#94a3b8] hover:text-white transition-colors border border-white/[0.08] text-center">
+                拒绝
+              </button>
+              <button class="py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-[#94a3b8] hover:text-white transition-colors border border-white/[0.08] text-center">
+                本次会话允许
+              </button>
+              <button class="py-1.5 rounded-lg bg-[#0058bc] hover:bg-[#0058bc]/85 text-xs font-semibold text-white transition-colors shadow-sm shadow-[#0058bc]/40 text-center flex items-center justify-center gap-1">
+                <span>允许一次</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 审批卡 2: git push 远端推送 -->
+          <div class="rounded-xl bg-[#0f1420]/80 border border-white/[0.08] p-3 hover:border-white/15 transition-all">
+            <!-- 来源 Agent -->
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-1.5 text-xs">
+                <span class="material-symbols-outlined text-[14px] text-[#fbbf24]">lock</span>
+                <span class="font-bold text-white text-[12px]">Git 远端推送安全审查</span>
+              </div>
+              <span class="text-[10px] font-mono text-[#64748b]">4m 前</span>
+            </div>
+
+            <!-- 附警告黄条 -->
+            <div class="flex items-start gap-2 p-2 rounded-lg bg-[#fbbf24]/10 border border-[#fbbf24]/25 mb-2.5">
+              <span class="material-symbols-outlined text-[16px] text-[#fbbf24] shrink-0 mt-0.5">warning</span>
+              <div class="text-[11px] text-[#fbbf24] leading-tight">
+                <span class="font-bold">高危：</span>将推送到远端共享分支 <code class="font-mono font-bold text-white">origin/feat/canvas-refactor</code>，包含 3 个新原子检查点。
+              </div>
+            </div>
+
+            <!-- 命令详情 -->
+            <div class="code-box rounded-lg p-2 mb-2.5 text-xs">
+              <div class="font-mono text-[#94a3b8] text-[11px]">
+                git push origin feat/canvas-refactor
+              </div>
+            </div>
+
+            <!-- 按钮组 (蓝色主按钮) -->
+            <div class="flex items-center gap-2 pt-1">
+              <button class="flex-1 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-[#94a3b8] hover:text-white transition-colors border border-white/[0.08] text-center">
+                取消
+              </button>
+              <button class="flex-[1.4] py-1.5 rounded-lg bg-[#0058bc] hover:bg-[#0058bc]/85 text-xs font-semibold text-white transition-colors shadow-sm shadow-[#0058bc]/40 text-center flex items-center justify-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">cloud_upload</span>
+                <span>确认推送</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 下半区：「今日已完成 5」折叠列表 (灰字小行，每行任务名 + 时间) -->
+      <div class="pt-3 border-t border-white/[0.08] shrink-0">
+        <details class="group" open>
+          <summary class="flex items-center justify-between text-xs text-[#94a3b8] cursor-pointer hover:text-white list-none select-none">
+            <div class="flex items-center gap-1.5 font-bold text-[11px] tracking-wider uppercase">
+              <span class="material-symbols-outlined text-[14px] text-[#4ade80]">check_circle</span>
+              <span>今日已放行审批 (5)</span>
+            </div>
+            <span class="material-symbols-outlined text-xs text-[#64748b] group-open:rotate-180 transition-transform">expand_more</span>
+          </summary>
+
+          <div class="mt-2.5 flex flex-col gap-1.5 font-mono text-[11px]">
+            <div class="flex items-center justify-between px-2 py-1 rounded bg-white/[0.02] hover:bg-white/[0.05] transition-colors">
+              <span class="text-[#94a3b8] truncate flex items-center gap-1.5">
+                <span class="text-[#4ade80]">✓</span> pnpm run lint
+              </span>
+              <span class="text-[#64748b] text-[10px]">14:02</span>
+            </div>
+            <div class="flex items-center justify-between px-2 py-1 rounded bg-white/[0.02] hover:bg-white/[0.05] transition-colors">
+              <span class="text-[#94a3b8] truncate flex items-center gap-1.5">
+                <span class="text-[#4ade80]">✓</span> mkdir -p docs
+              </span>
+              <span class="text-[#64748b] text-[10px]">13:45</span>
+            </div>
+            <div class="flex items-center justify-between px-2 py-1 rounded bg-white/[0.02] hover:bg-white/[0.05] transition-colors">
+              <span class="text-[#94a3b8] truncate flex items-center gap-1.5">
+                <span class="text-[#4ade80]">✓</span> git checkout -b feat/canvas
+              </span>
+              <span class="text-[#64748b] text-[10px]">12:30</span>
+            </div>
+          </div>
+        </details>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- 5. 底部总监指令条 (通栏悬浮胶囊) -->
+  <!-- ======================================================== -->
+  <div class="px-3 pb-2 z-30">
+    <div class="h-12 w-full rounded-2xl bg-[#0f1420]/90 backdrop-blur-xl border border-white/[0.12] shadow-2xl flex items-center px-3 gap-2.5">
+      
+      <!-- 左侧「@全体」chip -->
+      <button class="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0058bc]/30 hover:bg-[#0058bc]/50 text-[#4d9fff] border border-[#4d9fff]/40 text-xs font-semibold transition-all">
+        <span class="material-symbols-outlined text-[14px]">groups</span>
+        <span>@全体</span>
+      </button>
+
+      <!-- 输入框 -->
+      <div class="flex-1 flex items-center gap-2">
+        <span class="material-symbols-outlined text-[18px] text-[#64748b]">psychology</span>
+        <input 
+          type="text" 
+          placeholder="向所有运行中的 Agent 下达协同指令，例如 “暂停测试，先合并样式补丁与沙盒校验” (Enter 发送)..." 
+          class="w-full bg-transparent border-none outline-none text-xs text-[#e2e8f0] placeholder-[#64748b] font-sans"
+          value=""
+        />
+      </div>
+
+      <!-- 快捷引用附件/代码标签 -->
+      <button class="p-1.5 text-[#64748b] hover:text-[#94a3b8] transition-colors" title="添加上下文锚点">
+        <span class="material-symbols-outlined text-[18px]">attach_file</span>
+      </button>
+
+      <!-- 右侧目标过滤下拉：「仅发给：前端工程师 ▾」 -->
+      <div class="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-xs text-[#94a3b8] border border-white/[0.08] cursor-pointer transition-colors">
+        <span class="text-[#64748b]">目标:</span>
+        <span class="text-white font-medium">仅发给：前端工程师</span>
+        <span class="material-symbols-outlined text-[14px] text-[#64748b]">arrow_drop_down</span>
+      </div>
+
+      <!-- 亮蓝圆形发送按钮 -->
+      <button class="w-8 h-8 rounded-full bg-[#0058bc] hover:bg-[#4d9fff] text-white flex items-center justify-center shadow-lg shadow-[#0058bc]/40 hover:shadow-[#4d9fff]/50 transition-all active:scale-95 shrink-0">
+        <span class="material-symbols-outlined text-[18px]">arrow_upward</span>
+      </button>
+
+    </div>
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- 6. 底部状态栏 (28px) -->
+  <!-- ======================================================== -->
+  <footer class="h-[28px] w-full px-4 flex items-center justify-between border-t border-white/[0.08] bg-[#0b0f17] text-[11px] font-mono text-[#64748b] z-30 shrink-0">
+    <!-- 左侧 -->
+    <div class="flex items-center gap-3">
+      <span class="flex items-center gap-1 text-[#94a3b8]">
+        <span class="material-symbols-outlined text-[13px] text-[#4ade80]">alt_route</span>
+        <span>⎇ main</span>
+      </span>
+      <span>·</span>
+      <span class="flex items-center gap-1 text-[#94a3b8]">
+        <span class="w-1.5 h-1.5 rounded-full bg-[#4ade80]"></span>
+        <span>沙盒 4/4 就绪</span>
+      </span>
+      <span>·</span>
+      <span>隔离网络: STRICT</span>
+      <span>·</span>
+      <span>延迟 24ms</span>
+    </div>
+
+    <!-- 右侧 -->
+    <div class="flex items-center gap-3">
+      <span>18 步</span>
+      <span>·</span>
+      <span>32.6k tokens 消耗</span>
+      <span>·</span>
+      <span class="flex items-center gap-1.5 text-[#4d9fff] font-bold">
+        <span class="w-1.5 h-1.5 rounded-full bg-[#4d9fff] animate-live-dot"></span>
+        <span>3 AGENT 协同运行中</span>
+      </span>
+      <span>·</span>
+      <span class="text-[#94a3b8]">内存 1.2GB</span>
+    </div>
+  </footer>
+
+</body>
+</html>

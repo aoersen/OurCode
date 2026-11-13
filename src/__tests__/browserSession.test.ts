@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildActScript,
+  buildScrollProbeScript,
+  buildScrollSettleScript,
   formatConsoleForModel,
   normalizeBrowserUrl,
+  parseKeyChord,
   trimConsoleBuffer,
   truncatePageText,
 } from '@shared/browser'
@@ -107,5 +110,111 @@ describe('buildActScript', () => {
     expect(script).toContain('getOwnPropertyDescriptor')
     expect(script).toContain('new InputEvent')
     expect(script).toContain('"a@b.c"')
+  })
+
+  it('uses elementFromPoint for coordinate clicks and dispatches the pointer sequence', () => {
+    const script = buildActScript('click', { x: 10, y: 20 })!
+    expect(script).toContain('elementFromPoint')
+    expect(script).toContain("new PointerEvent('pointerdown'")
+    expect(script).toContain("new MouseEvent('mousedown'")
+    expect(script).toContain("new MouseEvent('mouseup'")
+  })
+
+  it('supports hover and drag scripts', () => {
+    const hover = buildActScript('hover', { selector: '#menu' })!
+    expect(hover).toContain("new MouseEvent('mouseover'")
+    expect(hover).toContain("new MouseEvent('mousemove'")
+    const drag = buildActScript('drag', { x: 1, y: 2, toX: 30, toY: 40 })!
+    expect(drag).toContain("new MouseEvent('mousedown'")
+    expect(drag).toContain("new MouseEvent('mousemove'")
+    expect(drag).toContain("new MouseEvent('mouseup'")
+    // 缺终点时返回可读错误，而不是生成一个会乱拖的脚本
+    expect(buildActScript('drag', { x: 1, y: 2 })).toContain('拖拽需要起点')
+  })
+
+  it('scrolls by an explicit delta or a direction', () => {
+    expect(buildActScript('scroll', { deltaY: -300 })).toContain('scrollBy')
+    expect(buildActScript('scroll', { deltaY: -300 })).toContain('-300')
+    expect(buildActScript('scroll', { direction: 'up' })).toContain("dir === 'up'")
+  })
+
+  it('parses a chord for the press fallback', () => {
+    const script = buildActScript('press', { key: 'Control+a' })!
+    expect(script).toContain('ctrlKey: true')
+    expect(script).toContain('"a"')
+    expect(buildActScript('press', { key: 'NoSuchKey' })).toContain('未知按键')
+  })
+})
+
+describe('scroll probe/settle scripts', () => {
+  it('probes the element under the point and remembers the scroll target', () => {
+    const script = buildScrollProbeScript(10, 20)
+    expect(script).toContain('elementFromPoint')
+    expect(script).toContain('deep(10, 20)')
+    expect(script).toContain('__ourcodeScrollInfo')
+    expect(script).toContain("addEventListener('wheel'")
+  })
+
+  it('falls back once when the compositor swallowed the wheel, unless prevented', () => {
+    const script = buildScrollSettleScript(0, 400)
+    expect(script).toContain('scrollBy')
+    expect(script).toContain("prevented !== true")
+    expect(script).toContain('400')
+    // Coordinates/deltas are clamped before they reach the page
+    expect(buildScrollSettleScript(0, 999999)).toContain('10000')
+  })
+})
+
+describe('parseKeyChord', () => {
+  it('maps named keys and aliases to CDP payload fields', () => {
+    const enter = parseKeyChord('Enter')
+    expect(enter.ok).toBe(true)
+    if (enter.ok) expect(enter.chord).toMatchObject({ key: 'Enter', code: 'Enter', keyCode: 13, text: '\r', modifiers: 0 })
+
+    const up = parseKeyChord('Up')
+    expect(up.ok && up.chord).toMatchObject({ key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 })
+
+    const f5 = parseKeyChord('F5')
+    expect(f5.ok && f5.chord).toMatchObject({ key: 'F5', code: 'F5', keyCode: 116 })
+  })
+
+  it('parses modifier chords; shortcut keys do not insert text', () => {
+    const ctrlA = parseKeyChord('Control+a')
+    expect(ctrlA.ok).toBe(true)
+    if (ctrlA.ok) {
+      expect(ctrlA.chord).toMatchObject({ key: 'a', code: 'KeyA', keyCode: 65, modifiers: 2 })
+      expect(ctrlA.chord.text).toBeUndefined()
+    }
+
+    const ctrlShiftA = parseKeyChord('Ctrl+Shift+A')
+    expect(ctrlShiftA.ok && ctrlShiftA.chord).toMatchObject({ key: 'A', modifiers: 10 })
+
+    const shiftEnter = parseKeyChord('Shift+Enter')
+    expect(shiftEnter.ok && shiftEnter.chord).toMatchObject({ key: 'Enter', text: '\r', modifiers: 8 })
+  })
+
+  it('handles a literal plus and shifted symbols', () => {
+    const plus = parseKeyChord('+')
+    expect(plus.ok && plus.chord).toMatchObject({ key: '+', code: 'Equal', keyCode: 187, text: '+', modifiers: 8 })
+
+    const ctrlPlus = parseKeyChord('Control++')
+    expect(ctrlPlus.ok && ctrlPlus.chord).toMatchObject({ key: '+', code: 'Equal', modifiers: 10 })
+
+    const bang = parseKeyChord('!')
+    expect(bang.ok && bang.chord).toMatchObject({ key: '!', code: 'Digit1', keyCode: 49, modifiers: 8 })
+  })
+
+  it('uppercase letters imply Shift; X11 modifier names work', () => {
+    const upper = parseKeyChord('A')
+    expect(upper.ok && upper.chord).toMatchObject({ key: 'A', text: 'A', modifiers: 8 })
+
+    const x11 = parseKeyChord('Control_L+a')
+    expect(x11.ok && x11.chord).toMatchObject({ key: 'a', code: 'KeyA', modifiers: 2 })
+  })
+
+  it('rejects empty and unknown keys', () => {
+    expect(parseKeyChord('').ok).toBe(false)
+    expect(parseKeyChord('NoSuchKey').ok).toBe(false)
+    expect(parseKeyChord('Control+Nope').ok).toBe(false)
   })
 })

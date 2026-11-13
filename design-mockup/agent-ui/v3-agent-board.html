@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V3 · 调度看板 — OurCode Agent UI</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  /* ---------- V3: Agent Board ---------- */
+  .nav {
+    width: 228px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    padding: 11px 9px 9px;
+    overflow: hidden;
+  }
+  .nav-new {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11.5px;
+    font-weight: 700;
+    box-shadow: 0 6px 16px rgba(0, 88, 188, 0.22);
+    flex: none;
+  }
+  .nav-group { margin-top: 9px; flex: none; }
+  .nav-label { padding: 0 7px 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-4); }
+  .nav-item {
+    height: 31px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px;
+    border-radius: 8px;
+    color: var(--text-2);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .nav-item .ic { width: 15px; height: 15px; color: var(--text-3); }
+  .nav-item .badge { margin-left: auto; height: 17px; min-width: 17px; padding: 0 5px; border-radius: 999px; background: rgba(15, 23, 42, 0.06); color: var(--text-3); font-size: 9px; font-weight: 700; display: grid; place-items: center; }
+  .nav-item.active { background: rgba(0, 88, 188, 0.09); color: var(--accent); }
+  .nav-item.active .ic { color: var(--accent); }
+  .nav-item.active .badge { background: rgba(0, 88, 188, 0.13); color: var(--accent); }
+  .proj-line { height: 27px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border-radius: 7px; color: var(--text-2); font-size: 11px; }
+  .proj-line .pd { width: 6px; height: 6px; border-radius: 2px; background: var(--accent); flex: none; }
+  .proj-line .pd.p { background: var(--purple); }
+  .proj-line .pd.a { background: var(--amber); }
+  .proj-line .n { margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--text-4); }
+  .team-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 7px; }
+  .team-row .avatar { width: 22px; height: 22px; font-size: 8px; }
+  .team-row .who { font-size: 10.5px; font-weight: 600; color: var(--text-2); line-height: 1.3; }
+  .team-row .st { font-size: 9px; color: var(--text-4); display: flex; align-items: center; gap: 4px; }
+  .team-row .st .dot { width: 5px; height: 5px; }
+  .nav-foot { margin-top: auto; flex: none; }
+  .nav-usage { padding: 8px 9px; border-radius: 9px; background: rgba(15, 23, 42, 0.035); }
+  .nav-usage .t { display: flex; font-size: 9.5px; color: var(--text-3); }
+  .nav-usage .t b { margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--text-2); }
+  .nav-usage .progress { height: 3px; margin-top: 6px; }
+  .nav-user { display: flex; align-items: center; gap: 7px; padding: 7px 4px 1px; font-size: 11px; font-weight: 600; color: var(--text-2); }
+  .nav-user .muted { margin-left: auto; font-size: 9px; }
+
+  /* board */
+  .board { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 13px 14px 12px; overflow: hidden; }
+  .board-head { flex: none; display: flex; align-items: flex-start; gap: 10px; }
+  .board-head h2 { font-size: 17px; font-weight: 800; letter-spacing: -0.35px; }
+  .board-head p { font-size: 10.5px; color: var(--text-3); margin-top: 2px; }
+  .board-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .filter { height: 27px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.55); color: var(--text-2); font-size: 10.5px; font-weight: 600; }
+  .filter .ic { width: 12px; height: 12px; color: var(--text-3); }
+  .stats { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 10px; }
+  .stat { padding: 7px 9px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.56); display: flex; align-items: center; gap: 8px; }
+  .stat .sic { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: rgba(0, 88, 188, 0.08); color: var(--accent); flex: none; }
+  .stat .sic .ic { width: 13px; height: 13px; }
+  .stat .sic.g { background: rgba(22, 163, 74, 0.08); color: var(--green-text); }
+  .stat .sic.a { background: rgba(217, 119, 6, 0.1); color: var(--amber-text); }
+  .stat .sic.p { background: rgba(124, 58, 237, 0.08); color: var(--purple); }
+  .stat b { display: block; font-size: 14px; line-height: 1.15; letter-spacing: -0.3px; }
+  .stat span { font-size: 9px; color: var(--text-4); }
+
+  .cols { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 10px; }
+  .col { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: rgba(248, 250, 253, 0.5); padding: 8px; overflow: hidden; }
+  .col-head { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 2px 7px; font-size: 10.5px; font-weight: 700; color: var(--text-2); }
+  .col-head .cnt { font-family: var(--mono); font-size: 9px; color: var(--text-3); background: rgba(15,23,42,.05); border-radius: 999px; padding: 1px 5px; }
+  .col-head .plus { margin-left: auto; color: var(--text-4); }
+  .col-head .plus .ic { width: 13px; height: 13px; }
+  .col-head .dot { width: 6px; height: 6px; }
+  .col-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 7px; }
+
+  .kcard { padding: 9px 10px 8px; border: 1px solid var(--border); border-radius: 11px; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-sm); position: relative; }
+  .kcard.sel { border-color: rgba(0, 88, 188, 0.32); box-shadow: 0 6px 18px rgba(0, 88, 188, 0.1), 0 0 0 1px rgba(0, 88, 188, 0.08); background: linear-gradient(150deg, #fff, rgba(232, 240, 255, 0.55)); }
+  .kcard.sel::before { content: ''; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2.5px; border-radius: 0 3px 3px 0; background: var(--accent); }
+  .kc-top { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--text-4); }
+  .kc-top .proj { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+  .kc-top .proj i { width: 5px; height: 5px; border-radius: 2px; background: var(--accent); }
+  .kc-top .proj i.p { background: var(--purple); }
+  .kc-top .proj i.a { background: var(--amber); }
+  .kc-top .more { margin-left: auto; }
+  .kc-top .more .ic { width: 12px; height: 12px; color: var(--text-4); }
+  .kc-title { font-size: 12px; font-weight: 700; line-height: 1.4; margin-top: 4px; letter-spacing: -0.1px; }
+  .kc-step { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 9.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kc-step code { font-family: var(--mono); font-size: 9px; color: var(--text-2); background: rgba(15, 23, 42, 0.045); border-radius: 3px; padding: 0 3px; }
+  .kc-step .spinner { width: 8px; height: 8px; border-width: 1.5px; }
+  .kc-prog { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+  .kc-prog .progress { flex: 1; height: 3.5px; }
+  .kc-prog span { font-family: var(--mono); font-size: 8.5px; color: var(--text-4); }
+  .kc-log { margin-top: 6px; padding: 5px 6px; border-radius: 6px; background: rgba(15, 23, 42, 0.032); font-family: var(--mono); font-size: 8.5px; line-height: 1.55; color: var(--text-3); }
+  .kc-log .ok { color: var(--green-text); }
+  .kc-foot { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); font-size: 8.5px; color: var(--text-4); }
+  .kc-foot .avatars .avatar { width: 16px; height: 16px; font-size: 6.5px; }
+  .kc-foot .grow { flex: 1; }
+  .kc-foot .tk { font-family: var(--mono); }
+  .kc-btn { height: 22px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--border-2); background: #fff; color: var(--text-2); font-size: 9.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 3px; }
+  .kc-btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+  .kc-btn .ic { width: 10px; height: 10px; }
+  .queue-note { display: flex; align-items: center; gap: 7px; margin-top: 2px; padding: 7px 8px; border: 1px dashed rgba(15, 23, 42, 0.13); border-radius: 9px; background: rgba(255, 255, 255, 0.4); }
+  .queue-note .avatar { width: 20px; height: 20px; font-size: 7px; }
+  .queue-note b { display: block; font-size: 9.5px; color: var(--text-2); line-height: 1.35; }
+  .queue-note span { font-size: 8.5px; color: var(--text-4); }
+  .recent-box { margin-top: 2px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 9px; background: rgba(255, 255, 255, 0.42); }
+  .rb-head { font-size: 9px; font-weight: 700; color: var(--text-3); display: flex; align-items: center; }
+  .rb-head span { margin-left: auto; font-weight: 500; color: var(--text-4); font-family: var(--mono); font-size: 8.5px; }
+  .rb-line { display: flex; align-items: center; gap: 5px; height: 20px; font-size: 9px; color: var(--text-3); }
+  .rb-line .ic { width: 10px; height: 10px; color: var(--green-text); flex: none; }
+  .rb-line .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rb-line .m { font-family: var(--mono); font-size: 8px; color: var(--text-4); }
+  .col-add { flex: none; height: 30px; margin-top: 7px; border: 1px dashed rgba(15, 23, 42, 0.14); border-radius: 9px; display: flex; align-items: center; justify-content: center; gap: 4px; color: var(--text-4); font-size: 9.5px; font-weight: 600; }
+  .col-add .ic { width: 11px; height: 11px; }
+
+  /* detail drawer */
+  .detail { width: 372px; flex: none; display: flex; flex-direction: column; overflow: hidden; }
+  .d-head { flex: none; padding: 12px 13px 10px; border-bottom: 1px solid var(--border); }
+  .d-crumb { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--text-4); }
+  .d-crumb .mono { color: var(--accent); }
+  .d-top { display: flex; align-items: flex-start; gap: 7px; margin-top: 3px; }
+  .d-top h3 { font-size: 14px; font-weight: 800; letter-spacing: -0.2px; line-height: 1.35; }
+  .d-top .icon-btn { margin-left: auto; flex: none; }
+  .d-meta { display: flex; align-items: center; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+  .d-tabs { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 13px; border-bottom: 1px solid var(--border); }
+  .d-tab { height: 32px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600; color: var(--text-3); border-bottom: 2px solid transparent; }
+  .d-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+  .d-tab .n { font-family: var(--mono); font-size: 8.5px; background: rgba(0,88,188,.09); color: var(--accent); padding: 1px 4px; border-radius: 999px; }
+  .d-body { flex: 1; min-height: 0; overflow: hidden; padding: 10px 13px 6px; display: flex; flex-direction: column; gap: 8px; }
+  .agent-line { display: flex; align-items: center; gap: 7px; }
+  .agent-line .avatar { width: 25px; height: 25px; }
+  .agent-line b { font-size: 11px; display: block; line-height: 1.3; }
+  .agent-line span { font-size: 9px; color: var(--text-4); }
+  .agent-line .pill { margin-left: auto; height: 18px; font-size: 9px; padding: 0 5px; }
+
+  .d-card { border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.58); padding: 8px 9px; }
+  .d-card-head { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--text-2); }
+  .d-card-head .more { margin-left: auto; font-size: 9px; color: var(--text-4); }
+  .d-card-head .ic { width: 12px; height: 12px; color: var(--accent); }
+  .plan-list { margin-top: 5px; }
+  .p-line { display: flex; align-items: center; gap: 6px; height: 21px; font-size: 10px; color: var(--text-3); }
+  .p-line .pi { width: 12px; height: 12px; border-radius: 50%; display: grid; place-items: center; flex: none; border: 1.4px solid rgba(15, 23, 42, 0.14); }
+  .p-line .pi .ic { width: 7px; height: 7px; stroke-width: 3.2; color: #fff; }
+  .p-line.done .pi { background: var(--green); border-color: var(--green); }
+  .p-line.done { color: var(--text-2); }
+  .p-line.now .pi { border-color: var(--accent); border-width: 3px; }
+  .p-line.now { color: var(--accent); font-weight: 600; }
+  .p-line .st { margin-left: auto; font-size: 8.5px; color: var(--text-4); font-family: var(--mono); }
+
+  .file-line { display: flex; align-items: center; gap: 6px; height: 22px; font-family: var(--mono); font-size: 9px; color: var(--text-3); }
+  .file-line .ic { width: 11px; height: 11px; color: var(--text-4); }
+  .file-line .add { color: var(--green-text); }
+  .file-line .del { color: var(--red-text); }
+  .file-line .grow { flex: 1; }
+
+  .d-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .mini-chat { margin-top: 6px; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+  .mc-user { align-self: flex-end; max-width: 88%; padding: 5px 8px; border-radius: 8px 8px 2px 8px; background: #e8f0ff; color: #17335e; font-size: 9.5px; line-height: 1.45; }
+  .mc-ai { font-size: 9.5px; line-height: 1.5; color: var(--text-3); display: flex; gap: 5px; }
+  .mc-ai .spinner { width: 8px; height: 8px; border-width: 1.5px; margin-top: 2px; }
+  .mc-sep { height: 1px; background: var(--border); margin: 2px 0 1px; }
+  .mc-tool { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 8px; line-height: 1.5; color: var(--text-4); }
+  .mc-tool b { font-weight: 700; color: var(--text-3); }
+  .mc-tool b.ok { color: var(--green-text); }
+
+  .approve { border: 1px solid rgba(217, 119, 6, 0.24); border-radius: 10px; background: linear-gradient(135deg, rgba(255, 251, 235, 0.88), rgba(255, 255, 255, 0.5)); padding: 8px 9px; }
+  .approve .t { display: flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 700; color: var(--amber-text); }
+  .approve .t .ic { width: 11px; height: 11px; }
+  .approve .a { font-size: 10px; color: var(--text-2); margin-top: 3px; }
+  .approve .a code { font-family: var(--mono); font-size: 9.5px; background: rgba(15,23,42,.05); padding: 0 3px; border-radius: 3px; }
+  .approve .acts { display: flex; gap: 5px; margin-top: 6px; }
+  .approve .acts .btn { height: 22px; font-size: 9.5px; padding: 0 7px; border-radius: 6px; }
+  .approve .acts .grow { flex: 1; }
+
+  .d-foot { flex: none; padding: 7px 11px 10px; border-top: 1px solid var(--border); }
+  .d-actions { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
+  .d-actions .btn { height: 22px; font-size: 9.5px; padding: 0 7px; border-radius: 6px; }
+  .d-actions .grow { flex: 1; }
+  .d-composer { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px 0 9px; border: 1px solid var(--border-2); border-radius: 10px; background: #fff; font-size: 10px; color: var(--text-4); }
+  .d-composer .ic { width: 13px; height: 13px; color: var(--text-3); }
+  .d-composer .send-btn { width: 24px; height: 24px; margin-left: auto; box-shadow: none; }
+  .d-composer .send-btn .ic { width: 12px; height: 12px; }
+</style>
+</head>
+<body>
+<div class="win">
+
+  <header class="titlebar">
+    <div class="tb-left">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24"><path d="M3.5 13.2c2.3 0 2.7-4.2 5-4.2s2.7 4.2 5 4.2 2.7-4.2 5-4.2 2.7 4.2 5 4.2"/></svg>
+        </span>
+        OurCode
+      </div>
+      <div class="ws">
+        <svg class="ic xs"><use href="#i-folder"/></svg>
+        ourcode-ide
+        <span class="sep">/</span>
+        <code>agent-ui</code>
+        <svg class="ic xs" style="color:var(--text-4)"><use href="#i-chevron-down"/></svg>
+      </div>
+    </div>
+    <div class="tb-center">
+      <div class="cmd">
+        <svg class="ic sm"><use href="#i-search"/></svg>
+        搜索任务、Agent 或项目
+        <span class="kbd">Ctrl K</span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span class="tb-status"><i class="dot live"></i>3 个 Agent 在线</span>
+      <span class="pill"><svg class="ic xs"><use href="#i-zap"/></svg>182k tokens</span>
+      <span class="avatar sm">YG</span>
+      <div class="wbtns">
+        <button class="wbtn"><svg class="ic sm"><use href="#i-minimize"/></svg></button>
+        <button class="wbtn"><svg class="ic xs"><use href="#i-window"/></svg></button>
+        <button class="wbtn close"><svg class="ic sm"><use href="#i-x"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ===== left nav ===== -->
+    <aside class="panel nav">
+      <button class="nav-new"><svg class="ic"><use href="#i-plus"/></svg>新建 Agent 任务</button>
+
+      <div class="nav-group">
+        <div class="nav-item"><svg class="ic"><use href="#i-home"/></svg>驾驶舱</div>
+        <div class="nav-item active"><svg class="ic"><use href="#i-columns"/></svg>调度台<span class="badge">7</span></div>
+        <div class="nav-item"><svg class="ic"><use href="#i-message"/></svg>会话<span class="badge">12</span></div>
+        <div class="nav-item"><svg class="ic"><use href="#i-puzzle"/></svg>技能</div>
+        <div class="nav-item"><svg class="ic"><use href="#i-database"/></svg>记忆</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">项目</div>
+        <div class="proj-line"><i class="pd"></i>ourcode-ide<span class="n">12</span></div>
+        <div class="proj-line"><i class="pd p"></i>q3-report<span class="n">4</span></div>
+        <div class="proj-line"><i class="pd a"></i>wechat-twin<span class="n">3</span></div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">Agent 团队</div>
+        <div class="team-row">
+          <span class="avatar blue">AR</span>
+          <div><div class="who">架构师</div><div class="st"><i class="dot blue live"></i>正在改 AgentShell</div></div>
+        </div>
+        <div class="team-row">
+          <span class="avatar violet">RV</span>
+          <div><div class="who">审查员</div><div class="st"><i class="dot green"></i>空闲 · 等待任务</div></div>
+        </div>
+        <div class="team-row">
+          <span class="avatar green">TS</span>
+          <div><div class="who">测试员</div><div class="st"><i class="dot green"></i>空闲 · 等待任务</div></div>
+        </div>
+      </div>
+
+      <div class="nav-foot">
+        <div class="nav-usage">
+          <div class="t">本月用量<b>1.82M / 5M</b></div>
+          <div class="progress"><i style="width:36%"></i></div>
+        </div>
+        <div class="nav-user"><span class="avatar sm">YG</span>YG<span class="muted">Pro</span></div>
+      </div>
+    </aside>
+
+    <!-- ===== board ===== -->
+    <main class="panel board">
+      <div class="board-head">
+        <div>
+          <h2>Agent 调度台</h2>
+          <p>3 个并行运行 · 2 个等待你审阅</p>
+        </div>
+        <div class="board-actions">
+          <button class="filter"><svg class="ic"><use href="#i-folder"/></svg>全部项目<svg class="ic"><use href="#i-chevron-down"/></svg></button>
+          <button class="filter"><svg class="ic"><use href="#i-clock"/></svg>今天<svg class="ic"><use href="#i-chevron-down"/></svg></button>
+          <button class="btn sm btn-primary"><svg class="ic"><use href="#i-plus"/></svg>派发任务</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span class="sic"><svg class="ic"><use href="#i-bot"/></svg></span><div><b>3</b><span>运行中</span></div></div>
+        <div class="stat"><span class="sic a"><svg class="ic"><use href="#i-alert"/></svg></span><div><b>2</b><span>待审批</span></div></div>
+        <div class="stat"><span class="sic g"><svg class="ic"><use href="#i-check-circle"/></svg></span><div><b>12</b><span>今日完成</span></div></div>
+        <div class="stat"><span class="sic p"><svg class="ic"><use href="#i-zap"/></svg></span><div><b>182k</b><span>tokens 消耗</span></div></div>
+      </div>
+
+      <div class="cols">
+        <!-- queued -->
+        <section class="col">
+          <div class="col-head"><i class="dot amber"></i>已排队<span class="cnt">2</span><span class="plus"><svg class="ic"><use href="#i-plus"/></svg></span></div>
+          <div class="col-list">
+            <article class="kcard">
+              <div class="kc-top"><span class="proj"><i></i>ourcode-ide</span><span class="pill" style="height:17px;font-size:8.5px;padding:0 5px">P2</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">窄窗响应式适配</div>
+              <div class="kc-step"><svg class="ic" style="width:10px;height:10px"><use href="#i-clock"/></svg>等待架构师空闲 · 预计 20m</div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm blue">AR</span></div><span>预计 3 个文件</span><span class="grow"></span><span class="tk">4.1k</span></div>
+            </article>
+            <article class="kcard">
+              <div class="kc-top"><span class="proj"><i class="p"></i>q3-report</span><span class="pill" style="height:17px;font-size:8.5px;padding:0 5px">文档</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">生成 v0.6.0 发布说明</div>
+              <div class="kc-step"><svg class="ic" style="width:10px;height:10px"><use href="#i-clock"/></svg>等待你确认输出路径</div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm violet">RV</span></div><span>依赖 2 个产物</span><span class="grow"></span><span class="tk">2.8k</span></div>
+            </article>
+          </div>
+          <div class="queue-note">
+            <span class="avatar sm blue">AR</span>
+            <div><b>架构师将在 1 个任务后接手</b><span>预计 20 分钟 · 当前并行上限 3</span></div>
+          </div>
+          <div class="col-add"><svg class="ic"><use href="#i-plus"/></svg>加入队列</div>
+        </section>
+
+        <!-- running -->
+        <section class="col">
+          <div class="col-head"><i class="dot blue live"></i>进行中<span class="cnt">3</span><span class="plus"><svg class="ic"><use href="#i-plus"/></svg></span></div>
+          <div class="col-list">
+            <article class="kcard sel">
+              <div class="kc-top"><span class="proj"><i></i>ourcode-ide</span><span class="pill accent" style="height:17px;font-size:8.5px;padding:0 5px"><i class="dot" style="width:4px;height:4px;background:var(--accent)"></i>运行中</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">重构 Agent 主画布</div>
+              <div class="kc-step"><span class="spinner"></span>正在运行 <code>npm run typecheck</code></div>
+              <div class="kc-log"><span class="ok">✓</span> 已改 Shell.tsx · SessionRail.tsx<br><span class="ok">✓</span> 24 tests passed · 2.1s</div>
+              <div class="kc-prog"><div class="progress"><i style="width:68%"></i></div><span>14/18</span></div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm blue">AR</span><span class="avatar sm violet">RV</span></div><span>1m 24s</span><span class="grow"></span><span class="tk">24.6k</span></div>
+            </article>
+
+            <article class="kcard">
+              <div class="kc-top"><span class="proj"><i></i>ourcode-ide</span><span class="pill amber" style="height:17px;font-size:8.5px;padding:0 5px"><i class="dot amber" style="width:4px;height:4px"></i>待审批</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">修复 Composer 高度抖动</div>
+              <div class="kc-step"><svg class="ic" style="width:10px;height:10px;color:var(--amber)"><use href="#i-alert"/></svg>等待确认 <code>npm run build</code></div>
+              <div class="kc-prog"><div class="progress amber"><i style="width:92%"></i></div><span>11/12</span></div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm blue">AR</span></div><span>等你 2m</span><span class="grow"></span><span class="tk">11.2k</span></div>
+            </article>
+
+            <article class="kcard">
+              <div class="kc-top"><span class="proj"><i class="p"></i>q3-report</span><span class="pill purple" style="height:17px;font-size:8.5px;padding:0 5px">2 子 Agent</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">补齐 diff 查看器</div>
+              <div class="kc-step"><span class="spinner" style="border-color:rgba(124,58,237,.18);border-top-color:var(--purple)"></span>读取 <code>DiffView.tsx</code></div>
+              <div class="kc-prog"><div class="progress"><i style="width:41%"></i></div><span>5/13</span></div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm violet">RV</span><span class="avatar sm green">TS</span></div><span>Reviewer · Tester</span><span class="grow"></span><span class="tk">8.8k</span></div>
+            </article>
+          </div>
+          <div class="col-add"><svg class="ic"><use href="#i-plus"/></svg>派发到此列</div>
+        </section>
+
+        <!-- review -->
+        <section class="col">
+          <div class="col-head"><i class="dot green"></i>待审阅<span class="cnt">2</span><span class="plus"><svg class="ic"><use href="#i-plus"/></svg></span></div>
+          <div class="col-list">
+            <article class="kcard">
+              <div class="kc-top"><span class="proj"><i></i>ourcode-ide</span><span class="pill green" style="height:17px;font-size:8.5px;padding:0 5px">已完成</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">更新 Windows 打包脚本</div>
+              <div class="kc-step"><svg class="ic" style="width:10px;height:10px"><use href="#i-diff"/></svg>3 个文件 · <span class="add" style="color:var(--green-text)">+24</span> <span style="color:var(--red-text)">−8</span></div>
+              <div class="kc-log"><span class="ok">✓</span> npm run dist:win · artifact signed<br><span class="ok">✓</span> 2m 10s · 0 errors</div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm blue">AR</span></div><span>5 分钟前</span><span class="grow"></span><button class="kc-btn primary">审阅<svg class="ic"><use href="#i-arrow-right"/></svg></button></div>
+            </article>
+            <article class="kcard">
+              <div class="kc-top"><span class="proj"><i class="p"></i>q3-report</span><span class="pill green" style="height:17px;font-size:8.5px;padding:0 5px">已完成</span><span class="more"><svg class="ic"><use href="#i-more"/></svg></span></div>
+              <div class="kc-title">Q3 周报数据整理</div>
+              <div class="kc-step"><svg class="ic" style="width:10px;height:10px"><use href="#i-layers"/></svg>已生成 4 个产物 · xlsx / md</div>
+              <div class="kc-log"><span class="ok">✓</span> 数据校验通过 · 12 张表<br><span class="ok">✓</span> 图表已同步到报告</div>
+              <div class="kc-foot"><div class="avatars"><span class="avatar sm violet">RV</span></div><span>32 分钟前</span><span class="grow"></span><button class="kc-btn">查看产物</button></div>
+            </article>
+          </div>
+          <div class="recent-box">
+            <div class="rb-head">最近验收<span>今天</span></div>
+            <div class="rb-line"><svg class="ic"><use href="#i-check-circle"/></svg><span class="t">Windows 打包脚本</span><span class="m">14:02</span></div>
+            <div class="rb-line"><svg class="ic"><use href="#i-check-circle"/></svg><span class="t">Q3 周报数据</span><span class="m">13:36</span></div>
+            <div class="rb-line"><svg class="ic"><use href="#i-check-circle"/></svg><span class="t">MCP 配置校验</span><span class="m">11:20</span></div>
+          </div>
+          <div class="col-add" style="border-style:solid;background:rgba(22,163,74,.05);color:var(--green-text)"><svg class="ic"><use href="#i-check-circle"/></svg>今日已验收 10 个任务</div>
+        </section>
+      </div>
+    </main>
+
+    <!-- ===== detail drawer ===== -->
+    <aside class="panel detail">
+      <div class="d-head">
+        <div class="d-crumb">调度台 <span>/</span> <span class="mono">ourcode-ide</span> <span>/</span> 任务 #18</div>
+        <div class="d-top">
+          <h3>重构 Agent 主画布</h3>
+          <button class="icon-btn sm"><svg class="ic sm"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="d-meta">
+          <span class="pill accent"><span class="spinner" style="width:8px;height:8px;border-width:1.5px"></span>运行中</span>
+          <span class="pill plain"><svg class="ic xs"><use href="#i-git-branch"/></svg>agent-ui</span>
+          <span class="pill">14 / 18 步</span>
+          <span class="pill">24.6k tokens</span>
+        </div>
+      </div>
+
+      <div class="d-tabs">
+        <div class="d-tab on">对话</div>
+        <div class="d-tab">计划</div>
+        <div class="d-tab">变更<span class="n">3</span></div>
+        <div class="d-tab">产物<span class="n">2</span></div>
+      </div>
+
+      <div class="d-body">
+        <div class="agent-line">
+          <span class="avatar agent"><svg class="ic"><use href="#i-bot"/></svg></span>
+          <div><b>OurCode Agent</b><span>Claude Sonnet 4.5 · 手动确认</span></div>
+          <span class="pill green"><svg class="ic xs"><use href="#i-shield"/></svg>受管</span>
+        </div>
+
+        <div class="d-card">
+          <div class="d-card-head"><svg class="ic"><use href="#i-list"/></svg>执行计划<span class="more">3 / 5 完成</span></div>
+          <div class="plan-list">
+            <div class="p-line done"><span class="pi"><svg class="ic"><use href="#i-check"/></svg></span>读取 MainLayout / ChatPanel<span class="st">done</span></div>
+            <div class="p-line done"><span class="pi"><svg class="ic"><use href="#i-check"/></svg></span>抽出三栏骨架<span class="st">done</span></div>
+            <div class="p-line done"><span class="pi"><svg class="ic"><use href="#i-check"/></svg></span>会话栏改为常驻<span class="st">done</span></div>
+            <div class="p-line now"><span class="pi"></span>接入 RunTimeline 折叠卡<span class="st">14/18</span></div>
+            <div class="p-line"><span class="pi"></span>窄窗与截图核对<span class="st">pending</span></div>
+          </div>
+        </div>
+
+        <div class="d-card">
+          <div class="d-card-head"><svg class="ic"><use href="#i-diff"/></svg>文件变更<span class="more">+86 −24</span></div>
+          <div class="file-line"><svg class="ic"><use href="#i-file-code"/></svg>AgentShell.tsx<span class="grow"></span><span class="add">+42</span><span class="del">−18</span></div>
+          <div class="file-line"><svg class="ic"><use href="#i-file-code"/></svg>SessionRail.tsx<span class="grow"></span><span class="add">+28</span><span class="del">−4</span></div>
+          <div class="file-line"><svg class="ic"><use href="#i-file-code"/></svg>BottomDock.tsx<span class="grow"></span><span class="add">+16</span><span class="del">−2</span></div>
+        </div>
+
+        <div class="d-card d-chat">
+          <div class="d-card-head"><svg class="ic"><use href="#i-message"/></svg>最近对话<span class="more">打开会话</span></div>
+          <div class="mini-chat">
+            <div class="mc-user">把主画布改成会话优先，右侧只保留产物栏；运行过程不要再让我切视图。</div>
+            <div class="mc-ai"><span class="spinner"></span>正在执行第 14 步：运行 typecheck，随后会生成窄窗截图供你核对。</div>
+            <div class="mc-ai" style="color:var(--green-text)"><svg class="ic" style="width:11px;height:11px;margin-top:1px"><use href="#i-check-circle"/></svg>已完成会话栏常驻与 composer 贴底改造。</div>
+            <div class="mc-sep"></div>
+            <div class="mc-tool"><span>14:18:02</span><b class="ok">✓</b>typecheck · 0 errors</div>
+            <div class="mc-tool"><span>14:17:40</span><b class="ok">✓</b>vitest · 24 passed</div>
+            <div class="mc-tool"><span>14:17:12</span><b>↑</b>BottomDock.tsx · +16 −2</div>
+          </div>
+        </div>
+
+        <div class="approve">
+          <div class="t"><svg class="ic"><use href="#i-alert"/></svg>需要你确认 · 2 分钟前</div>
+          <div class="a">运行构建校验 <code>npm run build</code>，写入 <b>out/</b>，约 40 秒。</div>
+          <div class="acts">
+            <button class="btn">拒绝</button>
+            <span class="grow"></span>
+            <button class="btn">本会话允许</button>
+            <button class="btn btn-primary">允许一次</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-foot">
+        <div class="d-actions">
+          <button class="btn"><svg class="ic"><use href="#i-pause"/></svg>暂停</button>
+          <button class="btn"><svg class="ic"><use href="#i-external"/></svg>打开会话</button>
+          <span class="grow"></span>
+          <button class="btn"><svg class="ic"><use href="#i-more"/></svg></button>
+        </div>
+        <div class="d-composer">
+          <svg class="ic"><use href="#i-paperclip"/></svg>
+          给 Agent 补充指令…
+          <button class="send-btn"><svg class="ic"><use href="#i-send"/></svg></button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <span class="si"><svg class="ic xs"><use href="#i-git-branch"/></svg>agent-ui</span>
+    <span class="si"><svg class="ic xs"><use href="#i-check-circle"/></svg>0 个问题</span>
+    <span class="grow"></span>
+    <span class="si" style="color:var(--accent)"><i class="dot blue live"></i>3 个任务运行中 · 1 个等待审批</span>
+    <span class="si">Agent 团队 3 人 · 本月 1.82M tokens</span>
+    <span class="si ok"><svg class="ic xs"><use href="#i-check"/></svg>已同步</span>
+  </footer>
+</div>
+<script src="sprite.js"></script>
+</body>
+</html>

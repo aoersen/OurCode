@@ -13,10 +13,15 @@ description: 对客户 Web 项目做自动化 UI 自测：启动服务、用 Pla
 
 1. **确认目标**：`target`（网页入口，如 `app/index.html`、`dist/index.html`、`src/...`）。
    未指定时，在工作区中查找 `index.html` / `package.json` 的 dev/build 产物。
-2. **确认浏览器工具可用**：AI 需具备 `browser_navigate`、`browser_click`、
-   `browser_type`、`browser_snapshot`、`browser_take_screenshot`（来自 Playwright MCP）。
-   - 工作区 `mcp_config.json` 中应配置 `@playwright/mcp`（参考 `examples/ui-self-test-demo/mcp_config.json`）。
-   - 若工具缺失，向用户说明如何启用（见 `docs/BROWSER_SELF_TEST.md`），不要硬试。
+2. **确认浏览器工具可用**：两条路任选其一。
+   - **内置浏览器**（IDE 已有，无需额外安装）：`browser_navigate` / `browser_snapshot` / `browser_act` /
+     `browser_read_console` / `browser_screenshot`。`browser_act` 发送真实 CDP 鼠标/键盘/滚轮事件，
+     支持 `ref`（优先）、`selector`、`x/y`（CSS 视口像素）、`hover`、`drag`、`scroll`（`delta_x`/`delta_y`
+     或 `direction`）、`click_count` 与按键和弦（如 `Control+a`）。坐标先用 `browser_screenshot`
+     （返回视口与图像尺寸）定位；坐标点选 canvas/iframe 内容时尤其有用（快照只覆盖顶层帧）。
+   - **Playwright MCP**：`browser_click`、`browser_type`、`browser_snapshot`、`browser_take_screenshot`
+     （来自 `@playwright/mcp`，工作区 `mcp_config.json` 配置，参考 `examples/ui-self-test-demo/mcp_config.json`）。
+   - 两条路都没有时，向用户说明如何启用（见 `docs/BROWSER_SELF_TEST.md`），不要硬试。
 3. **确定验收依据**：优先读取工作区中的测试计划 / 需求清单（如 `EXPECTED.md`、
    `TEST_PLAN.md`、README 的功能说明）；没有则基于页面实际功能自行归纳待验证项，
    并**先向用户确认范围**。
@@ -31,10 +36,11 @@ description: 对客户 Web 项目做自动化 UI 自测：启动服务、用 Pla
 2. **打开页面并建立基线**：`browser_navigate` 打开入口 → `browser_snapshot`
    读取可访问性快照，确认页面结构（导航、表单、列表、按钮）。
 3. **逐项验证**：按验收清单逐条执行，每条遵循「操作 → 断言」闭环：
-   - 操作：`browser_click`（点击页签/按钮/复选框）、`browser_type`（在输入框
-     键入文字，必要时先 `browser_click` 聚焦）、`browser_select` 等。
+   - 操作：内置浏览器用 `browser_act`（`click` / `type` / `hover` / `drag` / `scroll`）；
+     Playwright MCP 用 `browser_click`、`browser_type`、`browser_select` 等。
    - 断言：**以 `browser_snapshot` 的实际 DOM 状态为准**（元素文本、可见性、
-     计数、样式类、`aria` 属性），不要只凭 URL 或想当然。
+     计数、样式类、`aria` 属性），不要只凭 URL 或想当然；运行时错误看
+     `browser_read_console`。
    - 关键路径（提交、删除、切换）操作后必须重新 `browser_snapshot` 确认结果。
 4. **失败排查**：失败时用 `browser_take_screenshot` 留证，并区分「测试操作方式不对」
    还是「被测功能确实有 bug」：前者换一种可访问的操作方式重试；后者记录为失败项。
